@@ -22,7 +22,7 @@ Pusher constantly monitors incoming HTTP responses during every test. If danger 
        ▼                   ▼                   ▼                   ▼
  [ Brake 1: Crash ]  [ Brake 2: WAF ]    [ Brake 3: Lag ]    [ CPU Self-Check ]
  5 consecutive 5xx   HTTP 429 or WAF     p95 > 8,000ms       Pusher Event Loop
- errors in a row     Challenge Block     or 30% timeouts     Drift > 30ms x 3s
+ errors in a row     Challenge Block     or 30% timeouts     Lag > 200ms x 5s
        │                   │                   │                   │
        └───────────────────┴─────────────┬─────┴───────────────────┘
                                          ▼
@@ -36,7 +36,7 @@ Pusher constantly monitors incoming HTTP responses during every test. If danger 
 
 ---
 
-### Brake 1: Server Crash Breaker (5xx Errors)
+### Brake 1: Server Crash Breaker (5xx Errors) [Feature #11] (`server_5xx_breaker.py`)
 When a target application crashes, its server software (like Nginx, Apache, or Node.js) usually starts returning `500 Internal Server Error`, `502 Bad Gateway`, or `503 Service Unavailable`. Continuing to send requests into a crashed server makes recovery harder.
 
 * **Dual Detection Logic**:
@@ -51,7 +51,7 @@ When a target application crashes, its server software (like Nginx, Apache, or N
 
 ---
 
-### Brake 2: Firewall (WAF) & Rate-Limit Breaker
+### Brake 2: Firewall (WAF) & Rate-Limit Breaker [Feature #11] (`waf_429_breaker.py`)
 Web Application Firewalls (like Cloudflare, AWS WAF, Sucuri, Akamai, or DataDome) and API rate limiters are designed to block abusive traffic. If Pusher hits an external firewall, continuing the test will get the tester's home or office IP address blacklisted.
 
 * **Preventing False Alarms with the 2-in-1 Pusher Guard Middleware**:
@@ -69,9 +69,28 @@ Web Application Firewalls (like Cloudflare, AWS WAF, Sucuri, Akamai, or DataDome
   2. Emits this clear advice:
      > *"Test stopped: A Web Application Firewall (like Cloudflare or AWS WAF) or rate limiter blocked the test. Load testing against an active firewall hides your real server speed and risks getting your IP blocked. If this was caused by an in-app rate limiter, install the 2-in-1 Pusher Guard Middleware to allow test traffic through."*
 
+#### Firewall Bypass Troubleshooting Box (`waf_429_breaker.py` & `english_advisor.py`)
+When Pusher stops due to an HTTP 429 or 403 firewall block, follow these 3 clear remedies depending on your architecture:
+
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                      FIREWALL BYPASS TROUBLESHOOTING GUIDE                             │
+├─────────────────────────┬──────────────────────────────────────────────────────────────┤
+│ 1. In-App Rate Limiter  │ Install the 2-in-1 Pusher Guard middleware (pusher_guard.py  │
+│    (FastAPI/Express)    │ or pusherGuard.js). Pusher will automatically inject the     │
+│                         │ X-Pusher-Bypass secret key to allow test traffic through.    │
+├─────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ 2. Cloudflare Edge WAF  │ Add a 1-step Cloudflare WAF Custom Skip Rule:                │
+│    (CDN / Edge Proxy)   │ If (http.request.headers["x-pusher-bypass"][0] == "SECRET")  │
+│                         │ Action: Skip Rate Limiting & Managed Rules.                  │
+├─────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ 3. Wi-Fi Local Testing  │ Switch to the 2-Laptop Wi-Fi setup (PUSHER_MODE=local_dev).  │
+│    (100% Firewall-Free) │ Run mock target on Laptop 2 at 192.168.1.x:8080 to test with │
+│                         │ zero cloud firewalls or risk of IP blacklisting.             │
+└─────────────────────────┴──────────────────────────────────────────────────────────────┘
+
 ---
 
-### Brake 3: Slowdown & Timeout Breaker
+### Brake 3: Slowdown & Timeout Breaker [Feature #11] (`latency_breaker.py`)
 If the target website slows down so much that requests hang, the test engine will pile up pending tasks, giving false readings.
 
 * **Strict Request Timeout**: Every single HTTP request has a hard timeout limit of **5.0 seconds** (user configurable between 2.0s and 10.0s).
@@ -84,19 +103,19 @@ If the target website slows down so much that requests hang, the test engine wil
 
 ---
 
-## 3. Pusher CPU Self-Check (Event-Loop Lag Monitor)
-Sometimes the laptop running Pusher gets busy (for example, if another program on your laptop starts using 100% CPU). When that happens, Pusher's own code can lag, making it look like the target website is slow when it is actually your laptop that is slow!
+## 3. Slower-PC Friendly CPU Self-Check [Feature #13] (`health_and_disconnect.py`)
+Sometimes the laptop running Pusher gets busy (for example, if another program on your laptop starts using CPU). When that happens, Pusher's own code can lag, making it look like the target website is slow when it is actually your laptop that is slow!
 
-* **How Pusher Checks Itself**:
-  Pusher runs a background heartbeat task every 100ms. If the heartbeat is delayed by **more than 30ms for 3 seconds in a row**, Pusher knows its own CPU is overloaded.
-* **What Pusher does**:
-  * Pauses adding more virtual users.
-  * Shows this friendly warning:
-    > *"Pusher CPU Overload: The laptop running Pusher is running out of processing power. We paused adding more users so your laptop's slowdown is not mistaken for a problem with your website."*
+To prevent false alarms on everyday budget laptops, Pusher uses a smart, gentle CPU monitor:
+
+* **Gentle 500ms Heartbeat**: Pusher checks its internal event-loop delay once every **500ms** (instead of hammering the loop every 100ms), keeping CPU overhead under 1%.
+* **1-Second Pre-Test Auto-Baseline**: Before sending any HTTP traffic, Pusher takes a 1-second auto-baseline measurement of the laptop's resting loop delay.
+* **Warning Badge (150ms–200ms Lag)**: If lag drifts **150ms to 200ms** above baseline, Pusher displays a yellow advisory badge in the UI health bar (`SystemHealthBar.jsx`) without interrupting the test.
+* **Pause VU Scaling (>200ms for 5s)**: If loop lag exceeds **200ms above baseline for 5 consecutive seconds** (5 heartbeat ticks in a row), Pusher temporarily pauses adding new virtual users. It maintains the current user count until the host CPU recovers, ensuring Pusher's own slowdown is never mistaken for a website bottleneck!
 
 ---
 
-## 4. Intelligent CDN Cache Detector
+## 4. Intelligent CDN Cache Detector [Feature #12] (`cdn_detector.py`)
 
 Many modern hosting providers (like Vercel, Netlify, and Cloudflare) automatically cache web pages. When you load-test a cached page, you are testing Cloudflare's massive edge network, not your real server or database!
 
@@ -124,7 +143,7 @@ If **more than 50% of responses are CDN Cache HITs**, Pusher keeps testing but s
 
 ---
 
-## 5. Big Red "Emergency Stop" Button (Dual-Channel Safe)
+## 5. Big Red "Emergency Stop" Button (Dual-Channel Safe) [Feature #8] (`EmergencyStopButton.jsx`)
 
 Every load test interface must display a prominent, bright red **Emergency Stop** button.
 

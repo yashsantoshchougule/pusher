@@ -195,39 +195,143 @@ Automatically halts tests if the target server returns 5 consecutive 5xx errors,
 ### Feature 12: CDN Cache Detector
 Alerts users if more than 50% of requests are answered by a CDN cache (like Cloudflare or Vercel edge) rather than the actual backend server.
 
-### Feature 13: Pusher CPU Self-Check & Client Disconnect Guard
-* **CPU Self-Check**: Monitors Pusher's own event-loop lag. If the tester's laptop gets bogged down (`> 30ms` drift), it pauses adding virtual users so Pusher does not blame its own lag on the target website.
-* **Client Disconnect Guard**: If the user closes their browser tab or Wi-Fi drops mid-test, the backend waits **15 seconds** for reconnection. If no client reconnects, it automatically halts the load test to prevent orphan tests from running in the background.
+### Feature 13: Slower-PC Friendly CPU Self-Check & Client Disconnect Guard
+* **CPU Self-Check (`health_and_disconnect.py`)**:
+  * Monitors Pusher's own event-loop lag with a lightweight **500ms heartbeat** (gentle on older dual-core or quad-core laptop CPUs).
+  * Takes a **1-second pre-test auto-baseline** during idle startup so background processes don't trigger false warnings.
+  * Shows a gentle warning banner if lag drifts **150ms–200ms** above baseline.
+  * Pauses adding new virtual users only if lag exceeds **200ms above baseline for 5 consecutive seconds**, ensuring Pusher never blames its own laptop slowdown on the target website.
+* **Client Disconnect Guard (`health_and_disconnect.py`)**: If the user closes their browser tab or Wi-Fi drops mid-test, the backend waits **15 seconds** for reconnection. If no client reconnects, it automatically halts the load test to prevent orphan tests from running in the background.
 
 ---
 
-## 6. Project Directory Structure
+## 6. Scalable Core + Plugin Directory Blueprint
 
-All testing files, mock endpoints, and prototypes must be kept strictly inside `supporting files/testing/`:
+To keep Pusher clean, maintainable, and easy to extend as a 2-person team, the codebase uses a **"Frozen Core vs. Scalable Plugins"** architecture.
+
+### The "Frozen Core vs. Scalable Plugins" Design:
+1. **`backend/core/` (Frozen Core)**:
+   Contains the invariant, battle-tested engine infrastructure. These files enforce memory budgets, socket efficiency, safety guards, and typing contracts. Once written and tested, **`backend/core/` never needs editing when adding new features**.
+2. **`backend/plugins/` (Scalable Plugins)**:
+   Contains 5 modular folders for extensible functionality (`traffic_modes/`, `request_builders/`, `breakers_and_detectors/`, `verifiers/`, and `advisors_and_exporters/`). Each feature is a self-contained Python file with a `@register_*` decorator.
+3. **`frontend/src/core_ui/` vs. `frontend/src/features/`**:
+   Separates always-on foundation components (`EmergencyStopButton.jsx`, `SystemHealthBar.jsx`, network clients) from modular plug-and-play UI feature cards.
+
+---
+
+### The Complete Directory Tree (With Feature & Memory Rule Mappings)
 
 ```
 pusher/
 ├── supporting files/
-│   ├── rules/                       # Documentation and architecture rules
-│   │   ├── architecture_and_standards.md   # Tech stack, features, and 2-laptop setup
-│   │   ├── team_collaboration.md           # 2-person ownership, API contracts & Wi-Fi testing
-│   │   ├── memory_management.md            # RAM limits, socket reuse, zero-buffering
-│   │   ├── target_verification.md          # Free DNS/file verification & SSRF defense
-│   │   ├── safety_limits.md                # 3 automatic safety brakes & emergency stop
-│   │   └── github_workflow.md              # 2-person team Git roles & manual push rules
+│   ├── rules/                                   # Documentation and system invariants
+│   │   ├── architecture_and_standards.md        # Architecture, features, and standards
+│   │   ├── team_collaboration.md                # 2-person ownership, API contracts & Wi-Fi testing
+│   │   ├── memory_management.md                 # RAM budget rules (<250MB for 1,000 VUs)
+│   │   ├── target_verification.md               # 2-in-1 guard middleware, DNS & Cloudflare bypass
+│   │   ├── safety_limits.md                     # 3 safety circuit breakers & CPU health monitor
+│   │   └── github_workflow.md                   # 2-person team Git roles & manual push rules
 │   │
-│   └── testing/                     # EXCLUSIVE home for all tests and prototypes
-│       ├── README.md                # Testing instructions and checklist
-│       ├── mocks/                   # Mock target servers for Laptop 2
-│       ├── prototypes/              # Prototype async engine scripts
-│       ├── benchmarks/              # RAM and speed benchmarking scripts
-│       └── unit/                    # Unit tests for verification and SSRF blocking
+│   ├── plans/                                   # Architecture blueprints & technical plans
+│   │   ├── README.md                            # Plan index and naming conventions
+│   │   └── plan_*.md                            # Self-describing design and implementation plans
+│   │
+│   └── testing/                                 # EXCLUSIVE home for all tests and prototypes
+│       ├── README.md                            # Testing instructions and checklist
+│       ├── mocks/                               # Mock target servers for Laptop 2
+│       │   ├── server_200_ok.py                 # Fast 200 OK baseline mock
+│       │   ├── server_500_crash.py              # 5xx crashing mock for testing Brake 1
+│       │   ├── server_429_waf.py                # 429 rate limit mock for testing Brake 2
+│       │   └── server_slow_timeout.py           # Hanging mock for testing Brake 3
+│       ├── prototypes/                          # Engine prototypes and validation scripts
+│       ├── benchmarks/                          # RAM and throughput benchmark scripts
+│       └── unit/                                # Unit tests for verifiers and circuit breakers
 │
-├── frontend/                        # React + Vite + Tailwind UI
-└── backend/                         # FastAPI + asyncio + aiohttp backend
+├── backend/
+│   ├── api/                                     # Fast HTTP & WebSocket presentation layer
+│   │   ├── routes_test.py                       # REST: start, stop, status endpoints [Feature #1, #8]
+│   │   ├── routes_verify.py                     # REST: DNS, middleware generation [Feature #9]
+│   │   ├── routes_plugins.py                    # REST: GET /api/v1/plugins (lists active modes & breakers)
+│   │   └── ws_telemetry.py                      # WebSocket: 1-sec live stream [Feature #7, #13]
+│   │
+│   ├── core/                                    # FROZEN CORE (Unbreakable engine rules)
+│   │   ├── __init__.py
+│   │   ├── contracts.py                         # Pydantic schemas for REST & SSE contracts [Feature #1]
+│   │   ├── plugin_registry.py                   # Dynamic auto-loader for backend/plugins/
+│   │   ├── orchestrator.py                      # VU lifecycle & graceful cancellation [Feature #1, #2]
+│   │   ├── socket_pool.py                       # Persistent aiohttp.TCPConnector pool [Memory Rule 3.2]
+│   │   ├── stream_reader.py                     # 4KB chunk reader, counts bytes, zero buffer [Memory Rule 3.3]
+│   │   ├── queue_lock.py                        # Single-test RAM execution lock [Memory Rule 3.5, Feature #1]
+│   │   ├── ssrf_and_dns.py                      # Private IP blocker & safe DNS pinning [Feature #10]
+│   │   ├── health_and_disconnect.py             # 500ms heartbeat & 15s tab drop guard [Feature #13]
+│   │   └── metrics_store.py                     # Circular ring buffer & p50/p90/p95/p99 [Memory Rule 3.6, Feature #7]
+│   │
+│   ├── plugins/                                 # SCALABLE PLUGINS (Plug-and-play feature modules)
+│   │   ├── traffic_modes/                       # Concurrency patterns
+│   │   │   ├── step_ramp.py                     # Step-by-Step capacity finder [Feature #2]
+│   │   │   ├── sudden_rush.py                   # Sudden rush / users-per-sec mode [Feature #2]
+│   │   │   └── steady_crowd.py                  # Steady crowd sustained load mode [Feature #2]
+│   │   ├── request_builders/                    # HTTP payload generators
+│   │   │   ├── basic_http.py                    # GET/POST/PUT/DELETE API tester [Feature #3]
+│   │   │   ├── cache_buster.py                  # {{random_int}} and {{uuid}} randomizer [Feature #4]
+│   │   │   └── multi_step_flow.py               # 2-3 step chained login flows [Feature #5]
+│   │   ├── breakers_and_detectors/              # Safety circuit breakers & detectors
+│   │   │   ├── server_5xx_breaker.py            # Consecutive 5xx crash breaker [Feature #11]
+│   │   │   ├── waf_429_breaker.py               # 429/403 firewall blocker [Feature #11]
+│   │   │   ├── latency_breaker.py               # Slowdown & timeout breaker [Feature #11]
+│   │   │   └── cdn_detector.py                  # >50% CDN cache HIT detector [Feature #12]
+│   │   ├── verifiers/                           # Domain ownership verification
+│   │   │   ├── dns_txt_verifier.py              # DNS TXT record challenge verifier [Feature #9]
+│   │   │   └── guard_file_verifier.py           # 2-in-1 pusher_guard middleware verifier [Feature #9]
+│   │   └── advisors_and_exporters/              # Post-test analysis and reporting
+│   │       ├── english_advisor.py               # Plain English diagnosis & recommendations [Feature #6]
+│   │       └── csv_exporter.py                  # Zero-memory streaming CSV export
+│   │
+│   └── main.py                                  # FastAPI app entrypoint
+│
+└── frontend/                                    # REACT + VITE + TAILWIND CSS DASHBOARD
+    ├── index.html
+    ├── vite.config.js
+    └── src/
+        ├── core_ui/                             # ALWAYS-ON FOUNDATION CONTROLS
+        │   ├── EmergencyStopButton.jsx          # Big Red <200ms Kill Switch [Feature #8]
+        │   ├── SystemHealthBar.jsx              # CPU lag monitor & memory meter [Feature #13]
+        │   ├── apiClient.js                     # REST API client
+        │   └── telemetrySocket.js               # WebSocket live telemetry consumer
+        ├── features/                            # MODULAR FEATURE COMPONENTS
+        │   ├── verification_wizard/             # Domain verification & 2-in-1 guard modal [Feature #9]
+        │   ├── traffic_config/                  # Traffic mode selector & safe start controls [Feature #1, #2]
+        │   ├── api_tester_drawer/               # Custom headers, body & cache buster toggles [Feature #3, #4, #5]
+        │   ├── live_dashboard/                  # Real-time speed & latency percentile graphs [Feature #7]
+        │   └── diagnostics_advisor/             # Plain English error advisor banner [Feature #6, #11, #12]
+        ├── App.jsx                              # Root view combining core_ui and active features
+        └── main.jsx
 ```
 
 > **STRICT RULE**: No test scripts, prototypes, or mock servers may be placed in the project root or source folders. They must stay strictly inside `supporting files/testing/`.
+
+---
+
+### How to Add Future Features in 1 File (Zero Core Edits)
+
+With this architecture, adding a new feature never touches `backend/core/`. You simply create one new file in the appropriate `backend/plugins/` folder and register it with a decorator:
+
+```python
+# backend/plugins/traffic_modes/spike_test.py
+from core.plugin_registry import register_traffic_mode
+
+@register_traffic_mode(
+    name="spike_test",
+    display_title="Sudden Traffic Spike",
+    description="Surges load from 10 to 500 VUs in 2 seconds to test auto-scaling."
+)
+class SpikeTestMode:
+    async def generate_schedule(self, target_vus: int, duration_sec: int):
+        # Your custom spike calculation here
+        pass
+```
+
+On startup, `backend/core/plugin_registry.py` automatically discovers this file, registers it, and `GET /api/v1/plugins` automatically sends it to the React UI. The frontend dynamically renders the new mode in the traffic selector dropdown without any hardcoded changes!
 
 ---
 

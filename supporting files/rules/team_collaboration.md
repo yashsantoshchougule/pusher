@@ -18,9 +18,11 @@ PART 1: GIT COLLABORATION (SEPARATE BRANCHES -> PULL REQUEST -> MAIN)
 
     PARTNER 1 (Laptop 1)                              PARTNER 2 (Laptop 2)
   [ branch: backend-dev ]                            [ branch: frontend-dev ]
-  • Owns: backend/                                   • Owns: frontend/
-  • Owns: testing/prototypes/                        • Owns: testing/mocks/
-  • Owns: testing/benchmarks/                        • Owns: UI & Live Charts
+  • Owns: backend/core/                              • Owns: frontend/src/core_ui/
+  • Owns: backend/plugins/                           • Owns: frontend/src/features/
+  • Owns: backend/api/                               • Owns: testing/mocks/ (Laptop 2)
+  • Owns: testing/prototypes/                        • Owns: UI Dashboard & Live Charts
+  • Owns: testing/benchmarks/ & unit/                • Owns: Verification Wizard Modal
             │                                                  │
             │ Manual commit & push                             │ Manual commit & push
             ▼                                                  ▼
@@ -57,8 +59,8 @@ To make Git merge conflicts virtually impossible, our repository is divided into
 
 | Partner | Role | Folders Exclusively Owned | Allowed Responsibilities |
 | :--- | :--- | :--- | :--- |
-| **Partner 1** | Backend, Security & Engine | • `backend/`<br>• `supporting files/testing/prototypes/`<br>• `supporting files/testing/benchmarks/`<br>• `supporting files/testing/unit/` | • Fast asynchronous HTTP socket pool (`aiohttp`)<br>• Domain ownership verifier & DNS pinning<br>• 2-in-1 Pusher Guard template generator & `X-Pusher-Bypass` header injection<br>• 3 Safety circuit breakers<br>• Memory management (<250MB RAM) |
-| **Partner 2** | Frontend UI & Mock Targets | • `frontend/`<br>• `supporting files/testing/mocks/` | • React + Tailwind CSS dashboard<br>• Live speed & latency charts (Chart.js)<br>• Big Red `<200ms` Emergency Stop button<br>• Verification wizard UI with "Download 2-in-1 Pusher Guard" button & instructions modal<br>• Standalone mock target servers for Laptop 2 |
+| **Partner 1** | Backend, Security & Engine | • `backend/core/`<br>• `backend/plugins/`<br>• `backend/api/`<br>• `supporting files/testing/prototypes/`<br>• `supporting files/testing/benchmarks/`<br>• `supporting files/testing/unit/` | • Engine core (`socket_pool.py`, `stream_reader.py`, `orchestrator.py`)<br>• Scalable plugins (`traffic_modes/`, `breakers_and_detectors/`, `verifiers/`)<br>• Domain ownership verifier & safe DNS pinning<br>• 2-in-1 Pusher Guard generator & `X-Pusher-Bypass` header injection<br>• Safety circuit breakers & CPU lag monitor |
+| **Partner 2** | Frontend UI & Mock Targets | • `frontend/src/core_ui/`<br>• `frontend/src/features/`<br>• `supporting files/testing/mocks/` | • React + Tailwind CSS dashboard (`core_ui/` & `features/`)<br>• Live speed & latency charts (`live_dashboard/`)<br>• Big Red `<200ms` Emergency Stop button (`core_ui/EmergencyStopButton.jsx`)<br>• Verification wizard UI with "Download 2-in-1 Pusher Guard" modal<br>• Standalone mock target servers for Laptop 2 (`server_200_ok.py`, etc.) |
 
 #### Shared Files Rule:
 * Neither partner may edit files in the other partner's directory without discussing it first.
@@ -69,13 +71,16 @@ To make Git merge conflicts virtually impossible, our repository is divided into
 ### Rule 2: The "API Contract First" Rule (Connecting Frontend & Backend)
 Before Partner 1 writes backend code or Partner 2 builds UI components, both partners must agree on the exact data format exchanged between `frontend/` and `backend/`.
 
+> **FROZEN CORE CONTRACTS**: All REST request/response bodies and WebSocket telemetry frames are formally defined and locked inside **`backend/core/contracts.py`** using Pydantic models. Any change to a key name or field type must be coordinated between both partners before `contracts.py` is modified.
+
 #### A. Standard REST Endpoints Contract:
-1. `POST /api/v1/verify/dns` — Submits target domain to verify via DNS TXT record.
-2. `POST /api/v1/verify/http` — Submits target domain to verify via `/.well-known/pusher-challenge.txt`.
-3. `GET /api/v1/verify/guard-template?lang=python|node` — Generates and downloads the pre-configured 2-in-1 `pusher_guard.py` (FastAPI/Flask) or `pusherGuard.js` (Express) file with verification token & HMAC bypass key embedded.
-4. `POST /api/v1/test/start` — Starts load test with parameters `{ target_url, vus, duration_sec, mode }`. Returns `{ test_id, status }`.
-5. `POST /api/v1/test/stop` — Instant Emergency Stop signal. Stops all tasks in `< 200ms`.
-6. `GET /api/v1/test/status` — Checks current engine state (`IDLE`, `QUEUED`, `RUNNING`).
+1. `GET /api/v1/plugins` — Returns list of active traffic modes, request builders, and breakers from `backend/core/plugin_registry.py` so the React UI populates dropdowns and toggles dynamically.
+2. `POST /api/v1/verify/dns` — Submits target domain to verify via DNS TXT record.
+3. `POST /api/v1/verify/http` — Submits target domain to verify via static `/.well-known/pusher-challenge.txt`.
+4. `POST /api/v1/verify/middleware` (or `GET /api/v1/verify/guard-template?lang=python|node`) — Returns the downloadable 2-in-1 `pusher_guard.py` (FastAPI/Flask) or `pusherGuard.js` (Express) file with verification token & HMAC bypass key embedded.
+5. `POST /api/v1/test/start` — Starts load test with parameters `{ target_url, vus, duration_sec, mode }`. Returns `{ test_id, status }`.
+6. `POST /api/v1/test/stop` — Instant Emergency Stop signal. Stops all tasks in `< 200ms`.
+7. `GET /api/v1/test/status` — Checks current engine state (`IDLE`, `QUEUED`, `RUNNING`).
 
 #### B. The 1-Second WebSocket / SSE Live Telemetry Contract:
 Every second during an active test, the backend sends this exact JSON message to the frontend:
@@ -137,11 +142,11 @@ To guarantee human control and clean code history:
    ```
 3. **Stage Only Your Owned Folder**:
    ```bash
-   # Partner 1:
-   git add backend/ supporting\ files/testing/prototypes/
+   # Partner 1 (Backend, Plugins, Tests):
+   git add backend/ "supporting files/testing/prototypes/" "supporting files/testing/benchmarks/" "supporting files/testing/unit/"
    
-   # Partner 2:
-   git add frontend/ supporting\ files/testing/mocks/
+   # Partner 2 (Frontend UI, Mocks):
+   git add frontend/ "supporting files/testing/mocks/"
    ```
 4. **Manual Descriptive Commit**:
    ```bash

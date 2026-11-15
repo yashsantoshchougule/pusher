@@ -54,10 +54,10 @@ Value: pusher-verify=...   1. Auto-serves verify route       (For static Jamstac
 
 ---
 
-### Method B: The "2-in-1 Pusher Guard Middleware File" (Recommended for Dynamic Backends)
+### Method B: The "2-in-1 Pusher Guard Middleware File" [Feature #9] (`guard_file_verifier.py`)
 When testing a dynamic web application (built with FastAPI, Flask, Express, Django, etc.), developers face a common frustration: **their own in-app rate limiters** block the load test after 50 to 100 requests with `HTTP 429 Too Many Requests`.
 
-To solve this, Pusher provides a downloadable **2-in-1 Server Middleware File** (`pusher_guard.py` for Python or `pusherGuard.js` for Node.js).
+To solve this, Pusher's verifier plugin (`backend/plugins/verifiers/guard_file_verifier.py`) provides a downloadable **2-in-1 Server Middleware File** (`pusher_guard.py` for Python or `pusherGuard.js` for Node.js).
 
 #### Why a Backend File Beats a Public `.txt` File:
 * A public `.txt` file can be opened by anyone in a browser, so you can **never** put a secret rate-limit bypass key inside it.
@@ -142,6 +142,29 @@ function setupPusherGuard(app) {
 
 module.exports = { setupPusherGuard };
 ```
+
+#### Cloudflare Edge WAF: The 1-Step WAF Skip Rule
+If your website is behind Cloudflare's free proxy, Cloudflare's edge firewall may block Pusher's high-speed traffic with `429 Too Many Requests` or `403 Forbidden` before the request even reaches your origin server.
+
+To test your real backend through Cloudflare without tripping edge firewalls, configure this 100% free **Cloudflare WAF Skip Rule**:
+
+```
+Step 1: Open your Cloudflare Dashboard -> Go to "Security" -> "WAF" -> "Custom Rules".
+Step 2: Click "Create Rule".
+        • Rule Name: Pusher Load Test Bypass
+        • Field: Header
+        • Header name: x-pusher-bypass
+        • Operator: equals
+        • Value: <YOUR_PUSHER_BYPASS_SECRET>
+Step 3: Under "Choose action", select: "Skip".
+        • Check "All remaining custom rules".
+        • Check "Rate limiting".
+        • Check "Managed rules (WAF)".
+Step 4: Click "Deploy".
+```
+
+> [!TIP]
+> **Post-Test Security**: Once you finish your load testing session, simply toggle this rule to **OFF** in your Cloudflare dashboard to re-engage full edge DDoS and firewall protection.
 
 ---
 

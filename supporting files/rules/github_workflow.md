@@ -29,10 +29,12 @@ Pusher is built by a 2-person team. To prevent merge conflicts and stepping on e
                   │                                       │
         [ branch: backend-dev ]                 [ branch: frontend-dev ]
               (Partner 1)                             (Partner 2)
-  • backend/ (FastAPI & Engine)               • frontend/ (React & Tailwind UI)
-  • supporting files/testing/prototypes/      • supporting files/testing/mocks/ (Laptop 2)
-  • supporting files/testing/benchmarks/      • Real-time Live Charts & Emergency Stop
-  • SSRF & Domain Verification                • Telemetry WebSocket Consumer
+  • backend/core/ (Frozen Engine Core)        • frontend/src/core_ui/ (Always-on Controls)
+  • backend/plugins/ (Pluggable Features)     • frontend/src/features/ (Modular UI Cards)
+  • backend/api/ (REST & WebSocket)           • supporting files/testing/mocks/ (Laptop 2)
+  • supporting files/testing/prototypes/      • Live Speed & Latency Percentile Charts
+  • supporting files/testing/benchmarks/      • Big Red Emergency Stop Button (<200ms)
+  • SSRF Blocker & Safe DNS Pinning           • Verification Wizard Modal & Forms
 ```
 
 > **Detailed Collaboration Rules**: See [`team_collaboration.md`](file:///c:/yash/projects/pusher/supporting%20files/rules/team_collaboration.md) for full folder ownership boundaries, API contracts, environment setup, and the 2-laptop Wi-Fi testing protocol.
@@ -41,8 +43,8 @@ Pusher is built by a 2-person team. To prevent merge conflicts and stepping on e
 
 | Team Member | Git Branch | Primary Folders Owned | Key Tasks |
 | :--- | :--- | :--- | :--- |
-| **Partner 1** | `backend-dev` | `backend/`<br>`supporting files/testing/prototypes/`<br>`supporting files/testing/benchmarks/`<br>`supporting files/testing/unit/` | • Async load generation engine (`aiohttp`)<br>• Domain verification & DNS pinning<br>• 3 Safety circuit breakers<br>• RAM & socket efficiency |
-| **Partner 2** | `frontend-dev`| `frontend/`<br>`supporting files/testing/mocks/` | • React UI & Tailwind layout<br>• Live charts (RPS, latency percentiles)<br>• Big Red Emergency Stop button<br>• Mock servers for Laptop 2 |
+| **Partner 1** | `backend-dev` | • `backend/core/`<br>• `backend/plugins/`<br>• `backend/api/`<br>• `supporting files/testing/prototypes/`<br>• `supporting files/testing/benchmarks/`<br>• `supporting files/testing/unit/` | • Engine core (`socket_pool.py`, `stream_reader.py`, `orchestrator.py`)<br>• Scalable plugins (`traffic_modes/`, `breakers_and_detectors/`, `verifiers/`)<br>• Domain verification & safe DNS pinning<br>• 2-in-1 Pusher Guard generator & `X-Pusher-Bypass` injection<br>• Safety circuit breakers & RAM efficiency (<250MB) |
+| **Partner 2** | `frontend-dev`| • `frontend/src/core_ui/`<br>• `frontend/src/features/`<br>• `supporting files/testing/mocks/` | • React + Tailwind UI layout (`core_ui/` & `features/`)<br>• Live charts (RPS, latency percentiles `p50`–`p99`)<br>• Big Red Emergency Stop button (`<200ms`)<br>• Verification wizard UI with 2-in-1 guard download modal<br>• Mock test servers for Laptop 2 |
 
 ---
 
@@ -98,16 +100,16 @@ Avoid blind staging (`git add .` or `git add -A`) so you never accidentally comm
 **For Partner 1 (Backend)**:
 ```bash
 git add backend/
-git add supporting\ files/rules/
-git add supporting\ files/testing/prototypes/
-git add supporting\ files/testing/benchmarks/
-git add supporting\ files/testing/unit/
+git add "supporting files/rules/"
+git add "supporting files/testing/prototypes/"
+git add "supporting files/testing/benchmarks/"
+git add "supporting files/testing/unit/"
 ```
 
 **For Partner 2 (Frontend)**:
 ```bash
 git add frontend/
-git add supporting\ files/testing/mocks/
+git add "supporting files/testing/mocks/"
 ```
 
 #### What If You Accidentally Staged a Secret File?
