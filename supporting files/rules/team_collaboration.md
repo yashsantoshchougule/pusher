@@ -1,77 +1,76 @@
-# Team Collaboration & 2-Person Development Rules
+# Team Collaboration & Development Standards
 
-## 1. Overview & Team Mission
-This document defines how our 2-person development team works together on **Pusher**. 
+## 1. Overview & Collaboration Philosophy
+This document defines how developers collaborate on **Pusher** to build a high-performance, beginner-friendly web load testing engine.
 
-Building a high-performance load tester as a 2-person team requires clear boundaries. Without strict rules, teammates accidentally edit the same files, cause stressful Git merge conflicts, break frontend-backend connections, or get misleading load-test numbers by running everything on a single laptop.
+Whether working as a solo engineer or in a distributed team, maintaining strict modularity prevents merge conflicts, protects API stability between frontend and backend, and keeps load-testing benchmarks accurate without spending money on cloud servers.
 
-Following these 6 rules ensures zero merge conflicts, reliable code, and smooth teamwork with **₹0 spent** on paid tools or cloud servers.
+Task distribution and branch assignments are managed flexibly by the developer or project lead based on active milestones, adhering to the standards outlined below.
 
 ---
 
-## 2. Master ASCII Diagram: Team Workflow & Wi-Fi Testing
+## 2. Master Diagram: Git Feature Workflow & Local Mock Testing
 
 ```
 ========================================================================================
-PART 1: GIT COLLABORATION (SEPARATE BRANCHES -> PULL REQUEST -> MAIN)
+PART 1: GIT FEATURE BRANCH WORKFLOW (FEATURE BRANCHES -> PULL REQUEST -> MAIN)
 ========================================================================================
 
-    PARTNER 1 (Laptop 1)                              PARTNER 2 (Laptop 2)
-  [ branch: backend-dev ]                            [ branch: frontend-dev ]
-  • Owns: backend/core/                              • Owns: frontend/src/core_ui/
-  • Owns: backend/plugins/                           • Owns: frontend/src/features/
-  • Owns: backend/api/                               • Owns: testing/mocks/ (Laptop 2)
-  • Owns: testing/prototypes/                        • Owns: UI Dashboard & Live Charts
-  • Owns: testing/benchmarks/ & unit/                • Owns: Verification Wizard Modal
-            │                                                  │
-            │ Manual commit & push                             │ Manual commit & push
-            ▼                                                  ▼
-   origin/backend-dev                                 origin/frontend-dev
-            │                                                  │
-            └───────────────► GitHub Pull Request ◄────────────┘
-                              (Peer Review & Approval)
-                                         │
-                                         ▼
-                                   [ main Branch ]
-                         (Always working, tested code)
+    DEVELOPER WORKSPACE                               TEAM REPOSITORY
+  [ feature/<feature-name> ]                         [ origin/feature/<name> ]
+  • Flexible task assignment                                 │
+  • Modular subsystems (backend, frontend)                   │
+  • Testing exclusively in supporting files/testing/        │ Manual commit & push
+            │                                                ▼
+            └─────────────────────────────────────► GitHub Pull Request
+                                                    (Code Review & Automated Checks)
+                                                               │
+                                                               ▼
+                                                         [ main Branch ]
+                                                  (Always working, tested code)
 
 ========================================================================================
-PART 2: LIVE WI-FI LOAD TESTING (LAPTOP 1 TESTS LAPTOP 2 OVER LOCAL WI-FI)
+PART 2: LOCAL DEVELOPMENT & MOCK TARGET TESTING (PUSHER_MODE=local_dev)
 ========================================================================================
 
-┌───────────────────────────────────────┐         Local Wi-Fi Network         ┌───────────────────────────────────────┐
-│               LAPTOP 1                │         (e.g., 192.168.1.x)         │               LAPTOP 2                │
-│       [ The Load Test Runner ]        │ ──────────────────────────────────> │         [ The Target Server ]         │
-│                                       │   HTTP Load Traffic (Async I/O)     │                                       │
-│ • Runs Pusher Backend & Web UI        │                                     │ • Runs Mock Target Servers (Mocks)    │
-│ • RTX 4050 / 16GB RAM / 512GB SSD     │                                     │ • 16GB RAM / 512GB SSD Laptop         │
-│ • RAM kept < 250MB for 1,000 VUs      │ <────────────────────────────────── │ • Listens on 0.0.0.0:8080             │
-│ • PUSHER_MODE=local_dev               │        Live HTTP Responses          │ • Unaffected by Pusher CPU load       │
-└───────────────────────────────────────┘                                     └───────────────────────────────────────┘
+┌───────────────────────────────────────┐         Local Loopback / Network        ┌───────────────────────────────────────┐
+│         PUSHER LOAD RUNNER            │         (localhost / LAN IP)            │          MOCK TARGET SERVER           │
+│                                       │ ──────────────────────────────────────> │                                       │
+│ • Pusher Web UI (React + Vite)        │       HTTP Load Traffic (Async I/O)     │ • mock_target_server.py               │
+│ • FastAPI Backend (Python Async)      │                                         │ • Listens on 0.0.0.0:8080             │
+│ • RAM kept < 250MB for 1,000 VUs      │ <────────────────────────────────────── │ • Returns 200 OK, 5xx, or 429 WAF     │
+│ • PUSHER_MODE=local_dev               │          Live HTTP Responses            │ • Independent port or local host      │
+└───────────────────────────────────────┘                                         └───────────────────────────────────────┘
 ```
 
 ---
 
-## 3. The 6 Core Team Collaboration Rules
+## 3. The 6 Core Development Rules
 
-### Rule 1: Strict Role & Folder Ownership (Zero Merge Conflict Rule)
-To make Git merge conflicts virtually impossible, our repository is divided into strict physical territories:
+### Rule 1: Modular Subsystems & Flexible Task Distribution
+To prevent merge conflicts and maintain clean separation of concerns, the repository is organized into three decoupled subsystems:
 
-| Partner | Role | Folders Exclusively Owned | Allowed Responsibilities |
-| :--- | :--- | :--- | :--- |
-| **Partner 1** | Backend, Security & Engine | • `backend/core/`<br>• `backend/plugins/`<br>• `backend/api/`<br>• `supporting files/testing/prototypes/`<br>• `supporting files/testing/benchmarks/`<br>• `supporting files/testing/unit/` | • Engine core (`socket_pool.py`, `stream_reader.py`, `orchestrator.py`)<br>• Scalable plugins (`traffic_modes/`, `breakers_and_detectors/`, `verifiers/`)<br>• Domain ownership verifier & safe DNS pinning<br>• 2-in-1 Pusher Guard generator & `X-Pusher-Bypass` header injection<br>• Safety circuit breakers & CPU lag monitor |
-| **Partner 2** | Frontend UI & Mock Targets | • `frontend/src/core_ui/`<br>• `frontend/src/features/`<br>• `supporting files/testing/mocks/` | • React + Tailwind CSS dashboard (`core_ui/` & `features/`)<br>• Live speed & latency charts (`live_dashboard/`)<br>• Big Red `<200ms` Emergency Stop button (`core_ui/EmergencyStopButton.jsx`)<br>• Verification wizard UI with "Download 2-in-1 Pusher Guard" modal<br>• Standalone mock target servers for Laptop 2 (`mock_target_server.py`) |
+1. **Backend & Engine Subsystem**:
+   - `backend/core/` (Frozen Core: socket pools, streaming reader, queue lock, circuit breaker orchestration, contracts).
+   - `backend/plugins/` (Scalable extensions: traffic modes, request builders, safety breakers, domain verifiers, diagnostic advisors).
+   - `backend/api/` (REST endpoints and WebSocket live telemetry publisher).
+2. **Frontend UI Subsystem**:
+   - `frontend/src/core_ui/` (Always-on controls: Emergency Stop button, system health bar, network clients).
+   - `frontend/src/features/` (Modular UI cards: verification wizard, traffic config panel, API tester drawer, live telemetry charts, diagnostic banners).
+3. **Testing & Quality Subsystem**:
+   - `supporting files/testing/` (Exclusive repository for mock target servers, async engine prototypes, memory benchmarks, and unit tests).
 
-#### Shared Files Rule:
-* Neither partner may edit files in the other partner's directory without discussing it first.
-* All test scripts, mock endpoints, and benchmarks must stay strictly inside `supporting files/testing/`. No test scripts are allowed in project root or source folders.
+> **Flexible Ownership Rule**: Task distribution, file editing, and branch assignments are assigned flexibly by the developer or project lead. No files or directories are permanently locked to any single person. However, developers must coordinate before modifying cross-cutting interfaces (such as `contracts.py` or shared styles).
+
+#### Shared Testing Rule:
+* All test scripts, mock endpoints, prototypes, and benchmarks must stay strictly inside `supporting files/testing/`. No testing code is allowed in the project root or production source directories.
 
 ---
 
 ### Rule 2: The "API Contract First" Rule (Connecting Frontend & Backend)
-Before Partner 1 writes backend code or Partner 2 builds UI components, both partners must agree on the exact data format exchanged between `frontend/` and `backend/`.
+Before implementing backend features or building frontend UI components, developers must agree on the exact data schema exchanged between `frontend/` and `backend/`.
 
-> **FROZEN CORE CONTRACTS**: All REST request/response bodies and WebSocket telemetry frames are formally defined and locked inside **`backend/core/contracts.py`** using Pydantic models. Any change to a key name or field type must be coordinated between both partners before `contracts.py` is modified.
+> **FROZEN CORE CONTRACTS**: All REST request/response schemas and WebSocket telemetry frames are formally defined and locked inside **`backend/core/contracts.py`** using Pydantic models. Any change to a key name or field type must be coordinated before `contracts.py` is updated so frontend dashboards never break unexpectedly.
 
 #### A. Standard REST Endpoints Contract:
 1. `GET /api/v1/plugins` — Returns list of active traffic modes, request builders, and breakers from `backend/core/plugin_registry.py` so the React UI populates dropdowns and toggles dynamically.
@@ -110,13 +109,11 @@ Every second during an active test, the backend sends this exact JSON message to
 }
 ```
 
-> **IMPORTANT**: If Partner 1 needs to rename or change a JSON key, they must notify Partner 2 **before** committing the change so the frontend charts do not break!
-
 ---
 
-### Rule 3: 2-Person Manual Git & Branching Workflow
-To guarantee human control and clean code history:
-* **The AI assistant is 100% forbidden from executing `git commit`, `git merge`, `git rebase`, or `git push`.** All Git commands are typed manually by the human partners.
+### Rule 3: Manual Git & Feature Branching Protocol
+To guarantee complete human control and clean code history:
+* **The AI assistant is 100% forbidden from executing `git commit`, `git merge`, `git rebase`, or `git push`.** All Git commands are typed manually by human developers.
 
 ```
        [ main Branch ] (Protected: Only tested, working code)
@@ -124,93 +121,84 @@ To guarantee human control and clean code history:
               │ Pull Request (Review & Merge)
        ┌──────┴──────┐
        │             │
-  backend-dev   frontend-dev
-  (Partner 1)   (Partner 2)
+  feature/auth   feature/dashboard (Feature Branches)
 ```
 
-#### Daily Step-by-Step Sync Protocol:
-1. **Start of Work (Sync with Main)**:
+#### Step-by-Step Feature Workflow:
+1. **Create / Sync Branch with Main**:
    ```bash
-   # On your laptop:
-   git checkout backend-dev   # (or frontend-dev for Partner 2)
+   git checkout main
    git pull origin main
+   git checkout -b feature/<feature-name>
    ```
 2. **Inspect Changes**:
    ```bash
    git status
    git diff
    ```
-3. **Stage Only Your Owned Folder**:
+3. **Stage Changes Explicitly**:
+   Avoid `git add .` to prevent accidentally staging temporary logs or secrets:
    ```bash
-   # Partner 1 (Backend, Plugins, Tests):
-   git add backend/ "supporting files/testing/prototypes/" "supporting files/testing/benchmarks/" "supporting files/testing/unit/"
-   
-   # Partner 2 (Frontend UI, Mocks):
-   git add frontend/ "supporting files/testing/mocks/"
+   git add backend/
+   # or
+   git add frontend/
+   # or
+   git add "supporting files/testing/"
    ```
 4. **Manual Descriptive Commit**:
    ```bash
    git commit -m "feat(backend): add consecutive 5xx error counter to circuit breaker"
    ```
-5. **Push to Your Branch**:
+5. **Push Feature Branch & Open PR**:
    ```bash
-   git push origin backend-dev   # (or frontend-dev)
+   git push origin feature/<feature-name>
    ```
-6. **Merging to Main via Pull Request**:
-   * Open a Pull Request (PR) on GitHub from your branch to `main`.
-   * The other partner reviews the PR and approves it.
-   * Merge cleanly into `main`.
+   Open a Pull Request on GitHub to merge into `main` after review and test verification.
 
 ---
 
-### Rule 4: Two-Laptop Hardware & Wi-Fi Testing Protocol
-Our team uses two standard laptops:
-* **Hardware Specs**: Both laptops have 16GB RAM and 512GB SSD (one laptop features an NVIDIA RTX 4050 GPU, which is left free for other tasks since Pusher uses lightweight async CPU/network I/O).
+### Rule 4: Local Development & Mock Target Testing (`PUSHER_MODE=local_dev`)
+Developers do not need live public domains, paid cloud accounts, or third-party DNS to develop and test Pusher.
 
-#### The Wi-Fi Test Setup:
-Running the load generator and the target server on the same laptop causes CPU contention and produces distorted latency numbers. We solve this by splitting duties across laptops over local Wi-Fi:
-
-1. **Connect to Same Network**: Both laptops connect to the same home Wi-Fi network or a phone mobile hotspot.
-2. **Laptop 2 (Target Server)**:
-   * Finds its local IP address (e.g., `ipconfig` on Windows shows `192.168.1.50`).
-   * Starts the mock target server from `supporting files/testing/mocks/`:
-     ```bash
-     python supporting\ files/testing/mocks/mock_target_server.py
-     ```
-   * Listens on `0.0.0.0:8080`.
-3. **Laptop 1 (Pusher Tester)**:
-   * Sets `PUSHER_MODE=local_dev` in its `.env` file.
-   * Starts the FastAPI backend and React frontend.
-   * Enters the target URL: `http://192.168.1.50:8080`.
-   * Clicks **Start Test**.
-4. **Result**: Realistic network testing with zero cloud server costs, zero DNS delays, and independent CPU monitoring.
+#### The Local Mock Target Setup:
+1. **Start Mock Target Server**:
+   Start the standalone mock target server from `supporting files/testing/mocks/`:
+   ```bash
+   python "supporting files/testing/mocks/mock_target_server.py"
+   ```
+   This server listens on `0.0.0.0:8080` and provides simulated responses (fast 200 OK, crashing 500s, 429 rate limits, and latency spikes).
+2. **Configure Pusher for Local Testing**:
+   Ensure `PUSHER_MODE=local_dev` in your `.env` file. In this mode, Pusher automatically allows tests against local addresses (`localhost`, `127.0.0.1`, and private subnet IPs) without requiring DNS TXT records.
+3. **Run Load Test**:
+   Target `http://localhost:8080` (or `http://<local-ip>:8080` if running on another machine over the local network) from the Pusher UI.
+4. **Result**: Realistic, non-blocking network testing with zero cloud costs, zero DNS delays, and zero external firewall interference.
 
 ---
 
-### Rule 5: Shared Environment & Setup Rules
-To prevent the classic "it works on my laptop but crashes on yours" dilemma:
-1. **Identical Runtime Versions**:
-   * **Python**: Python 3.11+ on both laptops.
-   * **Node.js**: Node 18+ LTS on both laptops.
+### Rule 5: Shared Environment & Dependency Standards
+To prevent "works on my machine" inconsistencies across development environments:
+1. **Standard Runtime Versions**:
+   * **Python**: Python 3.11+
+   * **Node.js**: Node 18+ LTS
 2. **Locking Dependencies Immediately**:
-   * Whenever Partner 1 installs a new Python library, they must immediately update `backend/requirements.txt`:
+   * Whenever adding a Python package, immediately update `backend/requirements.txt`:
      ```bash
      pip freeze > backend/requirements.txt
      ```
-   * Whenever Partner 2 installs a new npm package, they must ensure it is saved in `frontend/package.json`:
+   * Whenever adding an npm package, ensure it is saved in `frontend/package.json`:
      ```bash
      npm install <package> --save
      ```
 3. **Environment Security**:
    * Never commit `.env`, `.env.local`, `node_modules/`, `venv/`, or log files to Git.
-   * Keep a clear, sanitized template file named `.env.example` in the project root so both teammates know what variables are required.
+   * Maintain a clean, sanitized `.env.example` in the project root documenting all required configuration variables.
 
 ---
 
-### Rule 6: AI Assistant Rules for Both Teammates
-Both teammates use AI coding tools on their laptops. To ensure both AI instances follow the exact same architecture:
-1. **Context Loading**: Before asking an AI assistant to write or modify code on either laptop, the developer must instruct the AI to read all Markdown files in `supporting files/rules/`.
+### Rule 6: AI Assistant Governance
+When utilizing AI assistants for coding and refactoring:
+1. **Context Loading**: Instruct the AI to read the rules in `supporting files/rules/` before writing or modifying code.
 2. **Strict Prohibitions for AI**:
    * The AI is strictly forbidden from importing or installing heavy headless browser automation packages (Puppeteer, Playwright, Selenium).
    * The AI is strictly forbidden from creating test scripts or mock files anywhere outside `supporting files/testing/`.
-   * The AI is strictly forbidden from running `git commit`, `git merge`, `git rebase`, or `git push`. All Git actions must be executed manually by human hands.
+   * The AI is strictly forbidden from executing `git commit`, `git merge`, `git rebase`, or `git push`. All Git actions must be executed manually by human hands.

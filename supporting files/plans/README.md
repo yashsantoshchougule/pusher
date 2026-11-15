@@ -24,6 +24,7 @@ plan_<feature_or_component_description>.md
 
 | Plan File | Purpose & Scope |
 | :--- | :--- |
+| [`plan_remove_hardcoded_roles_and_refactor_local_testing.md`](plan_remove_hardcoded_roles_and_refactor_local_testing.md) | Removes hardcoded 2-person and 2-laptop roles, establishes flexible team ownership and local mock server testing (`PUSHER_MODE=local_dev`). |
 | [`plan_exact_scalable_blueprint_alignment.md`](plan_exact_scalable_blueprint_alignment.md) | Exact alignment of all 5 rule files to the finalized Scalable Core + Plugin architecture blueprint. |
 | [`plan_scalable_core_and_plugin_architecture.md`](plan_scalable_core_and_plugin_architecture.md) | Scalable Core + Plugin architecture blueprint with exact feature and memory rule mappings. |
 | [`plan_2in1_pusher_guard_middleware_upgrade.md`](plan_2in1_pusher_guard_middleware_upgrade.md) | 2-in-1 `pusher_guard.py` / `pusherGuard.js` middleware and Cloudflare WAF skip rules. |

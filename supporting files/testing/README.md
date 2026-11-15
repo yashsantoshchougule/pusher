@@ -1,9 +1,9 @@
-# Testing Directory Guidelines & 2-Laptop Test Manual
+# Testing Directory Guidelines & Local Mock Testing Manual
 
 ## 1. Purpose of This Directory
 This directory is the **exclusive, mandatory location** for all testing artifacts:
 * Test scripts (unit, integration, and security tests)
-* Mock target server endpoints for Laptop 2
+* Mock target server endpoints
 * Load engine prototypes and architectural spikes
 * Memory and performance benchmark experiments 
 
@@ -15,7 +15,7 @@ This directory is the **exclusive, mandatory location** for all testing artifact
 
 ```
 supporting files/testing/
-├── mocks/          # Mock HTTP servers running on Laptop 2:
+├── mocks/          # Mock HTTP target server:
 │                   #   • Fast 200 OK responses
 │                   #   • Cascading 5xx server crashes (for circuit breaker tests)
 │                   #   • 429 / WAF challenges (for rate limit detection tests)
@@ -30,31 +30,31 @@ supporting files/testing/
 
 ---
 
-## 3. How to Run Tests on the 2-Laptop Setup
+## 3. How to Run Tests Locally (`PUSHER_MODE=local_dev`)
 
-### Step A: Start Mock Target Server on Laptop 2
-Laptop 2 runs the mock target server that simulates real application conditions without needing the public internet:
+Developers can test Pusher locally without a live public domain or cloud hosting by using the standalone mock target server:
+
+### Step A: Start the Mock Target Server
+Run the standalone mock target server:
 
 ```bash
-# On Laptop 2:
-python supporting\ files/testing/mocks/mock_target_server.py
-# Binds to 0.0.0.0:8080 (Accessible via Wi-Fi IP, e.g., http://192.168.1.50:8080)
+python "supporting files/testing/mocks/mock_target_server.py"
+# Binds to 0.0.0.0:8080 (Accessible via localhost:8080 or LAN IP, e.g., http://192.168.1.50:8080)
 ```
 
-### Step B: Run Pusher on Laptop 1
-Laptop 1 connects over local Wi-Fi to Laptop 2 using `local_dev` mode:
+### Step B: Run Pusher in Local Dev Mode
+Configure and start the Pusher application:
 
 ```bash
-# On Laptop 1:
-# 1. Ensure PUSHER_MODE=local_dev in .env
+# 1. Ensure PUSHER_MODE=local_dev in your .env file
 # 2. Start Pusher backend & frontend
-# 3. Enter target URL: http://192.168.1.50:8080
+# 3. Enter target URL: http://localhost:8080 (or http://<LAN-IP>:8080)
 # 4. Click "Start Test"
 ```
 
 ---
 
 ## 4. Testing Protocols & Verification Standards
-1. **Safety Circuit Breaker Validation**: Confirm that when Laptop 2 simulates 5 consecutive 5xx errors or HTTP 429 responses, Laptop 1's engine halts within < 200ms.
+1. **Safety Circuit Breaker Validation**: Confirm that when the mock server simulates 5 consecutive 5xx errors or HTTP 429 responses, Pusher's engine halts within < 200ms.
 2. **RAM Profiling Protocol**: Run memory benchmarks to confirm that memory usage stays strictly within the `100MB–250MB` budget for 1,000 virtual users.
-3. **SSRF Unit Tests**: Run unit tests (`pytest supporting files/testing/unit/`) to verify that all private IP ranges and cloud metadata endpoints are blocked in production mode.
+3. **SSRF Unit Tests**: Run unit tests (`pytest "supporting files/testing/unit/"`) to verify that all private IP ranges and cloud metadata endpoints are blocked in production mode.

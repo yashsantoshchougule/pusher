@@ -224,9 +224,9 @@ Pusher uses a **Custom Async DNS Resolver** inside the HTTP client (`aiohttp.TCP
 
 ---
 
-## 5. The 2-Laptop Local Development Mode (`PUSHER_MODE=local_dev`)
+## 5. Local Development & Mock Target Mode (`PUSHER_MODE=local_dev`)
 
-When the 2 teammates are developing and testing Pusher locally on their home Wi-Fi network, Laptop 1 needs to send test traffic to Laptop 2 (`192.168.1.50:8080`).
+When developers are building, testing, or benchmarking Pusher locally, they can test against local mock targets (`127.0.0.1:8080`, `localhost:8080`, or local LAN IPs like `192.168.x.x:8080`) without setting up public DNS records.
 
 Pusher includes a simple environment toggle in `.env`:
 
@@ -236,13 +236,13 @@ PUSHER_MODE=local_dev
 ```
 
 * **`PUSHER_MODE=production` (Default)**:
-  * Strict security mode.
-  * Blocks all private IPs (`192.168.x.x`, `10.x.x.x`, `127.0.0.1`).
-  * Requires valid DNS TXT, Pusher Guard middleware, or HTTP file verification for every domain.
-* **`PUSHER_MODE=local_dev` (2-Laptop Team Mode)**:
-  * Designed for the 2 teammates testing on local Wi-Fi.
-  * Allows Laptop 1 to test Laptop 2's local IP address (`192.168.x.x:8080`) without public DNS records.
-  * **Strict Cloud Isolation**: Even in `local_dev` mode, link-local cloud metadata (`169.254.169.254`) is **always permanently blocked** so a local config can never compromise cloud secrets.
+  * Strict production security mode.
+  * Blocks all private IPs (`192.168.x.x`, `10.x.x.x`, `127.0.0.1`, `::1`).
+  * Requires valid DNS TXT, Pusher Guard middleware, or HTTP file verification for every tested domain.
+* **`PUSHER_MODE=local_dev` (Local & Mock Testing Mode)**:
+  * Designed for local development and running standalone mock target servers (`supporting files/testing/mocks/mock_target_server.py`).
+  * Allows testing `localhost`, `127.0.0.1`, and local network host IPs (`192.168.x.x:8080`) without public DNS TXT challenges.
+  * **Strict Cloud Isolation**: Even in `local_dev` mode, link-local cloud metadata (`169.254.169.254`) is **always permanently blocked** so local testing can never compromise cloud secrets or credentials.
 
 ---
 

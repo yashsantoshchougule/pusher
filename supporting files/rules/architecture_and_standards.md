@@ -7,41 +7,30 @@ Unlike heavy enterprise tools, Pusher is built to run smoothly on everyday hardw
 
 ---
 
-## 2. Project Hardware & The 2-Laptop Setup
+## 2. Consumer Hardware Efficiency & Local Mock Testing
 
-Pusher is built by a 2-person development team using standard consumer hardware:
-* **Developer Laptops**: Two standard laptops (16GB RAM, 512GB SSD each; one equipped with an NVIDIA RTX 4050).
-* **Zero Dedicated GPU Required**: Load generation uses asynchronous network I/O and lightweight CPU tasks, meaning no expensive GPUs or server farms are needed.
-* **Team Guidelines**: See [`team_collaboration.md`](file:///c:/yash/projects/pusher/supporting%20files/rules/team_collaboration.md) for full team division of labor, folder ownership, and API contract rules.
+Pusher is engineered to run with exceptional efficiency on everyday consumer hardware:
+* **Hardware Requirements**: Runs smoothly on standard computers and laptops (16GB RAM, 512GB SSD recommended, though even 8GB RAM systems handle tests with ease).
+* **Zero Dedicated GPU Required**: Load generation relies entirely on non-blocking asynchronous network I/O (`asyncio` and `aiohttp`) and lightweight event loops, meaning no GPUs, cloud compute clusters, or server farms are needed.
+* **Team Guidelines**: See [`team_collaboration.md`](file:///c:/yash/projects/pusher/supporting%20files/rules/team_collaboration.md) for architectural subsystem guidelines and API contracts.
 
-### The 2-Laptop Local Testing Setup
-When testing a load generator, running both the load tester and the target app on the exact same laptop causes them to fight for the same CPU and RAM. To prevent false results, the team uses a 2-laptop setup connected over the same local Wi-Fi network:
+### Local Development & Mock Target Testing (`PUSHER_MODE=local_dev`)
+When developing and testing Pusher itself, developers do not need a live public domain or paid cloud hosting. Pusher provides a dedicated local development mode:
 
 ```
-┌──────────────────────────────────────┐         Local Wi-Fi Network         ┌──────────────────────────────────────┐
-│               LAPTOP 1               │         (e.g., 192.168.1.x)         │               LAPTOP 2               │
-│         [ The Load Tester ]          │ ──────────────────────────────────> │         [ The Target App ]           │
-│                                      │   HTTP Load Traffic (Async I/O)     │                                      │
-│ • Pusher Web UI (React + Tailwind)   │                                     │ • Mock Test Servers (Mocks Folder)   │
-│ • FastAPI Backend (Python Async)     │ <────────────────────────────────── │ • Or Teammate's Real Web Application │
-│ • Real-time Metrics & Charts         │        Live HTTP Responses          │ • Independent CPU & RAM Monitoring   │
-└──────────────────────────────────────┘                                     └──────────────────────────────────────┘
+┌───────────────────────────────────────┐         Local Loopback / Network        ┌───────────────────────────────────────┐
+│         PUSHER LOAD RUNNER            │         (localhost / LAN IP)            │          MOCK TARGET SERVER           │
+│                                       │ ──────────────────────────────────────> │                                       │
+│ • Pusher Web UI (React + Tailwind)    │       HTTP Load Traffic (Async I/O)     │ • mock_target_server.py               │
+│ • FastAPI Backend (Python Async)      │                                         │ • Listens on 0.0.0.0:8080             │
+│ • RAM kept < 250MB for 1,000 VUs      │ <────────────────────────────────────── │ • Returns 200 OK, 5xx, or 429 WAF     │
+│ • PUSHER_MODE=local_dev               │          Live HTTP Responses            │ • Independent port or local host      │
+└───────────────────────────────────────┘                                         └───────────────────────────────────────┘
 ```
 
-* **Laptop 1 (Pusher Tester)**: Runs the React frontend dashboard and the FastAPI asynchronous load generation engine.
-* **Laptop 2 (Target Server)**: Runs the mock test endpoints (`supporting files/testing/mocks/`) or the small web app being tested.
-* **Benefit**: The load engine's CPU usage does not slow down the target website, giving realistic speed and capacity measurements for free.
-
-#### Local Wi-Fi Connection & Firewall Rule:
-* **Server Binding**: Laptop 2 must bind its mock server to `0.0.0.0` (all network interfaces) so Laptop 1 can reach it:
-  ```python
-  # Run mock server on Laptop 2
-  uvicorn.run(app, host="0.0.0.0", port=8080)
-  ```
-* **Windows Firewall Note**: If Windows Defender Firewall blocks incoming traffic on Laptop 2, allow port `8080` in Windows Security settings or run this simple PowerShell command as Administrator on Laptop 2:
-  ```powershell
-  New-NetFirewallRule -DisplayName "Pusher Test Port 8080" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
-  ```
+* **Standalone Mock Target**: Developers run `supporting files/testing/mocks/mock_target_server.py`, which binds to `0.0.0.0:8080`.
+* **Zero Fighting for Resources**: The mock server can be run on the same computer using a different port or on any other machine/VM across the local network.
+* **No DNS or Cloud Costs**: In `PUSHER_MODE=local_dev`, domain ownership verification is bypassed for local IP addresses (`127.0.0.1`, `localhost`, and local subnet IPs), allowing instant zero-cost testing.
 
 ---
 
@@ -102,7 +91,7 @@ Every technology used in Pusher is 100% open-source and free forever:
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
                                     └───> Verified Target Website
-                                          (External Domain or Laptop 2)
+                                          (External Domain or Local Mock Target)
 ```
 
 ---
@@ -207,7 +196,7 @@ Alerts users if more than 50% of requests are answered by a CDN cache (like Clou
 
 ## 6. Scalable Core + Plugin Directory Blueprint
 
-To keep Pusher clean, maintainable, and easy to extend as a 2-person team, the codebase uses a **"Frozen Core vs. Scalable Plugins"** architecture.
+To keep Pusher clean, maintainable, and easy to extend flexibly, the codebase uses a **"Frozen Core vs. Scalable Plugins"** architecture.
 
 ### The "Frozen Core vs. Scalable Plugins" Design:
 1. **`backend/core/` (Frozen Core)**:
@@ -223,12 +212,12 @@ To keep Pusher clean, maintainable, and easy to extend as a 2-person team, the c
 
 ```text
 pusher/
-├── backend/                                      # Partner 1 Owned (branch: backend-dev)
+├── backend/                                      # FastAPI + asyncio + aiohttp Backend
 │   ├── main.py                                   # FastAPI startup, CORS & plugin auto-loader
 │   ├── config.py                                 # [Feature #1, #10] Safe defaults & PUSHER_MODE
 │   │
 │   ├── core/                                     # FROZEN CORE (Engine, Security & Contracts)
-│   │   ├── contracts.py                          # [Team Rule 2] Shared REST & 1s WS JSON schemas
+│   │   ├── contracts.py                          # [API Contract] Shared REST & 1s WS JSON schemas
 │   │   ├── plugin_registry.py                    # [Scalability] Auto-discovers files in plugins/
 │   │   ├── orchestrator.py                       # [Feature #1, #8] Main test loop & <200ms abort
 │   │   ├── socket_pool.py                        # [Memory Rule 3.1, 3.2] Keep-Alive & 60s DNS cache
@@ -270,13 +259,13 @@ pusher/
 │       ├── routes_test.py                        # [Feature #1, #8] POST /test/start, /stop, GET /status
 │       └── ws_telemetry.py                       # [Feature #7, #8, #13] 1s JSON stream & WS instant stop
 │
-├── frontend/                                     # Partner 2 Owned (branch: frontend-dev)
+├── frontend/                                     # React 18 + Vite + Tailwind UI
 │   └── src/
 │       ├── App.jsx                               # Single-screen dashboard layout coordinator
 │       ├── core_ui/                              # Always-on global controls & network services
 │       │   ├── EmergencyStopButton.jsx           # [Feature #8] Big Red <200ms dual-channel (WS+HTTP) stop
 │       │   ├── SystemHealthBar.jsx               # [Feature #13] Displays queue state & CPU lag notices
-│       │   ├── apiClient.js                      # [Team Rule 2] REST client for verify, start & HTTP stop
+│       │   ├── apiClient.js                      # [API Contract] REST client for verify, start & HTTP stop
 │       │   └── telemetrySocket.js                # [Feature #7, #13] 1s WS listener & 15s reconnect guard
 │       │
 │       └── features/                             # Modular UI Feature Cards (1 folder per feature group)
@@ -293,16 +282,16 @@ pusher/
 │           └── baseline_compare/                 # [Future Scope] Drop new UI feature cards here later
 │
 └── supporting files/
-    ├── rules/                                    # Architecture, memory, safety, verify & team rules
-    ├── plans/                                    # Architecture blueprints & technical plans
+    ├── rules/                                    # Architecture, memory, safety, verify & workflow rules
+    ├── plans/                                    # Technical design & architecture plans
     └── testing/                                  # EXCLUSIVE repository for all test scripts & mocks
-        ├── mocks/                                # Partner 2 Owned
-        │   └── mock_target_server.py             # [2-Laptop Setup] Laptop 2 target server (0.0.0.0:8080)
-        ├── prototypes/                           # Partner 1 Owned
+        ├── mocks/
+        │   └── mock_target_server.py             # [Local Dev Setup] Mock target server (0.0.0.0:8080)
+        ├── prototypes/
         │   └── engine_prototype.py               # Standalone async socket & plugin experiments
-        ├── benchmarks/                           # Partner 1 Owned
+        ├── benchmarks/
         │   └── memory_benchmark.py               # [Memory Rule 2] Verifies <250MB RAM at 1,000 VUs
-        └── unit/                                 # Partner 1 Owned
+        └── unit/
             └── test_ssrf_and_plugins.py          # [Feature #9, #10, #11] Tests SSRF, verify & breakers
 ```
 

@@ -83,9 +83,9 @@ When Pusher stops due to an HTTP 429 or 403 firewall block, follow these 3 clear
 │    (CDN / Edge Proxy)   │ If (http.request.headers["x-pusher-bypass"][0] == "SECRET")  │
 │                         │ Action: Skip Rate Limiting & Managed Rules.                  │
 ├─────────────────────────┼──────────────────────────────────────────────────────────────┤
-│ 3. Wi-Fi Local Testing  │ Switch to the 2-Laptop Wi-Fi setup (PUSHER_MODE=local_dev).  │
-│    (100% Firewall-Free) │ Run mock target on Laptop 2 at 192.168.1.x:8080 to test with │
-│                         │ zero cloud firewalls or risk of IP blacklisting.             │
+│ 3. Local Mock Testing   │ Switch to local development mode (PUSHER_MODE=local_dev).    │
+│    (100% Firewall-Free) │ Run the mock target (mock_target_server.py) on port 8080 to  │
+│                         │ test with zero cloud firewalls or risk of IP blacklisting.   │
 └─────────────────────────┴──────────────────────────────────────────────────────────────┘
 
 ---
