@@ -5,7 +5,7 @@ This directory is the **exclusive, mandatory location** for all testing artifact
 * Test scripts (unit, integration, and security tests)
 * Mock target server endpoints for Laptop 2
 * Load engine prototypes and architectural spikes
-* Memory and performance benchmark experiments
+* Memory and performance benchmark experiments 
 
 > **STRICT RULE**: No test scripts, mock servers, or prototype engines may reside in the project root or source directories. They must be saved exclusively within `supporting files/testing/`.
 

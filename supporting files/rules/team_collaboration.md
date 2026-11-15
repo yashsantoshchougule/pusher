@@ -57,8 +57,8 @@ To make Git merge conflicts virtually impossible, our repository is divided into
 
 | Partner | Role | Folders Exclusively Owned | Allowed Responsibilities |
 | :--- | :--- | :--- | :--- |
-| **Partner 1** | Backend, Security & Engine | • `backend/`<br>• `supporting files/testing/prototypes/`<br>• `supporting files/testing/benchmarks/`<br>• `supporting files/testing/unit/` | • Fast asynchronous HTTP socket pool (`aiohttp`)<br>• Domain ownership verifier & DNS pinning<br>• 3 Safety circuit breakers<br>• Memory management (<250MB RAM) |
-| **Partner 2** | Frontend UI & Mock Targets | • `frontend/`<br>• `supporting files/testing/mocks/` | • React + Tailwind CSS dashboard<br>• Live speed & latency charts (Chart.js)<br>• Big Red `<200ms` Emergency Stop button<br>• Standalone mock target servers for Laptop 2 |
+| **Partner 1** | Backend, Security & Engine | • `backend/`<br>• `supporting files/testing/prototypes/`<br>• `supporting files/testing/benchmarks/`<br>• `supporting files/testing/unit/` | • Fast asynchronous HTTP socket pool (`aiohttp`)<br>• Domain ownership verifier & DNS pinning<br>• 2-in-1 Pusher Guard template generator & `X-Pusher-Bypass` header injection<br>• 3 Safety circuit breakers<br>• Memory management (<250MB RAM) |
+| **Partner 2** | Frontend UI & Mock Targets | • `frontend/`<br>• `supporting files/testing/mocks/` | • React + Tailwind CSS dashboard<br>• Live speed & latency charts (Chart.js)<br>• Big Red `<200ms` Emergency Stop button<br>• Verification wizard UI with "Download 2-in-1 Pusher Guard" button & instructions modal<br>• Standalone mock target servers for Laptop 2 |
 
 #### Shared Files Rule:
 * Neither partner may edit files in the other partner's directory without discussing it first.
@@ -72,9 +72,10 @@ Before Partner 1 writes backend code or Partner 2 builds UI components, both par
 #### A. Standard REST Endpoints Contract:
 1. `POST /api/v1/verify/dns` — Submits target domain to verify via DNS TXT record.
 2. `POST /api/v1/verify/http` — Submits target domain to verify via `/.well-known/pusher-challenge.txt`.
-3. `POST /api/v1/test/start` — Starts load test with parameters `{ target_url, vus, duration_sec, mode }`. Returns `{ test_id, status }`.
-4. `POST /api/v1/test/stop` — Instant Emergency Stop signal. Stops all tasks in `< 200ms`.
-5. `GET /api/v1/test/status` — Checks current engine state (`IDLE`, `QUEUED`, `RUNNING`).
+3. `GET /api/v1/verify/guard-template?lang=python|node` — Generates and downloads the pre-configured 2-in-1 `pusher_guard.py` (FastAPI/Flask) or `pusherGuard.js` (Express) file with verification token & HMAC bypass key embedded.
+4. `POST /api/v1/test/start` — Starts load test with parameters `{ target_url, vus, duration_sec, mode }`. Returns `{ test_id, status }`.
+5. `POST /api/v1/test/stop` — Instant Emergency Stop signal. Stops all tasks in `< 200ms`.
+6. `GET /api/v1/test/status` — Checks current engine state (`IDLE`, `QUEUED`, `RUNNING`).
 
 #### B. The 1-Second WebSocket / SSE Live Telemetry Contract:
 Every second during an active test, the backend sends this exact JSON message to the frontend:

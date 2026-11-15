@@ -178,8 +178,13 @@ Real-time graphs showing Requests Per Second (RPS), total request counts, error 
 ### Feature 8: Big Red Emergency Stop Button
 A prominent button visible on screen at all times during a test. Clicking it cancels all running tasks and closes network sockets in **under 200 milliseconds** while preserving all metrics on screen.
 
-### Feature 9: Mandatory Domain Ownership Verification
-Prevents the tool from being used to attack random websites. Users must verify domain ownership via a free DNS TXT challenge or a 1-click verification file.
+### Feature 9: Mandatory Domain Verification & 2-in-1 Pusher Guard
+Prevents the tool from being used to attack unauthorized websites. Users must prove ownership before running a test:
+* **Method A (Free DNS TXT Record)**: Add a TXT record `pusher-verify=<UUIDv4>` with 0 paid services needed.
+* **Method B (Downloadable 2-in-1 Pusher Guard Middleware File)**: For dynamic backends (Python/FastAPI or Node.js/Express). A single dropped-in middleware file (`pusher_guard.py` or `pusherGuard.js`) that handles **both**:
+  1. *Automatic Domain Verification*: Serves `GET /.well-known/pusher-challenge.txt`.
+  2. *Automatic Backend Rate-Limiter Bypass*: Pusher automatically sends the secret `X-Pusher-Bypass: <KEY>` header during the load test. The middleware checks this header with constant-time comparison (`hmac.compare_digest`), allowing your in-app rate limiters (like SlowAPI or express-rate-limit) to let test traffic through while keeping edge firewalls vigilant.
+* **Method C (Static Verification File)**: For static HTML / Jamstack / GitHub Pages sites, upload a static text file to `/.well-known/pusher-challenge.txt`.
 
 ### Feature 10: Hacker & Private Network Blocker (SSRF Defense)
 Blocks requests to internal networks (`127.0.0.1`, `192.168.x.x`, `10.x.x.x`) and cloud metadata (`169.254.169.254`) in production mode.

@@ -7,26 +7,26 @@ Load-testing tools generate hundreds or thousands of web requests per minute. If
 
 ---
 
-## 2. The Two 100% Free Verification Methods
+## 2. The Verification Methods
 
-Pusher offers two simple, 100% free ways to prove domain ownership:
+Pusher offers multiple 100% free ways to verify domain ownership and safely bypass in-code rate limiters:
 
 ```
                [ User Enters Target Website: https://app.example.com ]
                                         │
                          Selects Verification Method
                                         │
-                ┌───────────────────────┴───────────────────────┐
-                ▼                                               ▼
-     [ Method A: DNS TXT Challenge ]             [ Method B: 1-Click File Download ]
-                │                                               │
-  Add TXT at:                                   Click "Download Verification File"
-  _pusher-challenge.app.example.com             Upload pusher-challenge.txt to:
-  Value: pusher-verify=<UUIDv4>-<HMAC>          https://app.example.com/.well-known/pusher-challenge.txt
-                │                                               │
-                └───────────────────────┬───────────────────────┘
+      ┌─────────────────────────────────┼─────────────────────────────────┐
+      ▼                                 ▼                                 ▼
+[ Method A: DNS TXT ]      [ Method B: 2-in-1 Guard ]        [ Method C: Static .txt ]
+Add TXT record at:         Download pusher_guard.py          Upload static text file
+_pusher-challenge.domain   Runs on your backend:             to .well-known/ folder
+Value: pusher-verify=...   1. Auto-serves verify route       (For static Jamstack /
+(Best for apex domains)    2. Auto-bypasses rate limit       GitHub Pages sites)
+      │                                 │                                 │
+      └─────────────────────────────────┼─────────────────────────────────┘
                                         ▼
-                   [ Pusher Verification Engine Validates ]
+                     [ Pusher Verification Engine Validates ]
                                         │
                         ┌───────────────┴───────────────┐
                         ▼                               ▼
@@ -54,24 +54,105 @@ Pusher offers two simple, 100% free ways to prove domain ownership:
 
 ---
 
-### Method B: 1-Click File Download (Best for Vercel, Render & Next.js)
-For developers using platforms like Vercel, Render, or Netlify, editing DNS records can take time. Method B takes less than 60 seconds:
+### Method B: The "2-in-1 Pusher Guard Middleware File" (Recommended for Dynamic Backends)
+When testing a dynamic web application (built with FastAPI, Flask, Express, Django, etc.), developers face a common frustration: **their own in-app rate limiters** block the load test after 50 to 100 requests with `HTTP 429 Too Many Requests`.
 
-1. **Click "Download Verification File"**:
-   Pusher provides a simple button in the UI:
-   `[📥 Download pusher-challenge.txt]`
-2. **Upload to Website**:
-   The developer places this file in their web project's public folder so it can be viewed at:
-   `https://<your-domain>/.well-known/pusher-challenge.txt`
-3. **Pusher Checks the URL**:
-   Pusher sends a single, lightweight HTTP GET request to that exact link:
-   * Only reads the first 512 bytes.
-   * Status code must be `200 OK`.
-   * The text inside must match the token.
-4. **Edge-Case Protections for File Verification**:
-   * **Safe HTTP $\rightarrow$ HTTPS Redirect**: If the target server automatically redirects an insecure link (`http://`) to secure HTTPS (`https://`), Pusher permits exactly 1 redirect as long as it stays on the exact same domain name. Cross-domain redirects are strictly rejected.
-   * **SPA Router Protection**: Modern frontend frameworks (React/Vue/Next.js) often return `index.html` (with a `200 OK` status) for missing files. Pusher checks that the response is NOT an HTML document (it rejects bodies starting with `<!DOCTYPE` or `<html`) to prevent false-positive verifications.
-5. **Zero Paid Services**: Works on any free hosting service (Vercel free tier, Render free web service, GitHub Pages).
+To solve this, Pusher provides a downloadable **2-in-1 Server Middleware File** (`pusher_guard.py` for Python or `pusherGuard.js` for Node.js).
+
+#### Why a Backend File Beats a Public `.txt` File:
+* A public `.txt` file can be opened by anyone in a browser, so you can **never** put a secret rate-limit bypass key inside it.
+* A backend middleware file (`.py` or `.js`) runs privately inside your server. Visitors and hackers cannot read the code, so it safely holds both the **Public Verification Token** AND a **Private Rate-Limit Bypass Secret**!
+
+#### The Two Jobs of the 2-in-1 Guard File:
+1. **Job 1 (Automatic Domain Verification)**:
+   The middleware automatically registers the `GET /.well-known/pusher-challenge.txt` (and alias `GET /.well-known/pusher-verify`) route on your web server and returns your unique `pusher-verify=<UUIDv4>` token.
+2. **Job 2 (Automatic Backend Rate-Limiter Bypass)**:
+   During an active load test, Pusher automatically injects a secret HTTP header on every single request:
+   `X-Pusher-Bypass: <PRIVATE_HMAC_SECRET>`
+   The middleware checks this header using constant-time comparison (`hmac.compare_digest`). If it matches, it flags `request.state.is_pusher_test = True` (or `req.isPusherTest = true`), allowing your application-layer rate limiter (like SlowAPI or express-rate-limit) to skip blocking the test!
+
+#### Copy-Ready Example: `pusher_guard.py` (FastAPI / Python)
+The user clicks **"Download pusher_guard.py"** in Pusher's UI and drops it into their backend project:
+
+```python
+# pusher_guard.py (Generated by Pusher for your backend)
+import hmac
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
+
+PUSHER_VERIFY_TOKEN = "pusher-verify=8f9d2a1b-4c3e-4f5a-9b8c-7d6e5f4a3b2c"
+PUSHER_BYPASS_SECRET = "psh_secret_99a8b7c6d5e4f3a2b1c0"
+
+def setup_pusher_guard(app: FastAPI):
+    # Job 1: Serves domain ownership verification route
+    @app.get("/.well-known/pusher-challenge.txt", response_class=PlainTextResponse)
+    @app.get("/.well-known/pusher-verify", response_class=PlainTextResponse)
+    async def verify_domain():
+        return PUSHER_VERIFY_TOKEN
+
+    # Job 2: Bypasses backend rate limiter for verified Pusher tests
+    @app.middleware("http")
+    async def pusher_bypass_middleware(request: Request, call_next):
+        incoming_key = request.headers.get("X-Pusher-Bypass", "")
+        # Constant-time comparison stops timing attacks
+        if hmac.compare_digest(incoming_key, PUSHER_BYPASS_SECRET):
+            request.state.is_pusher_test = True
+        else:
+            request.state.is_pusher_test = False
+        return await call_next(request)
+```
+
+**How the Developer Uses It in `main.py`**:
+```python
+from fastapi import FastAPI
+from pusher_guard import setup_pusher_guard
+
+app = FastAPI()
+setup_pusher_guard(app)  # That's it! Verification and bypass are active.
+```
+
+#### Node.js / Express Equivalent: `pusherGuard.js`
+```javascript
+// pusherGuard.js (Generated by Pusher for Node/Express)
+const crypto = require('crypto');
+
+const PUSHER_VERIFY_TOKEN = "pusher-verify=8f9d2a1b-4c3e-4f5a-9b8c-7d6e5f4a3b2c";
+const PUSHER_BYPASS_SECRET = "psh_secret_99a8b7c6d5e4f3a2b1c0";
+
+function setupPusherGuard(app) {
+    // Job 1: Serves verification route
+    app.get(['/.well-known/pusher-challenge.txt', '/.well-known/pusher-verify'], (req, res) => {
+        res.type('text/plain').send(PUSHER_VERIFY_TOKEN);
+    });
+
+    // Job 2: Bypasses in-app rate limiters
+    app.use((req, res, next) => {
+        const incomingKey = req.headers['x-pusher-bypass'] || '';
+        const keyBuffer = Buffer.from(incomingKey);
+        const secretBuffer = Buffer.from(PUSHER_BYPASS_SECRET);
+        
+        if (keyBuffer.length === secretBuffer.length && crypto.timingSafeEqual(keyBuffer, secretBuffer)) {
+            req.isPusherTest = true;
+        } else {
+            req.isPusherTest = false;
+        }
+        next();
+    });
+}
+
+module.exports = { setupPusherGuard };
+```
+
+---
+
+### Method C: Static `.txt` File Upload (For Static HTML / Jamstack)
+For static Jamstack sites, blogs, and portfolio pages without dynamic backend code:
+1. **Download Static File**: Click **"Download pusher-challenge.txt"** in the Pusher UI.
+2. **Place in Public Directory**: Upload to `public/.well-known/pusher-challenge.txt`.
+3. **Pusher Verifies**: Pusher checks the URL with a single GET request (< 512 bytes, `200 OK`).
+4. **Protections**:
+   * **Single-Origin Redirect Allowed**: Automatically permits HTTP $\rightarrow$ HTTPS redirects on the same origin.
+   * **SPA HTML Rejection**: Rejects any response starting with `<!DOCTYPE` or `<html` to ensure client-side routers don't produce false verifications.
 
 ---
 
@@ -134,7 +215,7 @@ PUSHER_MODE=local_dev
 * **`PUSHER_MODE=production` (Default)**:
   * Strict security mode.
   * Blocks all private IPs (`192.168.x.x`, `10.x.x.x`, `127.0.0.1`).
-  * Requires valid DNS TXT or HTTP file verification for every domain.
+  * Requires valid DNS TXT, Pusher Guard middleware, or HTTP file verification for every domain.
 * **`PUSHER_MODE=local_dev` (2-Laptop Team Mode)**:
   * Designed for the 2 teammates testing on local Wi-Fi.
   * Allows Laptop 1 to test Laptop 2's local IP address (`192.168.x.x:8080`) without public DNS records.

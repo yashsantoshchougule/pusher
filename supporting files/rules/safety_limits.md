@@ -52,17 +52,22 @@ When a target application crashes, its server software (like Nginx, Apache, or N
 ---
 
 ### Brake 2: Firewall (WAF) & Rate-Limit Breaker
-Web Application Firewalls (like Cloudflare, AWS WAF, Sucuri, Akamai, or DataDome) and API rate limiters are designed to block abusive traffic. If Pusher hits a firewall, continuing the test will get the tester's home or office IP address blacklisted.
+Web Application Firewalls (like Cloudflare, AWS WAF, Sucuri, Akamai, or DataDome) and API rate limiters are designed to block abusive traffic. If Pusher hits an external firewall, continuing the test will get the tester's home or office IP address blacklisted.
+
+* **Preventing False Alarms with the 2-in-1 Pusher Guard Middleware**:
+  * Internal in-app rate limiters (like `slowapi` in Python or `express-rate-limit` in Node.js) might start returning `429 Too Many Requests` even though your server hardware is completely healthy.
+  * When you install the **2-in-1 Pusher Guard Middleware** (`pusher_guard.py` or `pusherGuard.js`), Pusher sends the secret verification header `X-Pusher-Bypass: <KEY>` with every test request. Your server middleware recognizes this secret key and lets the load test pass through without triggering internal app-level rate limits.
+  * If `429` or `403` errors still occur while the bypass header is active, Pusher knows an **external edge firewall** (like Cloudflare or AWS WAF) is blocking the requests, and Brake 2 safely engages!
 
 * **When it trips**:
-  * **HTTP 429 Too Many Requests**: 3 responses with status `429` inside 3 seconds.
+  * **HTTP 429 Too Many Requests**: 3 responses with status `429` inside 3 seconds (indicating an un-bypassed rate limiter or external edge limit).
   * **OR HTTP 403 with Firewall Signatures**:
     * Headers containing: `cf-ray`, `cf-chl-bypass`, `x-amzn-errortype`, `x-akamai-transformed`, or `x-datadome`.
     * Response body text mentioning: `"Cloudflare Ray ID"`, `"Attention Required!"`, `"AWS WAF"`, or `"Access Denied"`.
 * **What Pusher does**:
   1. Instantly cancels all active test tasks.
   2. Emits this clear advice:
-     > *"Test stopped: A Web Application Firewall (like Cloudflare or AWS WAF) or rate limiter blocked the test. Load testing against an active firewall hides your real server speed and risks getting your IP blocked."*
+     > *"Test stopped: A Web Application Firewall (like Cloudflare or AWS WAF) or rate limiter blocked the test. Load testing against an active firewall hides your real server speed and risks getting your IP blocked. If this was caused by an in-app rate limiter, install the 2-in-1 Pusher Guard Middleware to allow test traffic through."*
 
 ---
 
