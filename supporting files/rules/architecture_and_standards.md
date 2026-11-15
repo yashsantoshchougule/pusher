@@ -10,8 +10,9 @@ Unlike heavy enterprise tools, Pusher is built to run smoothly on everyday hardw
 ## 2. Project Hardware & The 2-Laptop Setup
 
 Pusher is built by a 2-person development team using standard consumer hardware:
-* **Developer Laptops**: Two standard laptops (16GB RAM, 512GB SSD).
+* **Developer Laptops**: Two standard laptops (16GB RAM, 512GB SSD each; one equipped with an NVIDIA RTX 4050).
 * **Zero Dedicated GPU Required**: Load generation uses asynchronous network I/O and lightweight CPU tasks, meaning no expensive GPUs or server farms are needed.
+* **Team Guidelines**: See [`team_collaboration.md`](file:///c:/yash/projects/pusher/supporting%20files/rules/team_collaboration.md) for full team division of labor, folder ownership, and API contract rules.
 
 ### The 2-Laptop Local Testing Setup
 When testing a load generator, running both the load tester and the target app on the exact same laptop causes them to fight for the same CPU and RAM. To prevent false results, the team uses a 2-laptop setup connected over the same local Wi-Fi network:
@@ -204,6 +205,7 @@ pusher/
 ├── supporting files/
 │   ├── rules/                       # Documentation and architecture rules
 │   │   ├── architecture_and_standards.md   # Tech stack, features, and 2-laptop setup
+│   │   ├── team_collaboration.md           # 2-person ownership, API contracts & Wi-Fi testing
 │   │   ├── memory_management.md            # RAM limits, socket reuse, zero-buffering
 │   │   ├── target_verification.md          # Free DNS/file verification & SSRF defense
 │   │   ├── safety_limits.md                # 3 automatic safety brakes & emergency stop

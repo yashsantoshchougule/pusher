@@ -27,20 +27,22 @@ Pusher is built by a 2-person team. To prevent merge conflicts and stepping on e
                                       │ Pull Request Review & Merge
                   ┌───────────────────┴───────────────────┐
                   │                                       │
-     [ branch: backend-engine ]              [ branch: frontend-and-mocks ]
-            (Member 1)                                  (Member 2)
+        [ branch: backend-dev ]                 [ branch: frontend-dev ]
+              (Partner 1)                             (Partner 2)
   • backend/ (FastAPI & Engine)               • frontend/ (React & Tailwind UI)
   • supporting files/testing/prototypes/      • supporting files/testing/mocks/ (Laptop 2)
   • supporting files/testing/benchmarks/      • Real-time Live Charts & Emergency Stop
   • SSRF & Domain Verification                • Telemetry WebSocket Consumer
 ```
 
+> **Detailed Collaboration Rules**: See [`team_collaboration.md`](file:///c:/yash/projects/pusher/supporting%20files/rules/team_collaboration.md) for full folder ownership boundaries, API contracts, environment setup, and the 2-laptop Wi-Fi testing protocol.
+
 ### Team Member Responsibilities:
 
 | Team Member | Git Branch | Primary Folders Owned | Key Tasks |
 | :--- | :--- | :--- | :--- |
-| **Member 1** | `backend-engine` | `backend/`<br>`supporting files/testing/prototypes/`<br>`supporting files/testing/benchmarks/`<br>`supporting files/testing/unit/` | • Async load generation engine (`aiohttp`)<br>• Domain verification & DNS pinning<br>• 3 Safety circuit breakers<br>• RAM & socket efficiency |
-| **Member 2** | `frontend-and-mocks`| `frontend/`<br>`supporting files/testing/mocks/` | • React UI & Tailwind layout<br>• Live charts (RPS, latency percentiles)<br>• Big Red Emergency Stop button<br>• Mock servers for Laptop 2 |
+| **Partner 1** | `backend-dev` | `backend/`<br>`supporting files/testing/prototypes/`<br>`supporting files/testing/benchmarks/`<br>`supporting files/testing/unit/` | • Async load generation engine (`aiohttp`)<br>• Domain verification & DNS pinning<br>• 3 Safety circuit breakers<br>• RAM & socket efficiency |
+| **Partner 2** | `frontend-dev`| `frontend/`<br>`supporting files/testing/mocks/` | • React UI & Tailwind layout<br>• Live charts (RPS, latency percentiles)<br>• Big Red Emergency Stop button<br>• Mock servers for Laptop 2 |
 
 ---
 
@@ -93,7 +95,7 @@ Before staging, verify that your code adheres to all project rules:
 ### Step 3: Explicitly Stage Your Files
 Avoid blind staging (`git add .` or `git add -A`) so you never accidentally commit log files, `.env` secrets, or temporary memory dumps.
 
-**For Member 1 (Backend)**:
+**For Partner 1 (Backend)**:
 ```bash
 git add backend/
 git add supporting\ files/rules/
@@ -102,7 +104,7 @@ git add supporting\ files/testing/benchmarks/
 git add supporting\ files/testing/unit/
 ```
 
-**For Member 2 (Frontend)**:
+**For Partner 2 (Frontend)**:
 ```bash
 git add frontend/
 git add supporting\ files/testing/mocks/
@@ -119,21 +121,21 @@ git rm --cached .env
 ### Step 4: Write a Clear Commit Message
 Use clean, descriptive commit messages:
 ```bash
-# Member 1 Example:
-git commit -m "feat: add 5 consecutive 5xx error circuit breaker to async engine"
+# Partner 1 Example:
+git commit -m "feat(backend): add 5 consecutive 5xx error circuit breaker to async engine"
 
-# Member 2 Example:
-git commit -m "feat: add Emergency Stop button and live latency chart to dashboard"
+# Partner 2 Example:
+git commit -m "feat(frontend): add Emergency Stop button and live latency chart to dashboard"
 ```
 
 ### Step 5: Push to Your Team Branch
 Push your branch to GitHub manually:
 ```bash
-# Member 1:
-git push origin backend-engine
+# Partner 1:
+git push origin backend-dev
 
-# Member 2:
-git push origin frontend-and-mocks
+# Partner 2:
+git push origin frontend-dev
 ```
 
 ### Step 6: Merging into `main` via Pull Request
