@@ -36,7 +36,7 @@ Pusher constantly monitors incoming HTTP responses during every test. If danger 
 
 ---
 
-### Brake 1: Server Crash Breaker (5xx Errors) [Feature #11] (`server_5xx_breaker.py`)
+### Brake 1: Server Crash Breaker (5xx Errors) [Feature #11] (`crash_5xx_breaker.py`)
 When a target application crashes, its server software (like Nginx, Apache, or Node.js) usually starts returning `500 Internal Server Error`, `502 Bad Gateway`, or `503 Service Unavailable`. Continuing to send requests into a crashed server makes recovery harder.
 
 * **Dual Detection Logic**:
@@ -90,7 +90,7 @@ When Pusher stops due to an HTTP 429 or 403 firewall block, follow these 3 clear
 
 ---
 
-### Brake 3: Slowdown & Timeout Breaker [Feature #11] (`latency_breaker.py`)
+### Brake 3: Slowdown & Timeout Breaker [Feature #11] (`latency_8s_breaker.py`)
 If the target website slows down so much that requests hang, the test engine will pile up pending tasks, giving false readings.
 
 * **Strict Request Timeout**: Every single HTTP request has a hard timeout limit of **5.0 seconds** (user configurable between 2.0s and 10.0s).
@@ -115,7 +115,7 @@ To prevent false alarms on everyday budget laptops, Pusher uses a smart, gentle 
 
 ---
 
-## 4. Intelligent CDN Cache Detector [Feature #12] (`cdn_detector.py`)
+## 4. Intelligent CDN Cache Detector [Feature #12] (`cdn_cache_detector.py`)
 
 Many modern hosting providers (like Vercel, Netlify, and Cloudflare) automatically cache web pages. When you load-test a cached page, you are testing Cloudflare's massive edge network, not your real server or database!
 

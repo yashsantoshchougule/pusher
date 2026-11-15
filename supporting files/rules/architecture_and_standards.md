@@ -221,91 +221,89 @@ To keep Pusher clean, maintainable, and easy to extend as a 2-person team, the c
 
 ### The Complete Directory Tree (With Feature & Memory Rule Mappings)
 
-```
+```text
 pusher/
-├── supporting files/
-│   ├── rules/                                   # Documentation and system invariants
-│   │   ├── architecture_and_standards.md        # Architecture, features, and standards
-│   │   ├── team_collaboration.md                # 2-person ownership, API contracts & Wi-Fi testing
-│   │   ├── memory_management.md                 # RAM budget rules (<250MB for 1,000 VUs)
-│   │   ├── target_verification.md               # 2-in-1 guard middleware, DNS & Cloudflare bypass
-│   │   ├── safety_limits.md                     # 3 safety circuit breakers & CPU health monitor
-│   │   └── github_workflow.md                   # 2-person team Git roles & manual push rules
+├── backend/                                      # Partner 1 Owned (branch: backend-dev)
+│   ├── main.py                                   # FastAPI startup, CORS & plugin auto-loader
+│   ├── config.py                                 # [Feature #1, #10] Safe defaults & PUSHER_MODE
 │   │
-│   ├── plans/                                   # Architecture blueprints & technical plans
-│   │   ├── README.md                            # Plan index and naming conventions
-│   │   └── plan_*.md                            # Self-describing design and implementation plans
+│   ├── core/                                     # FROZEN CORE (Engine, Security & Contracts)
+│   │   ├── contracts.py                          # [Team Rule 2] Shared REST & 1s WS JSON schemas
+│   │   ├── plugin_registry.py                    # [Scalability] Auto-discovers files in plugins/
+│   │   ├── orchestrator.py                       # [Feature #1, #8] Main test loop & <200ms abort
+│   │   ├── socket_pool.py                        # [Memory Rule 3.1, 3.2] Keep-Alive & 60s DNS cache
+│   │   ├── stream_reader.py                      # [Memory Rule 3.3, 3.4] 4KB discard, 10MB cap, 512B err
+│   │   ├── queue_lock.py                         # [Memory Rule 3.5, 3.7] 1-test lock, 30s evict, 70% cap
+│   │   ├── ssrf_and_dns.py                       # [Feature #10] IP/port blocker, PaaS cap & DNS pin
+│   │   ├── health_and_disconnect.py              # [Feature #13] 500ms CPU check & 15s tab disconnect
+│   │   └── metrics_store.py                      # [Feature #7 & Memory Rule 3.6] <5MB HdrHistogram ring
 │   │
-│   └── testing/                                 # EXCLUSIVE home for all tests and prototypes
-│       ├── README.md                            # Testing instructions and checklist
-│       ├── mocks/                               # Mock target servers for Laptop 2
-│       │   ├── server_200_ok.py                 # Fast 200 OK baseline mock
-│       │   ├── server_500_crash.py              # 5xx crashing mock for testing Brake 1
-│       │   ├── server_429_waf.py                # 429 rate limit mock for testing Brake 2
-│       │   └── server_slow_timeout.py           # Hanging mock for testing Brake 3
-│       ├── prototypes/                          # Engine prototypes and validation scripts
-│       ├── benchmarks/                          # RAM and throughput benchmark scripts
-│       └── unit/                                # Unit tests for verifiers and circuit breakers
+│   ├── plugins/                                  # SCALABLE EXTENSION SLOTS (Drop new files here)
+│   │   ├── traffic_modes/                        # Slot 1: Virtual User Spawning Algorithms
+│   │   │   ├── base_mode.py                      # [Feature #1] 10 VU / 30s / 5s ramp-up base rules
+│   │   │   ├── step_ramp_finder.py               # [Feature #2] Mode 1: Step-by-Step Capacity Finder
+│   │   │   ├── sudden_rush_mode.py               # [Feature #2] Mode 2: Sudden Rush (Users/Sec)
+│   │   │   └── steady_crowd_mode.py              # [Feature #2] Mode 3: Steady Crowd (Hold Load)
+│   │   │
+│   │   ├── request_builders/                     # Slot 2: Headers, Randomizers & Multi-Step Chains
+│   │   │   ├── api_login_builder.py              # [Feature #3] GET/POST/PUT/DELETE, RAM auth & <4KB JSON
+│   │   │   ├── cache_randomizer.py               # [Feature #4] Dynamic {{random_int}} & {{uuid}} injector
+│   │   │   └── multi_step_chain.py               # [Feature #5] Python 2-3 step chain & {{auth_token}}
+│   │   │
+│   │   ├── breakers_and_detectors/               # Slot 3: Real-Time Safety Brakes & Header Inspectors
+│   │   │   ├── base_breaker.py                   # Blueprint class for 1-second response evaluators
+│   │   │   ├── crash_5xx_breaker.py              # [Feature #11] Brake 1: 5 consecutive 5xx / >25% in 5s
+│   │   │   ├── waf_429_breaker.py                # [Feature #11] Brake 2: HTTP 429 / 403 WAF detector
+│   │   │   ├── latency_8s_breaker.py             # [Feature #11] Brake 3: p95 > 8,000ms / >30% timeouts
+│   │   │   └── cdn_cache_detector.py             # [Feature #12] >50% CDN HIT header warning detector
+│   │   │
+│   │   ├── verifiers/                            # Slot 4: Target Ownership & Rate-Limit Bypass
+│   │   │   ├── dns_txt_verifier.py               # [Feature #9] Method A: Cloudflare/Google DNS TXT check
+│   │   │   └── guard_file_verifier.py            # [Feature #9] Method B: .well-known & pusher_guard file
+│   │   │
+│   │   └── advisors_and_exporters/               # Slot 5: Diagnostics & Future Report Exporters
+│   │       ├── english_advisor.py                # [Feature #6] Plain-English error & WAF bypass advisor
+│   │       └── pdf_health_card.py                # [Future Scope] 1-click PDF/MD capacity report exporter
+│   │
+│   └── api/                                      # FastAPI REST & WebSocket Endpoints
+│       ├── routes_verify.py                      # [Feature #9] POST /verify/dns, /http & /middleware
+│       ├── routes_test.py                        # [Feature #1, #8] POST /test/start, /stop, GET /status
+│       └── ws_telemetry.py                       # [Feature #7, #8, #13] 1s JSON stream & WS instant stop
 │
-├── backend/
-│   ├── api/                                     # Fast HTTP & WebSocket presentation layer
-│   │   ├── routes_test.py                       # REST: start, stop, status endpoints [Feature #1, #8]
-│   │   ├── routes_verify.py                     # REST: DNS, middleware generation [Feature #9]
-│   │   ├── routes_plugins.py                    # REST: GET /api/v1/plugins (lists active modes & breakers)
-│   │   └── ws_telemetry.py                      # WebSocket: 1-sec live stream [Feature #7, #13]
-│   │
-│   ├── core/                                    # FROZEN CORE (Unbreakable engine rules)
-│   │   ├── __init__.py
-│   │   ├── contracts.py                         # Pydantic schemas for REST & SSE contracts [Feature #1]
-│   │   ├── plugin_registry.py                   # Dynamic auto-loader for backend/plugins/
-│   │   ├── orchestrator.py                      # VU lifecycle & graceful cancellation [Feature #1, #2]
-│   │   ├── socket_pool.py                       # Persistent aiohttp.TCPConnector pool [Memory Rule 3.2]
-│   │   ├── stream_reader.py                     # 4KB chunk reader, counts bytes, zero buffer [Memory Rule 3.3]
-│   │   ├── queue_lock.py                        # Single-test RAM execution lock [Memory Rule 3.5, Feature #1]
-│   │   ├── ssrf_and_dns.py                      # Private IP blocker & safe DNS pinning [Feature #10]
-│   │   ├── health_and_disconnect.py             # 500ms heartbeat & 15s tab drop guard [Feature #13]
-│   │   └── metrics_store.py                     # Circular ring buffer & p50/p90/p95/p99 [Memory Rule 3.6, Feature #7]
-│   │
-│   ├── plugins/                                 # SCALABLE PLUGINS (Plug-and-play feature modules)
-│   │   ├── traffic_modes/                       # Concurrency patterns
-│   │   │   ├── step_ramp.py                     # Step-by-Step capacity finder [Feature #2]
-│   │   │   ├── sudden_rush.py                   # Sudden rush / users-per-sec mode [Feature #2]
-│   │   │   └── steady_crowd.py                  # Steady crowd sustained load mode [Feature #2]
-│   │   ├── request_builders/                    # HTTP payload generators
-│   │   │   ├── basic_http.py                    # GET/POST/PUT/DELETE API tester [Feature #3]
-│   │   │   ├── cache_buster.py                  # {{random_int}} and {{uuid}} randomizer [Feature #4]
-│   │   │   └── multi_step_flow.py               # 2-3 step chained login flows [Feature #5]
-│   │   ├── breakers_and_detectors/              # Safety circuit breakers & detectors
-│   │   │   ├── server_5xx_breaker.py            # Consecutive 5xx crash breaker [Feature #11]
-│   │   │   ├── waf_429_breaker.py               # 429/403 firewall blocker [Feature #11]
-│   │   │   ├── latency_breaker.py               # Slowdown & timeout breaker [Feature #11]
-│   │   │   └── cdn_detector.py                  # >50% CDN cache HIT detector [Feature #12]
-│   │   ├── verifiers/                           # Domain ownership verification
-│   │   │   ├── dns_txt_verifier.py              # DNS TXT record challenge verifier [Feature #9]
-│   │   │   └── guard_file_verifier.py           # 2-in-1 pusher_guard middleware verifier [Feature #9]
-│   │   └── advisors_and_exporters/              # Post-test analysis and reporting
-│   │       ├── english_advisor.py               # Plain English diagnosis & recommendations [Feature #6]
-│   │       └── csv_exporter.py                  # Zero-memory streaming CSV export
-│   │
-│   └── main.py                                  # FastAPI app entrypoint
+├── frontend/                                     # Partner 2 Owned (branch: frontend-dev)
+│   └── src/
+│       ├── App.jsx                               # Single-screen dashboard layout coordinator
+│       ├── core_ui/                              # Always-on global controls & network services
+│       │   ├── EmergencyStopButton.jsx           # [Feature #8] Big Red <200ms dual-channel (WS+HTTP) stop
+│       │   ├── SystemHealthBar.jsx               # [Feature #13] Displays queue state & CPU lag notices
+│       │   ├── apiClient.js                      # [Team Rule 2] REST client for verify, start & HTTP stop
+│       │   └── telemetrySocket.js                # [Feature #7, #13] 1s WS listener & 15s reconnect guard
+│       │
+│       └── features/                             # Modular UI Feature Cards (1 folder per feature group)
+│           ├── verification_wizard/
+│           │   └── VerificationWizard.jsx        # [Feature #9] DNS guide & 1-click pusher_guard download
+│           ├── traffic_config/
+│           │   └── TrafficConfigPanel.jsx        # [Feature #1, #2, #4] Safe Start, 3 modes & randomizer
+│           ├── api_tester_drawer/
+│           │   └── ApiRequestDrawer.jsx          # [Feature #3, #4, #5] API methods, headers & multi-step
+│           ├── live_dashboard/
+│           │   └── LiveTelemetryCharts.jsx       # [Feature #7] Live RPS, status counts & p50-p99 graphs
+│           ├── diagnostics_advisor/
+│           │   └── DiagnosticsBanner.jsx         # [Feature #6, #11, #12] English advice, WAF & CDN alerts
+│           └── baseline_compare/                 # [Future Scope] Drop new UI feature cards here later
 │
-└── frontend/                                    # REACT + VITE + TAILWIND CSS DASHBOARD
-    ├── index.html
-    ├── vite.config.js
-    └── src/
-        ├── core_ui/                             # ALWAYS-ON FOUNDATION CONTROLS
-        │   ├── EmergencyStopButton.jsx          # Big Red <200ms Kill Switch [Feature #8]
-        │   ├── SystemHealthBar.jsx              # CPU lag monitor & memory meter [Feature #13]
-        │   ├── apiClient.js                     # REST API client
-        │   └── telemetrySocket.js               # WebSocket live telemetry consumer
-        ├── features/                            # MODULAR FEATURE COMPONENTS
-        │   ├── verification_wizard/             # Domain verification & 2-in-1 guard modal [Feature #9]
-        │   ├── traffic_config/                  # Traffic mode selector & safe start controls [Feature #1, #2]
-        │   ├── api_tester_drawer/               # Custom headers, body & cache buster toggles [Feature #3, #4, #5]
-        │   ├── live_dashboard/                  # Real-time speed & latency percentile graphs [Feature #7]
-        │   └── diagnostics_advisor/             # Plain English error advisor banner [Feature #6, #11, #12]
-        ├── App.jsx                              # Root view combining core_ui and active features
-        └── main.jsx
+└── supporting files/
+    ├── rules/                                    # Architecture, memory, safety, verify & team rules
+    ├── plans/                                    # Architecture blueprints & technical plans
+    └── testing/                                  # EXCLUSIVE repository for all test scripts & mocks
+        ├── mocks/                                # Partner 2 Owned
+        │   └── mock_target_server.py             # [2-Laptop Setup] Laptop 2 target server (0.0.0.0:8080)
+        ├── prototypes/                           # Partner 1 Owned
+        │   └── engine_prototype.py               # Standalone async socket & plugin experiments
+        ├── benchmarks/                           # Partner 1 Owned
+        │   └── memory_benchmark.py               # [Memory Rule 2] Verifies <250MB RAM at 1,000 VUs
+        └── unit/                                 # Partner 1 Owned
+            └── test_ssrf_and_plugins.py          # [Feature #9, #10, #11] Tests SSRF, verify & breakers
 ```
 
 > **STRICT RULE**: No test scripts, prototypes, or mock servers may be placed in the project root or source folders. They must stay strictly inside `supporting files/testing/`.

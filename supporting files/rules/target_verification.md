@@ -37,7 +37,7 @@ Value: pusher-verify=...   1. Auto-serves verify route       (For static Jamstac
 
 ---
 
-### Method A: DNS TXT Challenge (Best for Custom Domains)
+### Method A: DNS TXT Challenge [Feature #9] (`dns_txt_verifier.py`)
 1. **Pusher Generates a Unique Code**:
    Pusher creates a safe, cryptographically signed token:
    `pusher-verify=<UUIDv4>-<HMAC>`

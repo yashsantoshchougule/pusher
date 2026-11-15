@@ -1,4 +1,4 @@
-+# Testing Directory Guidelines & 2-Laptop Test Manual
+# Testing Directory Guidelines & 2-Laptop Test Manual
 
 ## 1. Purpose of This Directory
 This directory is the **exclusive, mandatory location** for all testing artifacts:
