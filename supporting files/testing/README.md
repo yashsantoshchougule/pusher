@@ -16,16 +16,23 @@ This directory is the **exclusive, mandatory location** for all testing artifact
 ```
 supporting files/testing/
 ├── mocks/          # Mock HTTP target server:
-│                   #   • Fast 200 OK responses
-│                   #   • Cascading 5xx server crashes (for circuit breaker tests)
-│                   #   • 429 / WAF challenges (for rate limit detection tests)
-│                   #   • High-latency / timeout simulations
+│   └── mock_target_server.py  # Fast 200, 5xx cascades, 429 WAF simulation
+│
+├── unit/           # Automated logic & boundary tests:
+│   ├── test_time_mapping.cjs  # Node.js automated runner for 100-frame clock mapping
+│   └── test_time_mapping.py   # Python automated runner for 100-frame clock mapping
+│
+├── verification/   # Diagnostic, image processing & UI sampling scripts:
+│   ├── check_all_frames.ps1   # Validates all 100 timelapse frames exist & are readable
+│   ├── detect_crop.ps1        # Detects pillarbox border dimensions on frames
+│   ├── crop_all_frames.ps1    # Automated lossless cropping tool for timelapse frames
+│   ├── check_colors.ps1       # Hex color sampler for UI elements & surfaces
+│   ├── sample_colors.ps1      # Multi-point screen sampling diagnostic
+│   ├── compare_exact.ps1      # Exact color consistency validator
+│   └── analyze_images.py      # Pixel luminance & RGB analyzer
 │
 ├── prototypes/     # Experimental load engine prototypes (async IO benchmarks)
-│
-├── benchmarks/     # Memory usage profiling scripts (verifying <250MB for 1,000 VUs)
-│
-└── unit/           # Unit tests for domain verification, SSRF blocking, and metrics
+└── benchmarks/     # Memory usage profiling scripts (verifying <250MB for 1,000 VUs)
 ```
 
 ---

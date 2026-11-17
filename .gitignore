@@ -1,0 +1,30 @@
+# Node & Frontend
+frontend/node_modules/
+frontend/dist/
+node_modules/
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+*.secret
+
+# Logs & Debug
+*.log
+debug.txt
+npm-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini

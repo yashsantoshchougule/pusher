@@ -55,6 +55,13 @@ Every technology used in Pusher is 100% open-source and free forever:
 * **Backend**: Python 3.11+ with FastAPI and `asyncio`. Runs easily on a laptop or free cloud tiers (like Render or Railway free 512MB RAM tier).
 * **HTTP Engine**: `aiohttp` or `httpx` using asynchronous sockets. It reuses persistent connections without spawning heavy browser instances.
 * **Metrics**: In-memory rolling counters and fixed-size latency buckets (`< 5 MB` RAM total).
+* **Strict 5-Color Hex Design System**:
+  Pusher standardizes on a cohesive, modern developer visual theme across all dashboard views, modals, and telemetry graphs:
+  - `#011425` (**Deep Midnight**): Deep canvas background, terminal/telemetry console backgrounds, and recessed tracks.
+  - `#242424` (**Dark Charcoal**): Bento card surfaces, container backgrounds, navbar frames, and secondary panels.
+  - `#5C7C89` (**Slate Blue-Gray**): Card borders, muted labels, secondary text, axis lines, and inactive badges.
+  - `#1F4959` (**Ocean Teal**): Primary action buttons (CTA), active navigation pills, and live chart telemetry lines.
+  - `#FFFFFF` (**Crisp White**): Primary headings, metric readouts, and high-contrast action text.
 
 ---
 
