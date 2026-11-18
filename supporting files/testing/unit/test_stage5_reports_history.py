@@ -1,20 +1,84 @@
 import pytest
 from fastapi.testclient import TestClient
 from backend.main import app
-from backend.core.report_service import detect_knee_of_curve, init_db
+from backend.core.report_service import detect_knee_of_curve, init_db, save_run, get_db_connection
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
 def setup_database():
-    """Ensure database is initialized and seeded before running tests."""
+    """Ensure database has clean test runs for report testing."""
     init_db()
+    conn = get_db_connection()
+    with conn:
+        conn.execute("DELETE FROM test_runs;")
+    conn.close()
+
+    run1 = {
+        "run_id": "RUN-T101",
+        "timestamp": "12:00:00",
+        "target_url": "https://api.testsite.dev",
+        "guard_id": "PG-TEST-01",
+        "mode": "Step-Ramp",
+        "target_vus": 100,
+        "peak_vus": 100,
+        "duration_sec": 30,
+        "elapsed_sec": 30,
+        "peak_rps": 500,
+        "avg_rps": 400,
+        "p95_ms": 120.0,
+        "error_pct": 0.0,
+        "total_requests": 15000,
+        "status_2xx": 15000,
+        "status_429": 0,
+        "status_5xx": 0,
+        "bytes_discarded_mb": 0.5,
+        "ram_mb": 70.0,
+        "verdict": "PASSED",
+        "status_label": "PASSED (Completed 30s)",
+        "knee_vus": 80,
+        "knee_rps": 450,
+        "knee_p95_ms": 110.0,
+        "bottleneck_summary": "Optimal knee detected at 80 VUs.",
+        "timeseries": [{"elapsed_sec": 10, "vus": 50, "rps": 200, "p95_ms": 80, "error_pct": 0}],
+        "step_metrics": [],
+    }
+    run2 = {
+        "run_id": "RUN-T102",
+        "timestamp": "12:05:00",
+        "target_url": "https://api.testsite.dev",
+        "guard_id": "PG-TEST-01",
+        "mode": "Steady-Crowd",
+        "target_vus": 200,
+        "peak_vus": 200,
+        "duration_sec": 30,
+        "elapsed_sec": 30,
+        "peak_rps": 800,
+        "avg_rps": 750,
+        "p95_ms": 95.0,
+        "error_pct": 0.0,
+        "total_requests": 24000,
+        "status_2xx": 24000,
+        "status_429": 0,
+        "status_5xx": 0,
+        "bytes_discarded_mb": 0.8,
+        "ram_mb": 90.0,
+        "verdict": "PASSED",
+        "status_label": "PASSED (Completed 30s)",
+        "knee_vus": 180,
+        "knee_rps": 780,
+        "knee_p95_ms": 90.0,
+        "bottleneck_summary": "Optimal knee detected at 180 VUs.",
+        "timeseries": [{"elapsed_sec": 10, "vus": 100, "rps": 400, "p95_ms": 70, "error_pct": 0}],
+        "step_metrics": [],
+    }
+    save_run(run1)
+    save_run(run2)
 
 
 def test_detect_knee_of_curve_mathematical_inflection():
     """Verify detect_knee_of_curve pinpoints the inflection step where latency slope spikes."""
-    # Synthetic ramp data: linear up to 300 VUs, latency spikes at 400 VUs
     timeseries = [
         {"elapsed_sec": 5, "vus": 50, "rps": 150, "p95_ms": 40.0, "error_pct": 0.0},
         {"elapsed_sec": 10, "vus": 100, "rps": 300, "p95_ms": 45.0, "error_pct": 0.0},
@@ -33,6 +97,20 @@ def test_detect_knee_of_curve_mathematical_inflection():
     assert len(knee["ramp_steps"]) == len(timeseries)
 
 
+def test_empty_state_returns_null_scorecard_and_empty_runs():
+    """Verify that when test_runs is empty, /api/history returns runs: [] and scorecard: None."""
+    conn = get_db_connection()
+    with conn:
+        conn.execute("DELETE FROM test_runs;")
+    conn.close()
+
+    res = client.get("/api/history")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["runs"] == []
+    assert data["scorecard"] is None
+
+
 def test_get_history_filtering_and_scorecard():
     """Verify GET /api/history returns runs and scorecard, with mode and query filtering."""
     res = client.get("/api/history")
@@ -40,29 +118,29 @@ def test_get_history_filtering_and_scorecard():
     data = res.json()
     assert "runs" in data
     assert "scorecard" in data
-    assert len(data["runs"]) >= 3
+    assert len(data["runs"]) == 2
 
     # Filter by mode
     res_mode = client.get("/api/history?mode=Step-Ramp")
     assert res_mode.status_code == 200
     runs_mode = res_mode.json()["runs"]
-    assert len(runs_mode) >= 2
-    assert all("step-ramp" in r["mode"].lower() for r in runs_mode)
+    assert len(runs_mode) == 1
+    assert "step-ramp" in runs_mode[0]["mode"].lower()
 
     # Filter by query
-    res_q = client.get("/api/history?q=RUN-101")
+    res_q = client.get("/api/history?q=RUN-T101")
     assert res_q.status_code == 200
     runs_q = res_q.json()["runs"]
     assert len(runs_q) == 1
-    assert runs_q[0]["run_id"] == "RUN-101"
+    assert runs_q[0]["run_id"] == "RUN-T101"
 
 
 def test_get_single_run_report():
     """Verify GET /api/reports/{run_id} returns detailed capacity report with knee metrics."""
-    res = client.get("/api/reports/RUN-102")
+    res = client.get("/api/reports/RUN-T101")
     assert res.status_code == 200
     report = res.json()
-    assert report["run_id"] == "RUN-102"
+    assert report["run_id"] == "RUN-T101"
     assert report["knee_vus"] > 0
     assert report["peak_rps"] > 0
     assert "timeseries" in report
@@ -76,16 +154,15 @@ def test_get_single_run_report():
 def test_compare_two_runs():
     """Verify POST /api/reports/compare computes accurate differential deltas and verdict."""
     payload = {
-        "base_run_id": "RUN-102",
-        "candidate_run_id": "RUN-103",
+        "base_run_id": "RUN-T101",
+        "candidate_run_id": "RUN-T102",
     }
     res = client.post("/api/reports/compare", json=payload)
     assert res.status_code == 200
     diff = res.json()
-    assert diff["base_run"]["run_id"] == "RUN-102"
-    assert diff["candidate_run"]["run_id"] == "RUN-103"
+    assert diff["base_run"]["run_id"] == "RUN-T101"
+    assert diff["candidate_run"]["run_id"] == "RUN-T102"
     assert "deltas" in diff
-    # RUN-103 has higher throughput and lower latency than RUN-102
     assert diff["deltas"]["peak_rps_delta"] > 0
     assert diff["deltas"]["p95_ms_delta"] < 0
     assert diff["overall_verdict"] == "IMPROVED"
@@ -94,12 +171,12 @@ def test_compare_two_runs():
 
 def test_export_report_attachment():
     """Verify GET /api/reports/{run_id}/export returns downloadable attachment."""
-    res = client.get("/api/reports/RUN-102/export")
+    res = client.get("/api/reports/RUN-T101/export")
     assert res.status_code == 200
     assert "attachment" in res.headers.get("content-disposition", "")
-    assert "report_RUN-102.json" in res.headers.get("content-disposition", "")
+    assert "report_RUN-T101.json" in res.headers.get("content-disposition", "")
     exported = res.json()
-    assert exported["run_id"] == "RUN-102"
+    assert exported["run_id"] == "RUN-T101"
 
 
 def test_load_engine_auto_persists_to_sqlite():

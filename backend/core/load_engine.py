@@ -9,6 +9,8 @@ Async Load Engine for Pusher Load Testing Platform.
 
 import asyncio
 import collections
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -120,6 +122,7 @@ class LoadEngine:
         self.target_url: str = ""
         self.cache_bust: bool = True
         self.active_guard_id: str = ""
+        self.handshake_secret: str | None = None
         self.ram_limit_mb: int = DEFAULT_RAM_CEILING_MB
         self.max_error_pct: float = 15.0
         self.p95_ceiling_ms: float = 1500.0
@@ -147,35 +150,8 @@ class LoadEngine:
         self._rolling_latencies = collections.deque()
         self._rolling_requests = collections.deque()
 
-        # Run history archive
-        self.run_history: list[dict] = [
-            {
-                "id": "RUN-902",
-                "timestamp": "18:45:10",
-                "target": "https://api.myproject.dev",
-                "guardToken": "PG-9065",
-                "mode": "Step-Ramp",
-                "peakVus": 1000,
-                "duration": 60,
-                "peakRps": 2840,
-                "p95": "142 ms",
-                "status": "PASSED (Completed 60s)",
-                "verdictCategory": "PASSED",
-            },
-            {
-                "id": "RUN-891",
-                "timestamp": "17:30:22",
-                "target": "https://api.myproject.dev",
-                "guardToken": "PG-9065",
-                "mode": "Sudden Rush",
-                "peakVus": 1500,
-                "duration": 30,
-                "peakRps": 4210,
-                "p95": "480 ms",
-                "status": "CIRCUIT BREAKER (p95 > 400ms)",
-                "verdictCategory": "CIRCUIT_BREAKER",
-            },
-        ]
+        # Run history archive (Dynamically populated from real runs)
+        self.run_history: list[dict] = []
 
     def get_status(self) -> dict:
         now = time.time()
@@ -249,6 +225,7 @@ class LoadEngine:
         duration_sec: int,
         cache_bust: bool = True,
         active_guard_id: str = "PG-ACTIVE",
+        handshake_secret: str | None = None,
         ram_limit_mb: int = DEFAULT_RAM_CEILING_MB,
         max_error_pct: float = 15.0,
         p95_ceiling_ms: float = 1500.0,
@@ -264,6 +241,7 @@ class LoadEngine:
         self.duration_sec = duration_sec
         self.cache_bust = cache_bust
         self.active_guard_id = active_guard_id
+        self.handshake_secret = handshake_secret
         self.ram_limit_mb = ram_limit_mb
         self.max_error_pct = max_error_pct
         self.p95_ceiling_ms = p95_ceiling_ms
@@ -547,13 +525,27 @@ class LoadEngine:
 
                 await self.broadcast_telemetry(event=event_type)
 
-    async def _vu_worker(self, client: httpx.AsyncClient, vu_id: int):
-        req_seq = 0
-        headers = {
-            "X-Pusher-Guard-ID": self.active_guard_id,
+    def _build_signed_headers(self) -> dict:
+        guard_id = self.active_guard_id or "PG-ACTIVE"
+        from backend.core.target_service import target_store
+        secret = self.handshake_secret or target_store.bypass_secret or "bypass_secret_demo"
+        curr_min = str(int(time.time() // 60))
+        sig = hmac.new(
+            secret.encode("utf-8"),
+            f"{guard_id}:{curr_min}".encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        return {
+            "X-Pusher-Guard-ID": guard_id,
+            "X-Pusher-Timestamp": curr_min,
+            "X-Pusher-Signature": sig,
+            "X-Pusher-Bypass": f"{guard_id}-SIGNED",
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "User-Agent": "Pusher-LoadEngine/1.0",
         }
+
+    async def _vu_worker(self, client: httpx.AsyncClient, vu_id: int):
+        req_seq = 0
 
         while not self._stop_event.is_set():
             now = time.time()
@@ -575,6 +567,7 @@ class LoadEngine:
                 if self.cache_bust
                 else self.target_url
             )
+            headers = self._build_signed_headers()
 
             req_t0 = time.perf_counter()
             is_error = False
@@ -660,12 +653,8 @@ class LoadEngine:
                     else base_req_url
                 )
 
-                # Headers with token interpolation & guard headers
-                headers = {
-                    "X-Pusher-Guard-ID": self.active_guard_id,
-                    "Cache-Control": "no-cache, no-store, must-revalidate",
-                    "User-Agent": "Pusher-LoadEngine/1.0",
-                }
+                # Headers with token interpolation & signed guard headers
+                headers = self._build_signed_headers()
                 for hk, hv in (s.get("headers") or {}).items():
                     val = str(hv)
                     for ck, cv in context.items():

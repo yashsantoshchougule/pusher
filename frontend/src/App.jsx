@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
+import WafSetupPage from './pages/WafSetupPage';
 import { Shield } from 'lucide-react';
 
 export default function App() {
@@ -8,6 +9,9 @@ export default function App() {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname;
       const hash = window.location.hash;
+      if (path === '/waf-setup' || hash === '#/waf-setup') {
+        return 'waf-setup';
+      }
       if (path === '/dashboard' || hash === '#/dashboard') {
         return 'dashboard';
       }
@@ -15,7 +19,7 @@ export default function App() {
         return 'website';
       }
     }
-    return 'auth'; // 'auth' | 'website' | 'dashboard'
+    return 'auth'; // 'auth' | 'website' | 'dashboard' | 'waf-setup'
   };
 
   const [currentView, setCurrentView] = useState(getInitialView);
@@ -24,7 +28,9 @@ export default function App() {
     const handleLocationChange = () => {
       const path = window.location.pathname;
       const hash = window.location.hash;
-      if (path === '/dashboard' || hash === '#/dashboard') {
+      if (path === '/waf-setup' || hash === '#/waf-setup') {
+        setCurrentView('waf-setup');
+      } else if (path === '/dashboard' || hash === '#/dashboard') {
         setCurrentView('dashboard');
       } else if (path === '/website' || hash === '#/website') {
         setCurrentView('website');
@@ -44,13 +50,35 @@ export default function App() {
   const navigateTo = (view) => {
     setCurrentView(view);
     if (typeof window !== 'undefined') {
-      const targetPath = view === 'dashboard' ? '/dashboard' : view === 'website' ? '/website' : '/';
+      const targetPath =
+        view === 'waf-setup'
+          ? '/waf-setup'
+          : view === 'dashboard'
+          ? '/dashboard'
+          : view === 'website'
+          ? '/website'
+          : '/';
       window.history.pushState(null, '', targetPath);
+      window.location.hash = `#${targetPath}`;
     }
   };
 
+  if (currentView === 'waf-setup') {
+    return (
+      <WafSetupPage
+        onBack={() => navigateTo('dashboard')}
+        onNavigate={navigateTo}
+      />
+    );
+  }
+
   if (currentView === 'dashboard') {
-    return <DashboardPage onLogout={() => navigateTo('auth')} />;
+    return (
+      <DashboardPage
+        onLogout={() => navigateTo('auth')}
+        onNavigate={navigateTo}
+      />
+    );
   }
 
   if (currentView === 'website') {

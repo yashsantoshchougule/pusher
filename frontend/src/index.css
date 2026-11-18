@@ -2,7 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
+html,
+body,
+#root {
   width: 100%;
   min-height: 100vh;
   height: auto !important;
@@ -20,8 +22,8 @@ html, body, #root {
 
 /* Prevent Chrome / Safari Browser Autofill from changing background color or hardcoding passwords */
 input:-webkit-autofill,
-input:-webkit-autofill:hover, 
-input:-webkit-autofill:focus, 
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
 input:-webkit-autofill:active {
   -webkit-box-shadow: 0 0 0 50px #031716 inset !important;
   -webkit-text-fill-color: #FFFFFF !important;

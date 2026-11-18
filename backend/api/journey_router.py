@@ -130,6 +130,7 @@ async def dry_run_endpoint(req: DryRunRequest, request: Request):
 
     results = await execute_dry_run(steps, base_url=base_url, guard_id=guard_id, client=client)
     context = getattr(journey_store, "last_dry_run_context", {})
+    journey_store.save_dry_run(results, context)
 
     total_ms = round(sum(r.get("latency_ms", 0.0) for r in results), 1)
     all_passed = len(results) == len(steps) and all(r.get("passed") for r in results)

@@ -53,26 +53,37 @@ export default function OverviewBoxes({
             </div>
 
             {/* Read-Only Details */}
-            <div className="space-y-2 mb-4 text-xs font-mono">
-              <div className="border border-black p-2.5 bg-white flex justify-between items-center">
-                <span className="font-bold uppercase">Active Domain:</span>
-                <span className="font-bold truncate max-w-[240px]">{targetUrl}</span>
+            {!isVerified && !targetUrl ? (
+              <div className="border-2 border-dashed border-black p-4 text-center mb-4 bg-gray-50 flex flex-col items-center justify-center">
+                <div className="text-xs font-black uppercase tracking-wider text-black">
+                  NO VERIFIED TARGET
+                </div>
+                <div className="text-[10px] opacity-75 mt-1 font-bold">
+                  GO TO 2. VERIFY TARGET TO CONFIGURE ORIGIN
+                </div>
               </div>
-              <div className="border border-black p-2.5 bg-white flex justify-between items-center">
-                <span className="font-bold uppercase">Guard Token:</span>
-                <span className="font-bold">{isVerified ? guardToken : 'NONE (REVOKED)'}</span>
+            ) : (
+              <div className="space-y-2 mb-4 text-xs font-mono">
+                <div className="border border-black p-2.5 bg-white flex justify-between items-center">
+                  <span className="font-bold uppercase">Active Domain:</span>
+                  <span className="font-bold truncate max-w-[240px]">{targetUrl || 'NONE (UNCONFIGURED)'}</span>
+                </div>
+                <div className="border border-black p-2.5 bg-white flex justify-between items-center">
+                  <span className="font-bold uppercase">Guard Token:</span>
+                  <span className="font-bold">{isVerified ? guardToken : 'NONE (REVOKED)'}</span>
+                </div>
+                <div className="border border-black p-2.5 bg-white flex justify-between items-center">
+                  <span className="font-bold uppercase">SSRF Check:</span>
+                  <span className={`font-bold border border-black px-1.5 py-0.5 text-[10px] ${
+                    ssrfCheck.valid
+                      ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
+                      : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
+                  }`}>
+                    {ssrfCheck.valid ? 'PASSED' : 'BLOCKED'}
+                  </span>
+                </div>
               </div>
-              <div className="border border-black p-2.5 bg-white flex justify-between items-center">
-                <span className="font-bold uppercase">SSRF Check:</span>
-                <span className={`font-bold border border-black px-1.5 py-0.5 text-[10px] ${
-                  ssrfCheck.valid
-                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
-                    : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
-                }`}>
-                  {ssrfCheck.valid ? 'PASSED' : 'BLOCKED'}
-                </span>
-              </div>
-            </div>
+            )}
 
             {/* 48-Hour Live Countdown Banner */}
             <div className={`border-2 border-black p-3 mb-4 bg-white ${
@@ -122,36 +133,47 @@ export default function OverviewBoxes({
               </span>
             </div>
 
-            {/* 3 Read-Only KPI Mini-Boxes */}
-            <div className="grid grid-cols-3 gap-2 mb-4 text-center">
-              <div className={`border-2 border-black p-2.5 bg-white ${
-                isProd ? 'border-t-4 border-t-teal-700' : ''
-              }`}>
-                <div className="text-[10px] font-bold uppercase">KNEE OF CURVE</div>
-                <div className="text-lg sm:text-xl font-black mt-1">
-                  {latestScorecard.knee_vus || 390} VUs
+            {/* 3 Read-Only KPI Mini-Boxes or Empty State */}
+            {!latestScorecard ? (
+              <div className="border-2 border-dashed border-black p-5 text-center mb-4 bg-gray-50 flex flex-col items-center justify-center min-h-[90px]">
+                <div className="text-xs font-black uppercase tracking-wider text-black">
+                  NO COMPLETED RUNS IN DATABASE
                 </div>
-                <div className="text-[9px] opacity-75">Optimal Capacity</div>
-              </div>
-              <div className={`border-2 border-black p-2.5 bg-white ${
-                isProd ? 'border-t-4 border-t-teal-700' : ''
-              }`}>
-                <div className="text-[10px] font-bold uppercase">PEAK RPS</div>
-                <div className="text-lg sm:text-xl font-black mt-1">
-                  {Number(latestScorecard.peak_rps || 1180).toLocaleString()} RPS
+                <div className="text-[10px] opacity-75 mt-1 font-bold">
+                  RUN A LOAD TEST TO GENERATE SCORECARD
                 </div>
-                <div className="text-[9px] opacity-75">Max Throughput</div>
               </div>
-              <div className={`border-2 border-black p-2.5 bg-white ${
-                isProd ? 'border-t-4 border-t-teal-700' : ''
-              }`}>
-                <div className="text-[10px] font-bold uppercase">P95 LATENCY</div>
-                <div className="text-lg sm:text-xl font-black mt-1">
-                  {latestScorecard.p95_ms || 164} ms
+            ) : (
+              <div className="grid grid-cols-3 gap-2 mb-4 text-center">
+                <div className={`border-2 border-black p-2.5 bg-white ${
+                  isProd ? 'border-t-4 border-t-teal-700' : ''
+                }`}>
+                  <div className="text-[10px] font-bold uppercase">KNEE OF CURVE</div>
+                  <div className="text-lg sm:text-xl font-black mt-1">
+                    {latestScorecard.knee_vus} VUs
+                  </div>
+                  <div className="text-[9px] opacity-75">Optimal Capacity</div>
                 </div>
-                <div className="text-[9px] opacity-75">Optimal Health</div>
+                <div className={`border-2 border-black p-2.5 bg-white ${
+                  isProd ? 'border-t-4 border-t-teal-700' : ''
+                }`}>
+                  <div className="text-[10px] font-bold uppercase">PEAK RPS</div>
+                  <div className="text-lg sm:text-xl font-black mt-1">
+                    {Number(latestScorecard.peak_rps).toLocaleString()} RPS
+                  </div>
+                  <div className="text-[9px] opacity-75">Max Throughput</div>
+                </div>
+                <div className={`border-2 border-black p-2.5 bg-white ${
+                  isProd ? 'border-t-4 border-t-teal-700' : ''
+                }`}>
+                  <div className="text-[10px] font-bold uppercase">P95 LATENCY</div>
+                  <div className="text-lg sm:text-xl font-black mt-1">
+                    {latestScorecard.p95_ms} ms
+                  </div>
+                  <div className="text-[9px] opacity-75">Optimal Health</div>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Staged Config Summary Box */}
             <div className="border-2 border-black p-3 mb-4 bg-white text-xs">

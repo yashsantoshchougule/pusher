@@ -27,28 +27,40 @@ export default function ReportsView({
   themeMode = 'production',
 }) {
   const isProd = themeMode === 'production';
-  const report = singleRunReport || {
-    run_id: selectedReportId || 'RUN-103',
-    timestamp: '21:18:44',
-    target: 'https://api.myproject.dev',
-    mode: 'Step-Ramp',
-    peak_vus: 460,
-    duration: 60,
-    peak_rps: 1180,
-    p95_ms: 164,
-    knee_vus: 390,
-    status: 'PASSED (Completed 60s)',
-    total_requests: 68420,
-    error_count: 0,
-    latency_breakdown: { p50: 92, p90: 148, p95: 164, p99: 210, max: 340 },
-    steps: [
-      { step: 1, vus: 100, rps: 290, p95_ms: 112, error_rate: 0.0 },
-      { step: 2, vus: 200, rps: 580, p95_ms: 124, error_rate: 0.0 },
-      { step: 3, vus: 300, rps: 870, p95_ms: 138, error_rate: 0.0 },
-      { step: 4, vus: 390, rps: 1120, p95_ms: 152, error_rate: 0.0 },
-      { step: 5, vus: 460, rps: 1180, p95_ms: 164, error_rate: 0.0 },
-    ]
-  };
+
+  if (!singleRunReport && (!runHistory || runHistory.length === 0)) {
+    return (
+      <div className="space-y-6">
+        <div className="border-b-2 border-black pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-black uppercase tracking-wider">
+              CAPACITY REPORTS &amp; BENCHMARK COMPARISON
+            </h1>
+            <p className="text-xs opacity-75">
+              Mathematical Knee-of-the-Curve degradation detection and Before-vs-After regression comparison.
+            </p>
+          </div>
+        </div>
+        <div className="border-2 border-dashed border-black p-12 text-center bg-gray-50 flex flex-col items-center justify-center">
+          <div className="text-sm font-black uppercase tracking-wider text-black">
+            NO TEST RUNS AVAILABLE FOR ANALYSIS
+          </div>
+          <div className="text-xs opacity-75 mt-2 font-bold max-w-md">
+            Execute a load test from 1. Dashboard or 3. Traffic Setup to generate automated capacity scorecards and knee-of-the-curve telemetry.
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveNav('dashboard')}
+            className="mt-6 border-2 border-black px-4 py-2 text-xs font-bold uppercase bg-white hover:bg-black hover:text-white transition-colors cursor-pointer"
+          >
+            GO TO DASHBOARD →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const report = singleRunReport || (runHistory && runHistory[0]) || {};
 
   return (
     <div className="space-y-6">

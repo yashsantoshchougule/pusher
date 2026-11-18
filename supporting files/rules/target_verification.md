@@ -55,21 +55,37 @@ Value: pusher-verify=...   1. Auto-serves verify route       (For static Jamstac
 ---
 
 ### Method B: The "2-in-1 Pusher Guard Middleware File" [Feature #9] (`guard_file_verifier.py`)
-When testing a dynamic web application (built with FastAPI, Flask, Express, Django, etc.), developers face a common frustration: **their own in-app rate limiters** block the load test after 50 to 100 requests with `HTTP 429 Too Many Requests`.
+When testing a dynamic web application (built with FastAPI, Flask, Express, Django, etc.), developers face a common frustration: **their own in-app rate limiters** block the load test after 50 to 100 requests with `HTTP 429 Too Many Requests`, and API routes require authenticated sessions.
 
-To solve this, Pusher's verifier plugin (`backend/plugins/verifiers/guard_file_verifier.py`) provides a downloadable **2-in-1 Server Middleware File** (`pusher_guard.py` for Python or `pusherGuard.js` for Node.js).
+To solve this, Pusher provides a downloadable **Cryptographically Signed & Sealed Server Middleware File** (`pusher_guard.py` for Python or `pusherGuard.js` for Node.js).
 
-#### Why a Backend File Beats a Public `.txt` File:
-* A public `.txt` file can be opened by anyone in a browser, so you can **never** put a secret rate-limit bypass key inside it.
-* A backend middleware file (`.py` or `.js`) runs privately inside your server. Visitors and hackers cannot read the code, so it safely holds both the **Public Verification Token** AND a **Private Rate-Limit Bypass Secret**!
+#### The Architecture of the Sealed Guard File:
+1. **Job 1 (Automatic Domain Verification & Handshake)**:
+   The middleware automatically registers the `GET /__pusher_verify?nonce=...` route on your web server, validates the 48-hour expiration window, computes the HMAC challenge response, and returns `status="ACTIVE"`, `proof`, `file_sha256`, and `auth_bypass_ready=True`.
+2. **Job 2 (Cryptographically Signed Backend Rate-Limiter & Auth Bypass)**:
+   During active load tests and dry-runs, Pusher automatically signs every outgoing request:
+   - `X-Pusher-Guard-ID: {guard_id}`
+   - `X-Pusher-Timestamp: {current_unix_minute}`
+   - `X-Pusher-Signature: {hmac_sha256(secret, f"{guard_id}:{current_unix_minute}")}`
+   - `X-Pusher-Bypass: {guard_id}-SIGNED`
+   The middleware checks the signature using constant-time comparison (`hmac.compare_digest`) with a `±1` minute clock-skew window. When verified:
+   - **App-Level Rate Limiter Bypass**: Sets `request.state.pusher_bypass = True` and rotates synthetic client IP in `request.scope["client"]` per request so IP-based rate limiters (`slowapi`, Starlette throttles) never block Pusher VUs with `HTTP 429`.
+   - **App-Level Auth Bypass**: Injects synthetic `Authorization: Bearer pusher_bypass_{guard_id}` and sets `request.scope["user"] = {"id": "pusher_load_test_vu", "role": "load_tester", "bypass_auth": True}` if no custom auth header was supplied.
+   - **Normal Traffic Security**: Unsigned requests pass through untouched without any bypass.
+3. **Job 3 (Byte-Level Self-Lock Integrity Check)**:
+   `pusher_guard.py` verifies its own SHA-256 seal on load. Modifying even 1 byte raises:
+   `RuntimeError("PUSHER GUARD LOCKED: Unauthorized modification to pusher_guard.py detected.")`.
 
-#### The Two Jobs of the 2-in-1 Guard File:
-1. **Job 1 (Automatic Domain Verification)**:
-   The middleware automatically registers the `GET /.well-known/pusher-challenge.txt` (and alias `GET /.well-known/pusher-verify`) route on your web server and returns your unique `pusher-verify=<UUIDv4>` token.
-2. **Job 2 (Automatic Backend Rate-Limiter Bypass)**:
-   During an active load test, Pusher automatically injects a secret HTTP header on every single request:
-   `X-Pusher-Bypass: <PRIVATE_HMAC_SECRET>`
-   The middleware checks this header using constant-time comparison (`hmac.compare_digest`). If it matches, it flags `request.state.is_pusher_test = True` (or `req.isPusherTest = true`), allowing your application-layer rate limiter (like SlowAPI or express-rate-limit) to skip blocking the test!
+#### Enforced Security, Device Lock & Quota Invariants:
+- **Device-Bound Hardware Lock (`DEV-XXXXXXXXXXXX`)**: Generating `pusher_guard.py` captures the creator's device hardware fingerprint (`localStorage` seed + platform + screen + timeZone + concurrency) into `creator_device_hash` and embeds it inside the sealed vault.
+- **Host-Machine Lock**: Inside `pusher_guard.py`, `_get_host_fingerprint()` binds to `uuid.getnode() + platform.node()` on first handshake. Copying the file to another server triggers an immediate mismatch tripwire.
+- **Persistent SQLite Tombstone Registry (`burned_guards`)**: All burned Guard IDs are written to table `burned_guards` in `backend/pusher_runs.db` (`guard_id`, `burn_reason`, `creator_device_hash`, `offending_device_hash`, `burned_at`). Once written, the ID can never be used, re-issued, or verified again.
+- **3 Irreversible Kill & Permanent Burn Triggers**:
+  1. **Trigger 1 — Cross-Device Usage Violation (`DEVICE_MISMATCH_VIOLATION`)**: If any request (`verify`, `load/start`, `kill`) arrives from a device other than the creator device, or if the host machine fingerprint changes, the Guard ID is permanently killed, the 48h timer is halted at `00:00:00`, active load tests are aborted, and `HTTP 403 Forbidden` is returned.
+  2. **Trigger 2 — Automatic 48-Hour Expiry Kill (`EXPIRED_48H`)**: Once `time.time() >= expires_at`, the ID is automatically permanently killed across all endpoints.
+  3. **Trigger 3 — Manual User Revocation (`MANUAL_USER_KILL`)**: Creator clicks `KILL ID`, burning the active token into SQLite and unlocking `DOWNLOAD PUSHER_GUARD.PY` (subject to 3/day quota).
+- **Kill-First Rule (`HTTP 409 Conflict`)**: Generating a second `pusher_guard.py` while an active unrevoked guard exists is blocked until the active ID is killed via `POST /api/target/kill`.
+- **3/Day Rate Limit (`HTTP 429 Too Many Requests`)**: Maximum 3 guard generations per rolling 24-hour window.
 
 #### Copy-Ready Example: `pusher_guard.py` (FastAPI / Python)
 The user clicks **"Download pusher_guard.py"** in Pusher's UI and drops it into their backend project:

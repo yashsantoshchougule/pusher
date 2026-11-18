@@ -5,6 +5,8 @@ Journey Service for Multi-Step Sequential API Testing:
 - 1-VU Dry-Run Validator with First-4KB Token Extraction and Interpolation
 """
 
+import hashlib
+import hmac
 import json
 import time
 import urllib.parse
@@ -61,22 +63,48 @@ DEFAULT_SANDBOX_STEPS = [
 
 class JourneyStore:
     def __init__(self):
-        self.steps: list[dict] = [dict(s) for s in DEFAULT_SANDBOX_STEPS]
-        self.use_journey: bool = False
-        self.last_dry_run_results: list[dict] = []
+        self.last_dry_run_context: dict = {}
         self.last_dry_run_timestamp: str | None = None
 
+    @property
+    def steps(self) -> list[dict]:
+        from backend.core.database import db_get_journey
+        return db_get_journey().get("steps", [])
+
+    @property
+    def use_journey(self) -> bool:
+        from backend.core.database import db_get_journey
+        return db_get_journey().get("use_journey", False)
+
+    @property
+    def last_dry_run_results(self) -> list[dict]:
+        from backend.core.database import db_get_journey
+        return db_get_journey().get("last_dry_run") or []
+
+    @last_dry_run_results.setter
+    def last_dry_run_results(self, val: list[dict]):
+        from backend.core.database import db_save_journey_dry_run
+        db_save_journey_dry_run(val)
+
     def get_journey(self) -> dict:
+        from backend.core.database import db_get_journey
+        data = db_get_journey()
         return {
-            "steps": self.steps,
-            "use_journey": self.use_journey,
-            "dry_run_results": self.last_dry_run_results,
+            "steps": data.get("steps", []),
+            "use_journey": data.get("use_journey", False),
+            "dry_run_results": data.get("last_dry_run") or [],
             "dry_run_timestamp": self.last_dry_run_timestamp,
         }
 
     def save_journey(self, steps: list[dict], use_journey: bool = False) -> None:
-        self.steps = steps[:10]  # Cap at 10 steps
-        self.use_journey = use_journey
+        from backend.core.database import db_save_journey
+        db_save_journey(use_journey=use_journey, steps=steps[:10])
+
+    def save_dry_run(self, results: list[dict], context: dict | None = None) -> None:
+        from backend.core.database import db_save_journey_dry_run
+        self.last_dry_run_context = context or {}
+        self.last_dry_run_timestamp = time.strftime("%H:%M:%S")
+        db_save_journey_dry_run(results)
 
 
 journey_store = JourneyStore()
@@ -169,8 +197,21 @@ async def execute_dry_run(
                 clean_path = resolved_path.lstrip("/")
                 url = f"{clean_base}/{clean_path}"
 
-            # Interpolate headers
-            headers = {"X-Pusher-Guard-ID": guard_id, "User-Agent": "Pusher-DryRun/1.0"}
+            # Interpolate headers with signed Pusher bypass credentials
+            curr_min = str(int(time.time() // 60))
+            secret = target_store.bypass_secret or "bypass_secret_demo"
+            sig = hmac.new(
+                secret.encode("utf-8"),
+                f"{guard_id}:{curr_min}".encode("utf-8"),
+                hashlib.sha256
+            ).hexdigest()
+            headers = {
+                "X-Pusher-Guard-ID": guard_id,
+                "X-Pusher-Timestamp": curr_min,
+                "X-Pusher-Signature": sig,
+                "X-Pusher-Bypass": f"{guard_id}-SIGNED",
+                "User-Agent": "Pusher-DryRun/1.0",
+            }
             raw_headers = s.get("headers") or {}
             for hk, hv in raw_headers.items():
                 val = str(hv)

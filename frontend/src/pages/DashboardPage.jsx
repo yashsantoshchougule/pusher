@@ -43,8 +43,9 @@ import TrafficSetupView from '../components/dashboard/TrafficSetupView';
 import ApiBuilderView from '../components/dashboard/ApiBuilderView';
 import TestHistoryView from '../components/dashboard/TestHistoryView';
 import ReportsView from '../components/dashboard/ReportsView';
+import { getDeviceId } from '../utils/deviceFingerprint';
 
-export default function DashboardPage({ onLogout }) {
+export default function DashboardPage({ onLogout, onNavigate }) {
   // Navigation & Dropdown States (6 Views)
   const [activeNav, setActiveNav] = useState('dashboard'); // 'dashboard' | 'verify' | 'traffic' | 'api' | 'history' | 'reports'
   const [menuOpen, setMenuOpen] = useState(false);
@@ -54,11 +55,15 @@ export default function DashboardPage({ onLogout }) {
   // Theme Mode: 'production' (polished accents & colored badges) vs 'wireframe' (strict monochrome)
   const [themeMode, setThemeMode] = useState('production');
 
-  // Target Verification & 48h Timer States (Shared across views)
-  const [targetUrl, setTargetUrl] = useState('https://api.myproject.dev');
-  const [guardToken, setGuardToken] = useState('PG-9065-48H');
-  const [isVerified, setIsVerified] = useState(true);
-  const [guardTimerSeconds, setGuardTimerSeconds] = useState(172782); // ~47h 59m 42s
+  // Device Lock State (Deterministic hardware fingerprint DEV-XXXXXXXXXXXX)
+  const [deviceId, setDeviceId] = useState('DEV-LOCAL-CREATOR');
+  const [lastBurnReason, setLastBurnReason] = useState(null);
+
+  // Target Verification & 48h Timer States (Shared across views - Zero hardcoded values)
+  const [targetUrl, setTargetUrl] = useState('');
+  const [guardToken, setGuardToken] = useState(null);
+  const [isVerified, setIsVerified] = useState(false);
+  const [guardTimerSeconds, setGuardTimerSeconds] = useState(0);
   const [verificationError, setVerificationError] = useState(null);
 
   // Quota & Burn Registry Telemetry (3/Day Rate Limit + Permanent Superseding Burn)
@@ -71,75 +76,26 @@ export default function DashboardPage({ onLogout }) {
   });
   const [supersededNotice, setSupersededNotice] = useState(null);
 
-  // Backend API Base & Hardware Limits
+  // Backend API Base & Hardware Limits (Dynamically populated from /api/system/limits)
   const API_BASE = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
     ? 'http://127.0.0.1:8000'
     : '';
 
   const [hardwareLimits, setHardwareLimits] = useState({
-    total_system_ram_mb: 16384,
-    max_safe_ram_mb: 12288,
+    total_system_ram_mb: null,
+    max_safe_ram_mb: null,
     fd_cap_pct: 70,
-    open_files_soft: 2048,
+    open_files_soft: null,
   });
 
-  // Set clean white body background on mount and fetch System Limits
-  useEffect(() => {
-    document.body.style.backgroundColor = '#ffffff';
-    const fetchLimits = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/system/limits`);
-        if (res.ok) {
-          const data = await res.json();
-          setHardwareLimits(data);
-        }
-      } catch {
-        // Fallback to standard hardware specs if backend is offline
-      }
-    };
-    fetchLimits();
-  }, []);
-
-  // Fetch Target Status & Quota Telemetry
-  const fetchTargetStatus = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/target/status`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.daily_generations_used !== undefined) {
-          setGuardQuota({
-            used: data.daily_generations_used,
-            max: data.daily_generations_max || 3,
-            remaining: data.daily_generations_remaining !== undefined ? data.daily_generations_remaining : (3 - data.daily_generations_used),
-            revokedCount: data.revoked_count || 0,
-            lastRevokedId: data.last_revoked_guard_id || null,
-          });
-        }
-        if (data.is_verified !== undefined) {
-          setIsVerified(data.is_verified);
-        }
-        setGuardToken(data.guard_id || null);
-        if (data.remaining_seconds !== undefined) {
-          setGuardTimerSeconds(data.remaining_seconds);
-        }
-      }
-    } catch {
-      // offline fallback
-    }
-  };
-
-  useEffect(() => {
-    fetchTargetStatus();
-  }, [activeNav]);
-
   // Traffic Setup & Safety Controls (Shared across views)
-  const [trafficMode, setTrafficMode] = useState('step_ramp'); // 'step_ramp' | 'sudden_rush' | 'steady_crowd'
-  const [ramLimitMb, setRamLimitMb] = useState(500); // 250, 500 (default ceiling), 1024, 2048, or custom
-  const [vus, setVus] = useState(460);
-  const [duration, setDuration] = useState(60); // 60s, 180s, 300s
-  const [max5xxThreshold, setMax5xxThreshold] = useState(5); // 2%, 5%, 10%
+  const [trafficMode, setTrafficMode] = useState('step_ramp');
+  const [ramLimitMb, setRamLimitMb] = useState(500);
+  const [vus, setVus] = useState(100);
+  const [duration, setDuration] = useState(30);
+  const [max5xxThreshold, setMax5xxThreshold] = useState(5);
   const [wafAutoAbort, setWafAutoAbort] = useState(true);
-  const [p95Ceiling, setP95Ceiling] = useState(2000); // 1000, 2000, 5000 ms
+  const [p95Ceiling, setP95Ceiling] = useState(1500);
   const [cacheBusting, setCacheBusting] = useState(true);
   const [testRunning, setTestRunning] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
@@ -147,48 +103,17 @@ export default function DashboardPage({ onLogout }) {
   // Live Telemetry Stream State
   const [elapsed, setElapsed] = useState(0);
   const [telemetry, setTelemetry] = useState({
-    currentVus: 460,
-    liveRps: 1180,
-    p95Latency: 164,
+    currentVus: 0,
+    liveRps: 0,
+    p95Latency: 0,
     errorRate: 0.0,
     circuitBreaker: 'ARMED',
-    bytesDiscardedMb: 4.8,
+    bytesDiscardedMb: 0.0,
   });
 
   // Stage 4: Multi-Step API Journey Builder State
   const [useJourney, setUseJourney] = useState(false);
-  const [journeySteps, setJourneySteps] = useState([
-    {
-      step_id: 'step_1',
-      name: 'Simulated OAuth Login & Token Issue',
-      method: 'POST',
-      path: '/api/sandbox/auth/token',
-      headers: { 'Content-Type': 'application/json' },
-      body: { username: 'load_tester', role: 'tester' },
-      expected_status: 200,
-      extract_json_key: 'access_token',
-    },
-    {
-      step_id: 'step_2',
-      name: 'Fetch Paginated Resource Catalog',
-      method: 'GET',
-      path: '/api/sandbox/items?limit=20',
-      headers: { Authorization: 'Bearer {{token}}' },
-      body: null,
-      expected_status: 200,
-      extract_json_key: null,
-    },
-    {
-      step_id: 'step_3',
-      name: 'Process Checkout Order',
-      method: 'POST',
-      path: '/api/sandbox/checkout',
-      headers: { Authorization: 'Bearer {{token}}', 'Content-Type': 'application/json' },
-      body: { item_id: 'ITEM-101', quantity: 1 },
-      expected_status: 200,
-      extract_json_key: null,
-    },
-  ]);
+  const [journeySteps, setJourneySteps] = useState([]);
   const [isDryRunning, setIsDryRunning] = useState(false);
   const [dryRunResults, setDryRunResults] = useState(null);
   const [journeyMessage, setJourneyMessage] = useState(null);
@@ -199,59 +124,140 @@ export default function DashboardPage({ onLogout }) {
   const [historyModeFilter, setHistoryModeFilter] = useState('ALL');
   const [historyStatusFilter, setHistoryStatusFilter] = useState('ALL');
   const [selectedForCompare, setSelectedForCompare] = useState([]);
-  const [selectedReportId, setSelectedReportId] = useState('RUN-103');
+  const [selectedReportId, setSelectedReportId] = useState(null);
   const [singleRunReport, setSingleRunReport] = useState(null);
-  const [compareBaseId, setCompareBaseId] = useState('RUN-102');
-  const [compareCandidateId, setCompareCandidateId] = useState('RUN-103');
+  const [compareBaseId, setCompareBaseId] = useState(null);
+  const [compareCandidateId, setCompareCandidateId] = useState(null);
   const [compareData, setCompareData] = useState(null);
   const [reportMode, setReportMode] = useState('single');
-  const [latestScorecard, setLatestScorecard] = useState({
-    knee_vus: 390,
-    peak_rps: 1180,
-    p95_ms: 164,
-  });
+  const [latestScorecard, setLatestScorecard] = useState(null);
+  const [runHistory, setRunHistory] = useState([]);
 
-  const [runHistory, setRunHistory] = useState([
-    {
-      id: 'RUN-103',
-      timestamp: '21:18:44',
-      target: 'https://api.myproject.dev',
-      guardToken: 'PG-9065',
-      mode: 'Step-Ramp',
-      peakVus: 460,
-      duration: 60,
-      peakRps: 1180,
-      p95: '164 ms',
-      status: 'PASSED (Completed 60s)',
-      verdictCategory: 'PASSED',
-    },
-    {
-      id: 'RUN-102',
-      timestamp: '21:12:05',
-      target: 'https://api.myproject.dev',
-      guardToken: 'PG-9065',
-      mode: 'Sudden Rush',
-      peakVus: 460,
-      duration: 180,
-      peakRps: 1120,
-      p95: '188 ms',
-      status: 'PASSED (Completed 180s)',
-      verdictCategory: 'PASSED',
-    },
-    {
-      id: 'RUN-101',
-      timestamp: '21:05:12',
-      target: 'https://api.myproject.dev',
-      guardToken: 'PG-8411',
-      mode: 'Step-Ramp',
-      peakVus: 500,
-      duration: 60,
-      peakRps: 1040,
-      p95: '290 ms',
-      status: 'MANUAL ABORT (User Stopped)',
-      verdictCategory: 'MANUAL_ABORT',
-    },
-  ]);
+  // Helper to persist traffic profile changes immediately to SQLite
+  const persistTrafficConfig = (overrides = {}) => {
+    const payload = {
+      mode: overrides.mode ?? trafficMode,
+      ram_limit_mb: overrides.ram_limit_mb ?? ramLimitMb,
+      virtual_users: overrides.virtual_users ?? vus,
+      duration_sec: overrides.duration_sec ?? duration,
+      max_error_pct: overrides.max_error_pct ?? max5xxThreshold,
+      p95_ceiling_ms: overrides.p95_ceiling_ms ?? p95Ceiling,
+      cache_bust: overrides.cache_bust !== undefined ? Boolean(overrides.cache_bust) : Boolean(cacheBusting),
+    };
+    fetch(`${API_BASE}/api/traffic/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  };
+
+  // Parallel hydration from SQLite APIs on initial mount
+  useEffect(() => {
+    document.body.style.backgroundColor = '#ffffff';
+    getDeviceId().then((id) => setDeviceId(id));
+
+    const hydrateFromDatabase = async () => {
+      try {
+        const [limitsRes, targetRes, trafficRes, journeyRes, historyRes] = await Promise.all([
+          fetch(`${API_BASE}/api/system/limits`).catch(() => null),
+          fetch(`${API_BASE}/api/target/status`).catch(() => null),
+          fetch(`${API_BASE}/api/traffic/config`).catch(() => null),
+          fetch(`${API_BASE}/api/journey`).catch(() => null),
+          fetch(`${API_BASE}/api/history`).catch(() => null),
+        ]);
+
+        if (limitsRes && limitsRes.ok) {
+          const data = await limitsRes.json();
+          setHardwareLimits(data);
+        }
+
+        if (targetRes && targetRes.ok) {
+          const data = await targetRes.json();
+          setTargetUrl(data.target_url || '');
+          setGuardToken(data.guard_id || null);
+          setIsVerified(Boolean(data.is_verified));
+          setGuardTimerSeconds(data.remaining_seconds || 0);
+          setLastBurnReason(data.last_burn_reason || null);
+          setGuardQuota({
+            used: data.daily_generations_used ?? 0,
+            max: data.daily_generations_max ?? 3,
+            remaining: data.daily_generations_remaining ?? 3,
+            revokedCount: data.revoked_count ?? 0,
+            lastRevokedId: data.last_revoked_guard_id ?? null,
+          });
+        }
+
+        if (trafficRes && trafficRes.ok) {
+          const data = await trafficRes.json();
+          if (data.mode) setTrafficMode(data.mode);
+          if (data.ram_limit_mb) setRamLimitMb(data.ram_limit_mb);
+          if (data.virtual_users) setVus(data.virtual_users);
+          if (data.duration_sec) setDuration(data.duration_sec);
+          if (data.max_error_pct !== undefined) setMax5xxThreshold(data.max_error_pct);
+          if (data.p95_ceiling_ms !== undefined) setP95Ceiling(data.p95_ceiling_ms);
+          if (data.cache_bust !== undefined) setCacheBusting(Boolean(data.cache_bust));
+        }
+
+        if (journeyRes && journeyRes.ok) {
+          const data = await journeyRes.json();
+          if (data.steps && data.steps.length > 0) {
+            setJourneySteps(data.steps);
+          } else {
+            setJourneySteps([]);
+          }
+          if (data.use_journey !== undefined) {
+            setUseJourney(Boolean(data.use_journey));
+          }
+          if (data.dry_run_results) {
+            setDryRunResults(data.dry_run_results);
+          }
+        }
+
+        if (historyRes && historyRes.ok) {
+          const data = await historyRes.json();
+          setRunHistory(data.runs || []);
+          setLatestScorecard(data.scorecard || null);
+          if (data.runs && data.runs.length > 0) {
+            setSelectedReportId(data.runs[0].run_id || data.runs[0].id);
+            if (data.runs.length >= 2) {
+              setCompareBaseId(data.runs[1].run_id || data.runs[1].id);
+              setCompareCandidateId(data.runs[0].run_id || data.runs[0].id);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Initial hydration error:', err);
+      }
+    };
+
+    hydrateFromDatabase();
+  }, []);
+
+  // Fetch Target Status & Quota Telemetry on navigation
+  const fetchTargetStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/target/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setTargetUrl(data.target_url || '');
+        setGuardToken(data.guard_id || null);
+        setIsVerified(Boolean(data.is_verified));
+        setGuardTimerSeconds(data.remaining_seconds || 0);
+        setLastBurnReason(data.last_burn_reason || null);
+        setGuardQuota({
+          used: data.daily_generations_used ?? 0,
+          max: data.daily_generations_max ?? 3,
+          remaining: data.daily_generations_remaining ?? 3,
+          revokedCount: data.revoked_count ?? 0,
+          lastRevokedId: data.last_revoked_guard_id ?? null,
+        });
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    fetchTargetStatus();
+  }, [activeNav]);
 
   // SSRF Validation Logic
   const validateSsrf = (url, isSandbox) => {
@@ -422,7 +428,7 @@ export default function DashboardPage({ onLogout }) {
     return () => clearInterval(testTimerRef.current);
   }, [testRunning]);
 
-  // Actions: Download Guard with Rate Limiting (3/Day) & Superseding Feedback
+  // Actions: Download Guard with Rate Limiting (3/Day), Hardware Device Binding & Superseding Feedback
   const handleDownloadGuard = async () => {
     setVerificationError(null);
     setSupersededNotice(null);
@@ -431,16 +437,26 @@ export default function DashboardPage({ onLogout }) {
     try {
       const res = await fetch(`${API_BASE}/api/target/generate-guard`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pusher-Device-ID': deviceId,
+        },
         body: JSON.stringify({
           target_url: targetUrl,
           is_sandbox: Boolean(sandboxMode),
+          device_id: deviceId,
         }),
       });
 
       if (res.status === 429) {
         const err = await res.json();
         setVerificationError(err.detail || 'Daily Guard generation limit reached (3 per 24 hours). Downloads are locked.');
+        return;
+      }
+
+      if (res.status === 409) {
+        const err = await res.json();
+        setVerificationError(err.detail || 'An active Guard exists. Click KILL ID below before generating a new file.');
         return;
       }
 
@@ -458,6 +474,7 @@ export default function DashboardPage({ onLogout }) {
     if (guardData?.guard_id) {
       setGuardToken(guardData.guard_id);
       setIsVerified(false); // Newly generated guard requires re-verification
+      setLastBurnReason(null);
 
       // Update quota telemetry
       setGuardQuota({
@@ -498,11 +515,15 @@ export default function DashboardPage({ onLogout }) {
     try {
       const res = await fetch(`${API_BASE}/api/target/verify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pusher-Device-ID': deviceId,
+        },
         body: JSON.stringify({
           target_url: targetUrl,
           guard_id: guardToken,
           is_sandbox: Boolean(sandboxMode),
+          device_id: deviceId,
         }),
       });
 
@@ -510,11 +531,13 @@ export default function DashboardPage({ onLogout }) {
         const data = await res.json();
         setIsVerified(true);
         setGuardTimerSeconds(data.remaining_seconds || 172800);
+        setLastBurnReason(null);
         return;
       } else {
         const err = await res.json();
         const msg = err.detail?.detail || err.detail || 'Verification challenge failed.';
         setVerificationError(msg);
+        fetchTargetStatus();
         return;
       }
     } catch {
@@ -527,23 +550,77 @@ export default function DashboardPage({ onLogout }) {
     }
   };
 
+  const handleTestCrossDeviceBlock = async () => {
+    setVerificationError(null);
+    const foreignDeviceId = 'DEV-FOREIGN-9999';
+
+    try {
+      const res = await fetch(`${API_BASE}/api/target/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pusher-Device-ID': foreignDeviceId,
+        },
+        body: JSON.stringify({
+          target_url: targetUrl,
+          guard_id: guardToken,
+          is_sandbox: Boolean(sandboxMode),
+          device_id: foreignDeviceId,
+        }),
+      });
+
+      if (res.status === 403) {
+        const err = await res.json();
+        const msg = err.detail?.detail || err.detail || 'DEVICE SECURITY VIOLATION: Cross-device access blocked.';
+        setVerificationError(msg);
+        setIsVerified(false);
+        setGuardTimerSeconds(0);
+        setLastBurnReason('DEVICE_MISMATCH_VIOLATION');
+        fetchTargetStatus();
+      } else if (!res.ok) {
+        const err = await res.json();
+        setVerificationError(err.detail?.detail || err.detail || 'Cross-device verification blocked.');
+        setIsVerified(false);
+        setGuardTimerSeconds(0);
+        fetchTargetStatus();
+      }
+    } catch {
+      setVerificationError('CROSS-DEVICE SECURITY VIOLATION: Cross-device access detected — Guard ID killed and burned.');
+      setIsVerified(false);
+      setGuardTimerSeconds(0);
+      setLastBurnReason('DEVICE_MISMATCH_VIOLATION');
+    }
+  };
+
   const handleKillGuard = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/target/kill`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/target/kill`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pusher-Device-ID': deviceId,
+        },
+        body: JSON.stringify({ device_id: deviceId }),
+      });
       if (res.ok) {
         const data = await res.json();
         setIsVerified(false);
         setGuardToken(null);
         setGuardTimerSeconds(0);
+        setLastBurnReason('MANUAL_USER_KILL');
         setSupersededNotice(
           `Guard ID ${guardToken || ''} has been permanently revoked and burned. Verification locked.`
         );
         fetchTargetStatus();
+      } else {
+        const err = await res.json();
+        setVerificationError(err.detail?.detail || err.detail || 'Failed to kill Guard ID.');
       }
     } catch {
       setIsVerified(false);
       setGuardToken(null);
       setGuardTimerSeconds(0);
+      setLastBurnReason('MANUAL_USER_KILL');
     }
   };
 
@@ -704,7 +781,10 @@ export default function DashboardPage({ onLogout }) {
 
       const res = await fetch(`${API_BASE}/api/load/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Pusher-Device-ID': deviceId,
+        },
         body: JSON.stringify({
           target_url: resolvedTarget,
           traffic_mode: trafficMode,
@@ -717,6 +797,7 @@ export default function DashboardPage({ onLogout }) {
           is_sandbox: isSandboxTarget,
           use_journey: useJourney,
           journey_steps: useJourney ? journeySteps : null,
+          device_id: deviceId,
         }),
       });
 
@@ -731,11 +812,9 @@ export default function DashboardPage({ onLogout }) {
         setActiveNav('verify');
         setVerificationError(err.detail || 'Failed to start load test.');
       }
-    } catch {
-      // Local fallback simulation
-      setTestRunning(true);
-      setElapsed(0);
-      setActiveNav('dashboard');
+    } catch (err) {
+      setActiveNav('verify');
+      setVerificationError('Unable to connect to backend engine. Verify server is running on http://127.0.0.1:8000');
     }
   };
 
@@ -814,7 +893,8 @@ export default function DashboardPage({ onLogout }) {
   };
 
   const handleViewSingleReport = async (runId) => {
-    const idToFetch = runId || selectedReportId || 'RUN-103';
+    const idToFetch = runId || selectedReportId;
+    if (!idToFetch) return;
     try {
       const res = await fetch(`${API_BASE}/api/reports/${idToFetch}`);
       if (res.ok) {
@@ -832,8 +912,12 @@ export default function DashboardPage({ onLogout }) {
   };
 
   const handleCompareRuns = async (baseId, candId) => {
-    const base = baseId || compareBaseId || (selectedForCompare.length >= 2 ? selectedForCompare[1] : 'RUN-102');
-    const cand = candId || compareCandidateId || (selectedForCompare.length >= 1 ? selectedForCompare[0] : 'RUN-103');
+    const base = baseId || compareBaseId || (selectedForCompare.length >= 2 ? selectedForCompare[1] : null);
+    const cand = candId || compareCandidateId || (selectedForCompare.length >= 1 ? selectedForCompare[0] : null);
+    if (!base || !cand) {
+      setActiveNav('history');
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/reports/compare`, {
         method: 'POST',
@@ -857,8 +941,10 @@ export default function DashboardPage({ onLogout }) {
   };
 
   const handleExportReport = (runId) => {
-    const id = runId || selectedReportId || 'RUN-103';
-    window.open(`${API_BASE}/api/reports/${id}/export`, '_blank');
+    const id = runId || selectedReportId;
+    if (id) {
+      window.open(`${API_BASE}/api/reports/${id}/export`, '_blank');
+    }
   };
 
   const handleCloneRun = (run) => {
@@ -892,8 +978,8 @@ export default function DashboardPage({ onLogout }) {
   // RAM & Concurrency Scaling Model
   const BASE_ENGINE_RAM_MB = 50;
   const RAM_PER_VU_MB = 0.20;
-  const SYSTEM_HOST_RAM_MB = hardwareLimits.total_system_ram_mb || 16384;
-  const maxHardwareSafeRamMb = hardwareLimits.max_safe_ram_mb || Math.floor(SYSTEM_HOST_RAM_MB * 0.75);
+  const SYSTEM_HOST_RAM_MB = hardwareLimits.total_system_ram_mb;
+  const maxHardwareSafeRamMb = hardwareLimits.max_safe_ram_mb || (SYSTEM_HOST_RAM_MB ? Math.floor(SYSTEM_HOST_RAM_MB * 0.75) : 12288);
   const maxAllowedVus = Math.floor((ramLimitMb - BASE_ENGINE_RAM_MB) / RAM_PER_VU_MB);
   const estimatedRam = Math.min(ramLimitMb, Math.round(BASE_ENGINE_RAM_MB + vus * RAM_PER_VU_MB));
   const estimatedFdPercent = Math.min(70, Math.round(15 + (vus / Math.max(1, maxAllowedVus)) * 55));
@@ -903,9 +989,41 @@ export default function DashboardPage({ onLogout }) {
     const parsed = Math.max(100, Math.min(maxHardwareSafeRamMb, Number(newLimit) || 500));
     setRamLimitMb(parsed);
     const newMaxVus = Math.floor((parsed - BASE_ENGINE_RAM_MB) / RAM_PER_VU_MB);
+    const nextVus = vus > newMaxVus ? newMaxVus : vus;
     if (vus > newMaxVus) {
       setVus(newMaxVus);
     }
+    persistTrafficConfig({ ram_limit_mb: parsed, virtual_users: nextVus });
+  };
+
+  const handleUpdateTrafficMode = (mode) => {
+    setTrafficMode(mode);
+    persistTrafficConfig({ mode });
+  };
+
+  const handleUpdateVus = (newVus) => {
+    setVus(newVus);
+    persistTrafficConfig({ virtual_users: newVus });
+  };
+
+  const handleUpdateDuration = (newDur) => {
+    setDuration(newDur);
+    persistTrafficConfig({ duration_sec: newDur });
+  };
+
+  const handleUpdateMax5xx = (val) => {
+    setMax5xxThreshold(val);
+    persistTrafficConfig({ max_error_pct: val });
+  };
+
+  const handleUpdateP95Ceiling = (val) => {
+    setP95Ceiling(val);
+    persistTrafficConfig({ p95_ceiling_ms: val });
+  };
+
+  const handleUpdateCacheBusting = (val) => {
+    setCacheBusting(val);
+    persistTrafficConfig({ cache_bust: val });
   };
 
   return (
@@ -981,9 +1099,13 @@ export default function DashboardPage({ onLogout }) {
                   type="button"
                   onClick={() => {
                     setMenuOpen(false);
-                    setWafModalOpen(true);
+                    if (onNavigate) {
+                      onNavigate('waf-setup');
+                    } else {
+                      window.location.hash = '#/waf-setup';
+                    }
                   }}
-                  className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
+                  className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between cursor-pointer"
                 >
                   <span>WAF Setup Guide</span>
                   <Code className="w-3.5 h-3.5" />
@@ -1147,10 +1269,14 @@ export default function DashboardPage({ onLogout }) {
               setVerificationError={setVerificationError}
               guardQuota={guardQuota}
               supersededNotice={supersededNotice}
+              deviceId={deviceId}
+              lastBurnReason={lastBurnReason}
               handleDownloadGuard={handleDownloadGuard}
               handleVerifyTarget={handleVerifyTarget}
               handleKillGuard={handleKillGuard}
+              handleTestCrossDeviceBlock={handleTestCrossDeviceBlock}
               setWafModalOpen={setWafModalOpen}
+              onNavigate={onNavigate}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1160,23 +1286,23 @@ export default function DashboardPage({ onLogout }) {
           {activeNav === 'traffic' && (
             <TrafficSetupView
               trafficMode={trafficMode}
-              setTrafficMode={setTrafficMode}
+              setTrafficMode={handleUpdateTrafficMode}
               ramLimitMb={ramLimitMb}
               handleSetRamLimit={handleSetRamLimit}
               maxHardwareSafeRamMb={maxHardwareSafeRamMb}
               vus={vus}
-              setVus={setVus}
+              setVus={handleUpdateVus}
               maxAllowedVus={maxAllowedVus}
               duration={duration}
-              setDuration={setDuration}
+              setDuration={handleUpdateDuration}
               max5xxThreshold={max5xxThreshold}
-              setMax5xxThreshold={setMax5xxThreshold}
+              setMax5xxThreshold={handleUpdateMax5xx}
               wafAutoAbort={wafAutoAbort}
               setWafAutoAbort={setWafAutoAbort}
               p95Ceiling={p95Ceiling}
-              setP95Ceiling={setP95Ceiling}
+              setP95Ceiling={handleUpdateP95Ceiling}
               cacheBusting={cacheBusting}
-              setCacheBusting={setCacheBusting}
+              setCacheBusting={handleUpdateCacheBusting}
               estimatedRam={estimatedRam}
               estimatedFdPercent={estimatedFdPercent}
               isVerified={isVerified}

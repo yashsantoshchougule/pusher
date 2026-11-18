@@ -52,14 +52,6 @@ def init_db() -> None:
         """
     )
     conn.commit()
-
-    # Seed with 3 realistic baseline runs if empty
-    cursor.execute("SELECT COUNT(*) FROM test_runs")
-    count = cursor.fetchone()[0]
-
-    if count == 0:
-        seed_baselines(conn)
-
     conn.close()
 
 
@@ -404,22 +396,16 @@ def get_all_runs(
     for r in rows:
         runs.append(_row_to_dict(r))
 
-    # Latest Scorecard
-    scorecard = {
-        "knee_vus": 390,
-        "peak_rps": 1180,
-        "p95_ms": 164,
-        "run_id": "RUN-103",
-        "verdict": "PASSED",
-    }
+    # Latest Scorecard (Clean empty state if no runs in database)
+    scorecard = None
     if runs:
         # Prefer latest passed run for optimal scorecard, or top run
         passed_runs = [r for r in runs if r["verdict"] == "PASSED"]
         best = passed_runs[0] if passed_runs else runs[0]
         scorecard = {
-            "knee_vus": best.get("knee_vus", 390),
-            "peak_rps": best.get("peak_rps", 1180),
-            "p95_ms": int(best.get("p95_ms", 164)),
+            "knee_vus": best.get("knee_vus", 0),
+            "peak_rps": best.get("peak_rps", 0),
+            "p95_ms": int(best.get("p95_ms", 0)),
             "run_id": best.get("run_id"),
             "verdict": best.get("verdict"),
         }
@@ -520,13 +506,12 @@ def save_run(data: dict) -> dict:
 
 
 def clear_runs() -> None:
-    """Clear custom test runs and re-seed clean baselines."""
+    """Clear custom test runs completely."""
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM test_runs")
     conn.commit()
-    seed_baselines(conn)
     conn.close()
 
 

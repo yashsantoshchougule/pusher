@@ -8,8 +8,9 @@ Load Testing Engine Router:
 
 import asyncio
 import os
+import time
 import psutil
-from fastapi import APIRouter, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Header, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -19,9 +20,47 @@ from backend.core.load_engine import (
     DEFAULT_RAM_CEILING_MB,
     CHUNK_SIZE_BYTES,
 )
-from backend.core.target_service import target_store, validate_target_url
+from backend.core.target_service import (
+    target_store,
+    validate_target_url,
+    hash_device_id,
+    burn_guard_id,
+    is_guard_burned,
+)
+from backend.core.database import db_get_traffic_config, db_save_traffic_config
 
 router = APIRouter(prefix="/api", tags=["Load Engine"])
+
+
+class TrafficConfigRequest(BaseModel):
+    mode: str = Field("step_ramp", description="Traffic generation shape")
+    ram_limit_mb: int = Field(500, ge=51, description="RAM ceiling in MB")
+    virtual_users: int = Field(100, ge=1, le=100000, description="Virtual Users target")
+    duration_sec: int = Field(30, ge=1, le=86400, description="Test duration in seconds")
+    max_error_pct: float = Field(5.0, ge=1.0, le=100.0, description="Max error threshold %")
+    p95_ceiling_ms: float = Field(1500.0, ge=10.0, le=60000.0, description="p95 latency ceiling in ms")
+    cache_bust: bool = Field(True, description="Append unique query nonce")
+
+
+@router.get("/traffic/config")
+async def get_traffic_config_endpoint():
+    """Retrieve persisted traffic and guardrail configuration from SQLite."""
+    return db_get_traffic_config()
+
+
+@router.post("/traffic/config")
+async def save_traffic_config_endpoint(cfg: TrafficConfigRequest):
+    """Save traffic and guardrail configuration to SQLite."""
+    saved = db_save_traffic_config({
+        "mode": cfg.mode,
+        "ram_limit_mb": cfg.ram_limit_mb,
+        "virtual_users": cfg.virtual_users,
+        "duration_sec": cfg.duration_sec,
+        "max_error_pct": cfg.max_error_pct,
+        "p95_ceiling_ms": cfg.p95_ceiling_ms,
+        "cache_bust": 1 if cfg.cache_bust else 0,
+    })
+    return saved
 
 
 class LoadStartRequest(BaseModel):
@@ -36,6 +75,7 @@ class LoadStartRequest(BaseModel):
     is_sandbox: bool = Field(False, description="Sandbox testing flag")
     use_journey: bool = Field(False, description="Run sequential multi-step API journey")
     journey_steps: list[dict] | None = Field(None, description="Optional steps override")
+    device_id: str | None = Field(None, description="Hardware bound device identifier")
 
 
 @router.get("/sandbox/target")
@@ -61,7 +101,10 @@ async def sandbox_target_endpoint():
 
 
 @router.post("/load/start")
-async def start_load_test(req: LoadStartRequest):
+async def start_load_test(
+    req: LoadStartRequest,
+    x_device_id: str | None = Header(None, alias="X-Pusher-Device-ID"),
+):
     if load_engine.is_running:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -85,14 +128,44 @@ async def start_load_test(req: LoadStartRequest):
             detail=f"Target VUs ({req.target_vus}) exceeds maximum allowed ({max_allowed_vus} VUs) under {req.ram_limit_mb} MB RAM ceiling.",
         )
 
-    # 3. Target Verification & SSRF Enforcement
+    # 3. Target Verification, Device Lock & SSRF Enforcement
     is_sandbox_target = (
         req.is_sandbox
         or "sandbox.pusher.local" in req.target_url.lower()
         or "/api/sandbox/target" in req.target_url.lower()
     )
 
+    effective_device_id = req.device_id or x_device_id
+
     if not is_sandbox_target:
+        # Check SQLite Tombstone
+        if target_store.guard_id:
+            burned_record = is_guard_burned(target_store.guard_id)
+            if burned_record:
+                reason = burned_record.get("burn_reason", "REVOKED")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Guard ID {target_store.guard_id} is permanently burned ({reason}) and can never be used again.",
+                )
+
+            # Trigger 1: Cross-Device Load Attempt Violation
+            incoming_hash = hash_device_id(effective_device_id)
+            if effective_device_id and incoming_hash != target_store.creator_device_hash:
+                burn_guard_id(
+                    target_store.guard_id,
+                    "DEVICE_MISMATCH_VIOLATION",
+                    target_store.creator_device_hash,
+                    incoming_hash,
+                )
+                target_store.expires_at = int(time.time())
+                target_store.is_verified = False
+                target_store.active_guard_active = False
+                target_store.last_burn_reason = "DEVICE_MISMATCH_VIOLATION"
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"DEVICE SECURITY VIOLATION: Guard ID {target_store.guard_id} is locked to its creator device. Cross-device access detected — Guard ID has been permanently killed, the 48h timer stopped, and this ID can never be used again.",
+                )
+
         # Check 48h guard verification
         if not target_store.is_verified or target_store.get_remaining_seconds() <= 0:
             raise HTTPException(
@@ -121,6 +194,7 @@ async def start_load_test(req: LoadStartRequest):
         duration_sec=req.duration_sec,
         cache_bust=req.cache_bust,
         active_guard_id=active_guard_id,
+        handshake_secret=target_store.bypass_secret,
         ram_limit_mb=req.ram_limit_mb,
         max_error_pct=req.max_error_pct,
         p95_ceiling_ms=req.p95_ceiling_ms,

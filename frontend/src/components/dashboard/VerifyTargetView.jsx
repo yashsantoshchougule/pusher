@@ -7,12 +7,14 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  AlertOctagon,
   ExternalLink,
   Code,
   Copy,
   Clock,
   Zap,
-  Flame
+  Flame,
+  Laptop
 } from 'lucide-react';
 
 export default function VerifyTargetView({
@@ -29,12 +31,16 @@ export default function VerifyTargetView({
   setVerificationError,
   guardQuota = { used: 0, max: 3, remaining: 3, revokedCount: 0, lastRevokedId: null },
   supersededNotice,
+  deviceId = 'DEV-LOCAL-CREATOR',
+  lastBurnReason = null,
   handleDownloadGuard,
   handleVerifyTarget,
   handleKillGuard,
+  handleTestCrossDeviceBlock,
   setWafModalOpen,
   setActiveNav,
   themeMode = 'production',
+  onNavigate,
 }) {
   const isProd = themeMode === 'production';
   const quotaRemaining = guardQuota.remaining ?? 3;
@@ -50,7 +56,7 @@ export default function VerifyTargetView({
             TARGET VERIFICATION &amp; WAF BYPASS CONFIGURATOR
           </h1>
           <p className="text-xs opacity-75">
-            Arm cryptographic domain ownership and bypass edge rate limits with pusher_guard.py.
+            Arm cryptographic domain ownership, hardware device lock, and bypass edge rate limits with pusher_guard.py.
           </p>
         </div>
         <button
@@ -62,7 +68,7 @@ export default function VerifyTargetView({
         </button>
       </div>
 
-      {/* Quota & Burn Registry Status Ribbon */}
+      {/* Quota & Device Lock Ribbon */}
       <div className={`border-2 border-black p-3.5 bg-white flex flex-col md:flex-row items-start md:items-center justify-between gap-3 ${
         isProd ? 'shadow-sm border-l-4 border-l-teal-700' : ''
       }`}>
@@ -78,9 +84,13 @@ export default function VerifyTargetView({
           }`}>
             {quotaRemaining} / {guardQuota.max || 3} REMAINING (24H LIMIT)
           </span>
-          <span className="text-[11px] opacity-75">
-            (Resets 24h rolling from earliest generation)
-          </span>
+
+          {/* Hardware Device Lock Badge */}
+          <div className="flex items-center gap-1.5 border-2 border-black px-2.5 py-0.5 text-xs font-mono font-bold bg-white">
+            <Laptop className="w-3.5 h-3.5 text-teal-700" />
+            <span className="opacity-75 uppercase">DEVICE LOCK:</span>
+            <span className="font-black text-teal-800">BOUND TO {deviceId}</span>
+          </div>
         </div>
 
         {guardQuota.revokedCount > 0 && (
@@ -92,7 +102,7 @@ export default function VerifyTargetView({
             <span className={`border border-black px-2 py-0.5 text-[10px] font-bold ${
               isProd ? 'bg-slate-100 text-slate-800' : 'bg-white'
             }`}>
-              {guardQuota.revokedCount} ID{guardQuota.revokedCount > 1 ? 's' : ''} BURNED
+              {guardQuota.revokedCount} ID{guardQuota.revokedCount > 1 ? 's' : ''} BURNED (SQLITE)
             </span>
             {guardQuota.lastRevokedId && (
               <span className="text-[10px] opacity-70">
@@ -102,6 +112,25 @@ export default function VerifyTargetView({
           </div>
         )}
       </div>
+
+      {/* Irreversible Burn Alert Banner */}
+      {lastBurnReason && (
+        <div className="border-2 border-black p-3.5 bg-rose-50 border-l-8 border-l-rose-600 text-rose-950 font-mono text-xs space-y-1 shadow-sm">
+          <div className="font-black flex items-center gap-2 text-rose-800 uppercase tracking-wider text-xs">
+            <AlertOctagon className="w-4 h-4 shrink-0" />
+            <span>
+              {lastBurnReason === 'DEVICE_MISMATCH_VIOLATION'
+                ? 'SECURITY TRIPWIRE TRIPPED: KILLED — CROSS-DEVICE VIOLATION'
+                : lastBurnReason === 'EXPIRED_48H'
+                ? 'SECURITY EXPIRATION: KILLED — 48H EXPIRED'
+                : 'REVOCATION NOTICE: KILLED — MANUALLY REVOKED'}
+            </span>
+          </div>
+          <p className="text-[11px] leading-relaxed">
+            Guard ID <code className="font-bold underline">{guardToken || guardQuota.lastRevokedId || 'ACTIVE_ID'}</code> has been permanently terminated. The 48-hour session timer is stopped at <span className="font-black text-rose-700">00:00:00</span> and this ID has been permanently written to the persistent SQLite tombstone registry (<code>burned_guards</code>). It can never be used, verified, or re-issued to any device.
+          </p>
+        </div>
+      )}
 
       {/* Superseded Notification Banner */}
       {supersededNotice && (
@@ -158,7 +187,7 @@ export default function VerifyTargetView({
                 setTargetUrl(e.target.value);
                 setVerificationError(null);
               }}
-              placeholder="https://api.myproject.dev"
+              placeholder="https://your-deployed-app.com"
               className="w-full border-2 border-black p-2 text-xs font-mono bg-white text-black focus:outline-none focus:bg-black focus:text-white"
             />
           </div>
@@ -250,11 +279,11 @@ export default function VerifyTargetView({
               </div>
             )}
 
-            <div className="flex flex-col sm:flex-row gap-2">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-2">
               <button
                 type="button"
                 onClick={handleVerifyTarget}
-                className={`flex-1 border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 ${
+                className={`flex-1 min-w-[160px] border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 ${
                   isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-black text-white hover:bg-white hover:text-black'
                 }`}
               >
@@ -262,17 +291,30 @@ export default function VerifyTargetView({
                 <span>VERIFY TARGET NOW</span>
               </button>
               {hasActiveGuard && (
-                <button
-                  type="button"
-                  onClick={handleKillGuard}
-                  className={`border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
-                    isProd ? 'bg-rose-100 text-rose-800 border-rose-400 hover:bg-rose-200' : 'bg-white text-black hover:bg-black hover:text-white'
-                  }`}
-                  title="Immediately revoke token and burn in registry"
-                >
-                  <Flame className="w-3.5 h-3.5" />
-                  <span>KILL ID (REVOKE &amp; BURN CURRENT ID)</span>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handleKillGuard}
+                    className={`border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                      isProd ? 'bg-rose-100 text-rose-800 border-rose-400 hover:bg-rose-200' : 'bg-white text-black hover:bg-black hover:text-white'
+                    }`}
+                    title="Immediately revoke token and burn in registry"
+                  >
+                    <Flame className="w-3.5 h-3.5" />
+                    <span>KILL ID</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleTestCrossDeviceBlock}
+                    className={`border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                      isProd ? 'bg-amber-100 text-amber-900 border-amber-500 hover:bg-amber-200' : 'bg-white text-black hover:bg-black hover:text-white'
+                    }`}
+                    title="Test cross-device tripwire: Sends a foreign device ID (DEV-FOREIGN-9999) to verify endpoint, instantly triggering permanent burn, stopping the 48h timer, and writing to SQLite tombstone"
+                  >
+                    <AlertOctagon className="w-3.5 h-3.5" />
+                    <span>[ TEST CROSS-DEVICE BLOCK ]</span>
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -303,25 +345,65 @@ export default function VerifyTargetView({
           </div>
 
           {/* WAF Rate Limit Bypass Explainer */}
-          <div className={`border-2 border-black p-4 bg-white space-y-2.5 ${isProd ? 'shadow-sm' : ''}`}>
+          <div className={`border-2 border-black p-4 bg-white space-y-3 ${isProd ? 'shadow-sm' : ''}`}>
             <div className="flex items-center justify-between border-b border-black pb-1.5">
-              <span className="text-xs font-bold uppercase">Cloudflare / AWS WAF Bypass</span>
+              <span className="text-xs font-bold uppercase">Cloudflare / AWS WAF &amp; In-App Auth Bypass</span>
               <button
                 type="button"
-                onClick={() => setWafModalOpen(true)}
+                onClick={() => {
+                  if (onNavigate) {
+                    onNavigate('waf-setup');
+                  } else {
+                    window.location.hash = '#/waf-setup';
+                  }
+                }}
                 className="text-[10px] font-bold underline cursor-pointer hover:opacity-70"
               >
                 [ VIEW GUIDE ]
               </button>
             </div>
-            <p className="text-[11px] opacity-80 leading-relaxed">
-              When load testing through Cloudflare, AWS WAF, or Nginx, valid requests may trigger edge rate limits (HTTP 429). The <code>pusher_guard.py</code> middleware injects a cryptographically signed <code>X-Pusher-Bypass</code> header to bypass application-level rate limiters safely.
-            </p>
 
-            <div className="border border-black p-2.5 bg-white font-mono text-[10px] space-y-1">
+            <div className="space-y-2 text-[11px] leading-relaxed">
+              <div className="p-2 border border-black/30 bg-slate-50 space-y-1">
+                <span className="font-bold block uppercase text-[10px] text-teal-800">
+                  1. Automatic Backend Bypass (Zero Config):
+                </span>
+                <p className="opacity-85 text-[10px]">
+                  <code>pusher_guard.py</code> automatically bypasses Python in-app rate limiters (<code>slowapi</code>, Starlette throttles) and injects synthetic test auth credentials when it verifies Pusher's cryptographic <code>X-Pusher-Signature</code> HMAC header.
+                </p>
+              </div>
+
+              <div className="p-2 border border-black/30 bg-slate-50 space-y-1">
+                <span className="font-bold block uppercase text-[10px] text-teal-800">
+                  2. Edge CDN Skip Rule (Cloudflare / AWS WAF):
+                </span>
+                <p className="opacity-85 text-[10px]">
+                  Configure an Edge WAF Skip Rule to bypass Cloudflare / AWS edge rate limiting before requests reach your origin server:
+                </p>
+                <div className="bg-black text-white p-2 font-mono text-[9px] break-all select-all">
+                  http.request.headers["x-pusher-guard-id"][0] eq "{guardToken || 'PG-ACTIVE'}"
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (onNavigate) {
+                  onNavigate('waf-setup');
+                } else {
+                  window.location.hash = '#/waf-setup';
+                }
+              }}
+              className="w-full border-2 border-black py-2 px-3 text-xs font-black uppercase bg-teal-700 text-white hover:bg-teal-800 transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
+            >
+              <span>OPEN FULL WAF SETUP PAGE →</span>
+            </button>
+
+            <div className="border border-black p-2 bg-white font-mono text-[10px] space-y-1">
               <div className="font-bold uppercase text-[9px] opacity-70">Handshake Curl Test:</div>
-              <div className="text-black break-all select-all">
-                curl -i "{targetUrl}/__pusher_verify?nonce=test_nonce"
+              <div className="text-black break-all select-all text-[9px]">
+                curl -i -H "X-Pusher-Guard-ID: {guardToken || 'PG-ACTIVE'}" "{targetUrl}/__pusher_verify?nonce=waf_check"
               </div>
             </div>
           </div>

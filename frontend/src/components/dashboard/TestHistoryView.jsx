@@ -116,7 +116,7 @@ export default function TestHistoryView({
             <button
               type="button"
               disabled={selectedForCompare.length < 2}
-              onClick={() => handleCompareRuns(selectedForCompare[1] || 'RUN-102', selectedForCompare[0] || 'RUN-103')}
+              onClick={() => handleCompareRuns(selectedForCompare[1], selectedForCompare[0])}
               className={`border-2 border-black px-3 py-1.5 text-xs font-bold uppercase transition-colors ${
                 selectedForCompare.length === 2
                   ? (isProd ? 'bg-teal-700 text-white hover:bg-teal-800 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
@@ -161,8 +161,8 @@ export default function TestHistoryView({
           <tbody>
             {filteredRuns.length === 0 ? (
               <tr>
-                <td colSpan="11" className="text-center py-8 opacity-60 font-bold uppercase">
-                  No matching load test runs found in archive.
+                <td colSpan="11" className="text-center py-10 opacity-70 font-bold uppercase tracking-wider text-xs">
+                  {runHistory.length === 0 ? '0 RECORDED RUNS IN DATABASE' : 'No matching load test runs found in archive.'}
                 </td>
               </tr>
             ) : (
