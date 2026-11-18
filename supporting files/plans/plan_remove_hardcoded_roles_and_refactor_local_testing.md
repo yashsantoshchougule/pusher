@@ -16,7 +16,7 @@ Transition the Pusher documentation from a rigid 2-person, 2-laptop constraint t
 3. **Exact Blueprint Matching**:
    - Update Section 6 of `architecture_and_standards.md` to the clean blueprint without partner ownership labels.
 4. **Preserve All Security & Memory Guardrails**:
-   - RAM budget (<250MB for 1,000 VUs).
+   - RAM budget (<500MB default for 2,250 VUs, scalable up to 75% host RAM).
    - ₹0 tech stack.
    - 3 circuit breakers and 2-in-1 `pusher_guard` middleware.
    - Strict rule: AI is 100% forbidden from executing `git commit`, `git merge`, `git rebase`, or `git push`.

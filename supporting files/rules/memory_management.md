@@ -3,22 +3,32 @@
 ## 1. Why Memory Management Matters
 When running a load test, the tool itself can accidentally eat up all the memory (RAM) on your laptop or server. If the load testing tool runs out of memory, it will crash your computer or cloud server before the target website even feels the load.
 
-**Pusher's Golden Rule**: Keep memory usage ultra-low so Pusher can run comfortably on standard laptops (16GB RAM) and free cloud servers (like Render or Railway with only 512MB RAM) without crashing.
+**Pusher's Golden Rule**: Keep memory usage ultra-low so Pusher can run comfortably on standard laptops (16GB RAM) and cloud servers with a default ceiling of **500 MB RAM for 2,250 virtual users**, with user-expandable hardware RAM scaling up to 75% of host physical RAM without crashing.
 
 ---
 
-## 2. Strict RAM & Disk Budget
+## 2. Strict RAM & Disk Budget & Scaling Formulas
 
-The load engine must stay within these strict memory limits:
+The load engine operates on an exact deterministic memory model with 4 KB streaming chunk discard active:
 
-| Test State | Target RAM Usage | Hard Maximum Allowed |
-| :--- | :--- | :--- |
-| **Idle Engine (Waiting for test)** | `< 30 MB RAM` | `50 MB RAM` |
-| **100 Concurrent Users** | `40 MB – 80 MB RAM` | `100 MB RAM` |
-| **1,000 Concurrent Users** | **`100 MB – 250 MB RAM`** | **`300 MB RAM`** |
-| **Per-Connection Memory Overhead** | `< 120 KB per user` | `200 KB per user` |
-| **Total Disk Usage on Laptop/Server**| **`< 1 GB Disk`** | Zero request body logging to disk |
-| **Live Speed Dashboard Memory** | `< 5 MB RAM` | Bounded memory buckets |
+* **Base Engine Overhead:** `50 MB` (fixed async worker + event loop runtime overhead).
+* **Per-VU Memory Footprint:** `0.20 MB` (`200 KB` per concurrent Virtual User via 4 KB streaming chunk discards).
+* **RAM Usage Formula:**
+  $$\text{Estimated RAM (MB)} = 50 + (\text{Active VUs} \times 0.20)$$
+* **Max VUs Formula:**
+  $$\text{Max Allowed VUs} = \left\lfloor \frac{\text{Allocated RAM Limit MB} - 50}{0.20} \right\rfloor$$
+
+### Default Memory Budget & Benchmarks
+
+| Test State | Target RAM Usage | Hard Maximum Allowed | Concurrency (Max VUs) |
+| :--- | :--- | :--- | :--- |
+| **Idle Engine (Waiting for test)** | `< 30 MB RAM` | `50 MB Base Overhead` | 0 VUs |
+| **100 Concurrent Users** | `70 MB RAM` | `90 MB RAM` | 100 VUs |
+| **1,000 Concurrent Users (Legacy Baseline)** | `250 MB RAM` | `280 MB RAM` | 1,000 VUs |
+| **2,250 Concurrent Users (Default Ceiling)** | **`500 MB RAM`** | **`550 MB RAM`** | **`2,250 VUs (Default)`** |
+| **Per-Connection Memory Overhead** | `< 120 KB per user` | `200 KB (0.20 MB) per user` | Continuous 4KB streaming chunk discard |
+| **Total Disk Usage on Laptop/Server** | **`< 1 GB Disk`** | Zero request body logging to disk | N/A |
+| **Live Speed Dashboard Memory** | `< 5 MB RAM` | Bounded memory buckets | Ring buffers |
 
 ---
 
@@ -28,7 +38,7 @@ The load engine must stay within these strict memory limits:
 > **NEVER USE**: Puppeteer, Playwright, Selenium, or headless Chrome/Firefox in the load engine.
 
 * **Why?** A single headless Chrome tab uses between 50MB and 150MB of RAM. If you simulate 1,000 users using Chrome, you would need **50,000 MB to 150,000 MB (50GB to 150GB) of RAM**, which will immediately freeze and crash your laptop.
-* **The Pusher Way**: Use lightweight asynchronous HTTP requests. In Python, an async connection uses only about **120 KB of RAM**. 1,000 async connections take only ~120 MB total, which fits easily inside 512MB of RAM.
+* **The Pusher Way**: Use lightweight asynchronous HTTP requests. In Python, an async connection uses only about **120 KB to 200 KB of RAM** when streaming with 4 KB chunk discards. 2,250 async connections take only ~450 MB RAM (+ 50 MB base engine overhead = 500 MB total), which fits easily inside standard development laptops and cloud containers.
 
 ```
        ❌ FORBIDDEN: Headless Browser Approach
@@ -41,7 +51,7 @@ The load engine must stay within these strict memory limits:
              │
              ├── Async Virtual User #1 ──┐
              ├── Async Virtual User #2 ──┼──> [ Shared Connection Pool ] ──> Target Website
-             └── Async Virtual User #N ──┘    (Total RAM: 100MB–250MB for 1,000 Users)
+             └── Async Virtual User #N ──┘    (Total RAM: ~500MB for 2,250 Users Default)
 ```
 
 ---
@@ -146,13 +156,35 @@ def get_safe_concurrency_ceiling(requested_vus: int) -> int:
     return min(requested_vus, safe_max_vus)
 ```
 
-* If a beginner asks for 1,000 users but the laptop allows only 512 open files, Pusher automatically caps concurrency to a safe number (e.g., 350 users) and explains why in simple English, preventing a sudden `Too many open files` crash.
+* If a beginner asks for 2,250 users but the laptop allows only 512 open files, Pusher automatically caps concurrency to a safe number (e.g., 350 users) and explains why in simple English, preventing a sudden `Too many open files` crash.
+
+---
+
+### Rule 3.8: User-Expandable Hardware RAM Scaling & Host Safety Ceiling
+While Pusher defaults to a safe **500 MB RAM ceiling (2,250 Max VUs)** for consumer hardware, developers running on high-memory developer machines or dedicated benchmark servers can manually expand the allocated RAM limit to scale virtual users linearly:
+
+$$\text{Max Allowed VUs} = \left\lfloor \frac{\text{Allocated RAM Limit MB} - 50}{0.20} \right\rfloor$$
+
+#### Dynamic Scaling Tiers
+
+| Allocated RAM Limit | Base Overhead | Available for VUs | Per-VU Footprint | Max Allowed VUs | Ideal Hardware Environment |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **500 MB (Default)** | `50 MB` | `450 MB` | `0.20 MB (200 KB)` | **`2,250 VUs`** | Standard 8GB–16GB Developer Laptops / 1GB VMs |
+| **1,024 MB (1 GB)** | `50 MB` | `974 MB` | `0.20 MB (200 KB)` | **`4,870 VUs`** | 16GB RAM Developer Workstations |
+| **2,048 MB (2 GB)** | `50 MB` | `1,998 MB` | `0.20 MB (200 KB)` | **`9,990 VUs`** | 32GB RAM Performance Test Rigs |
+| **4,096 MB (4 GB)** | `50 MB` | `4,046 MB` | `0.20 MB (200 KB)` | **`20,230 VUs`** | 64GB+ Dedicated Benchmark Servers |
+
+#### Host Safety Ceiling (Anti-OOM Protection)
+To ensure the host machine never freezes, swaps, or triggers OS Out-Of-Memory (OOM) killer terminations:
+1. **75% Host RAM Ceiling**: The maximum allocatable RAM limit is strictly hard-capped at **75% of the machine's total physical hardware RAM**:
+   $$\text{Maximum Allocatable RAM (MB)} = \left\lfloor \text{Host\_RAM\_MB} \times 0.75 \right\rfloor$$
+2. **70% OS File-Descriptor Ceiling**: Concurrency is concurrently bound by the 70% OS file descriptor limit (Rule 3.7), preventing socket resource starvation.
 
 ---
 
 ## 4. Memory Verification Checklist
 Before approving any load engine code, confirm:
-- [ ] RAM usage stays under 250MB when running 1,000 concurrent requests.
+- [ ] RAM usage stays under 500MB when running 2,250 concurrent requests by default, and scales dynamically up to 75% of host RAM.
 - [ ] No browser packages (Playwright, Puppeteer, Selenium) are installed or imported.
 - [ ] Only 1 load test runs at a time using the single-test queue lock.
 - [ ] Response bodies are read in small chunks and discarded immediately (10MB stream ceiling enforced).

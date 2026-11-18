@@ -8,14 +8,17 @@
 
 **Pusher** is an open-source, asynchronous website load testing tool built for developers, indie hackers, and small engineering teams. It allows you to simulate hundreds of concurrent virtual users (VUs) against your web applications to find bottlenecks, measure latency (`p50`, `p90`, `p95`, `p99`), and discover your server's breaking point before your users do.
 
-Built with a **₹0 (100% Free) requirement**, Pusher requires zero paid cloud services, zero external API keys, and runs efficiently on consumer hardware (16GB RAM laptops) consuming less than **250MB of RAM for 1,000 virtual users**.
+Built with a **₹0 (100% Free) requirement**, Pusher requires zero paid cloud services, zero external API keys, and runs efficiently on consumer hardware (16GB RAM laptops) consuming less than **500MB of RAM for 2,250 virtual users by default (scalable up to 75% of host RAM)**.
 
 ---
 
 ## ⚡ Key Highlights & Safety Features
 
 - 🛑 **Mandatory Target Verification**: Prevents abuse by requiring domain ownership verification (via free DNS TXT records or the downloadable 2-in-1 Pusher Guard middleware).
-- 🛡️ **2-in-1 Pusher Guard Middleware**: Drop-in middleware for FastAPI, Flask, and Express that verifies domain ownership and bypasses in-app rate limiters using HMAC secret verification.
+- 🛡️ **2-in-1 Pusher Guard Middleware & 48-Hour Sealed Lockbox**:
+  - Drop-in middleware for FastAPI, Flask, and Express that verifies domain ownership and bypasses in-app rate limiters.
+  - **3/Day Rate Limiter**: Enforces a strict quota of at most 3 guard files per 24-hour rolling window (`HTTP 429 Too Many Requests`).
+  - **Instant Superseding & Permanent ID Burn**: Generating a new file permanently burns the previous ID into `revoked_guard_ids`; revoked IDs can never be verified or used again (`HTTP 403 Forbidden`).
 - ⚡ **3 Automatic Safety Circuit Breakers**:
   1. *Crash Breaker*: Instantly halts test on 5 consecutive 5xx errors or >25% error ratio.
   2. *Firewall (WAF) Breaker*: Stops immediately on HTTP 429 / 403 firewall challenges to protect your IP from blacklisting.
@@ -34,7 +37,7 @@ pusher/
 ├── supporting files/
 │   ├── rules/                           # Strict architecture, safety, and team guidelines
 │   │   ├── architecture_and_standards.md# System architecture, features, and standards
-│   │   ├── memory_management.md         # RAM budget rules (<250MB for 1,000 VUs)
+│   │   ├── memory_management.md         # RAM budget rules (<500MB default for 2,250 VUs, scalable)
 │   │   ├── safety_limits.md             # 3 circuit breakers & SSRF defense
 │   │   ├── target_verification.md       # DNS & 2-in-1 Pusher Guard verification
 │   │   ├── github_workflow.md           # Git rules & AI safety constraints

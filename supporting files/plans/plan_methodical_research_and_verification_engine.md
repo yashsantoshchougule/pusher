@@ -43,7 +43,7 @@ graph TD
 ## Global Constraints
 
 - **Strict Color Tokens:** Canvas `#011425`, Surface `#242424`, Accent/CTA `#1F4959`, Borders/Muted `#5C7C89`, Crisp Text `#FFFFFF`.
-- **Resource Limits:** Engine memory strictly under 250 MB RAM using 4 KB chunk discards; concurrency capped at 70% of OS file descriptors.
+- **Resource Limits:** Engine memory strictly under 500 MB RAM default (2,250 VUs, scalable up to 75% host RAM) using 4 KB chunk discards; concurrency capped at 70% of OS file descriptors.
 - **Zero Shortcuts:** No `// TODO`, ellipses, or unverified placeholders.
 - **Git Safety Rule:** AI is strictly prohibited from executing `git commit`, `git merge`, `git rebase`, or `git push`.
 - **Review Gate:** No code modification will occur until the user reviews and explicitly approves this plan.

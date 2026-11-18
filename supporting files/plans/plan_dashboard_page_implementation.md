@@ -10,7 +10,7 @@ Build a production-grade, highly responsive, and dark-themed **Mission Control D
 1. **Left Sidebar (`w-64 bg-[#16222A]`)**:
    - PUSHER brand header and version badge (`v1.0 Open Source`).
    - Nav items: Overview, Verify Target, Traffic Setup, API Builder, Live Center, Reports, Compare, WAF Guide.
-   - Bottom System Guardrail widget: Memory `38 MB / 250 MB Max (4KB Chunk Discard Active)` + Concurrency Cap (`70% OS File Descriptors`).
+   - Bottom System Guardrail widget: Memory `38 MB / 500 MB Max (4KB Chunk Discard Active, Scalable)` + Concurrency Cap (`70% OS File Descriptors`).
 
 2. **Top Header Bar**:
    - Title `"Mission Control Dashboard"`.

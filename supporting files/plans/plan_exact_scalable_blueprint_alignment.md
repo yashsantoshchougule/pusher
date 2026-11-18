@@ -30,7 +30,7 @@ Ensure 100% precision across all documentation, filenames, and architectural spe
 - **Simple, Clear, Beginner-Friendly English**: Zero confusing jargon.
 - **₹0 Tech Stack**: No paid cloud servers, APIs, or dedicated GPUs.
 - **2-Laptop Local Wi-Fi Testing**: Complete isolation between runner and target over Wi-Fi (`0.0.0.0:8080`).
-- **RAM Limits**: Strict < 250MB for 1,000 VUs.
+- **RAM Limits**: Strict < 500MB default for 2,250 VUs (scalable up to 75% host RAM).
 - **Testing Directory**: All tests, mocks, prototypes, and benchmarks stay strictly in `supporting files/testing/`.
 - **Git Prohibition**: The AI assistant is 100% forbidden from executing `git commit`, `git merge`, `git rebase`, or `git push`.
 - **Plans Folder**: All plans stored in `supporting files/plans/`.

@@ -38,7 +38,7 @@ PART 2: LOCAL DEVELOPMENT & MOCK TARGET TESTING (PUSHER_MODE=local_dev)
 │                                       │ ──────────────────────────────────────> │                                       │
 │ • Pusher Web UI (React + Vite)        │       HTTP Load Traffic (Async I/O)     │ • mock_target_server.py               │
 │ • FastAPI Backend (Python Async)      │                                         │ • Listens on 0.0.0.0:8080             │
-│ • RAM kept < 250MB for 1,000 VUs      │ <────────────────────────────────────── │ • Returns 200 OK, 5xx, or 429 WAF     │
+│ • RAM < 500MB (2,250 VUs, Scalable)   │ <────────────────────────────────────── │ • Returns 200 OK, 5xx, or 429 WAF     │
 │ • PUSHER_MODE=local_dev               │          Live HTTP Responses            │ • Independent port or local host      │
 └───────────────────────────────────────┘                                         └───────────────────────────────────────┘
 ```

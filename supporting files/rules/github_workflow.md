@@ -144,3 +144,24 @@ Make sure your `.gitignore` file blocks the following items from ever entering G
 * Node dependencies: `node_modules/`
 * Log and debug files: `*.log`, `debug.txt`
 * Memory profiling dumps: `*.hprof`, `*.heapsnapshot`
+
+---
+
+## 5. Engineering & Continuation Discipline Rules
+
+To ensure reliable, deterministic, and safe development across all human and AI contributors, the following engineering discipline rules must be upheld at all times:
+
+1. **Inspect Before Coding**:
+   - Always run `git status` and `git branch --show-current` to identify uncommitted changes.
+   - Read all relevant `.md` rule, architecture, and testing specifications before altering any code or documentation.
+2. **Continuation Audit (`COMPLETE / PARTIAL / MISSING / BROKEN`)**:
+   - When picking up existing or in-progress features, systematically audit every requirement to verify its current state.
+   - Preserve existing working code and modify only what is partial, missing, or broken.
+3. **Locked Project Contracts**:
+   - Never weaken, bypass, or invent competing formulas for locked project contracts (500 MB RAM scaling model, 48-hour auto-deactivation, SSRF defenses, 100-frame time sync, and 70% OS socket limits).
+4. **Minimal File Changes**:
+   - Touch only the files necessary for the specific assigned deliverable.
+   - Never reformat unrelated files or refactor stable production components without explicit direction.
+5. **Strict Git Safety**:
+   - Automated commits and pushes by AI systems are strictly prohibited.
+   - All Git stage, commit, and push actions remain under exclusive human control.

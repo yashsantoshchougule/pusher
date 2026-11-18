@@ -165,9 +165,11 @@ To keep beginners safe from accidental mistakes, Pusher enforces these limits:
 
 | Setting | Beginner Default | Maximum Allowed Limit |
 | :--- | :--- | :--- |
-| **Virtual Users (VUs)** | `10 users` | `500 users` (Cloud) / `1,000` (Local) |
+| **Virtual Users (VUs)** | `10 users` | `500 users` (Cloud) / `2,250 users` (Default Local 500MB Ceiling) / User-expandable up to 75% Host RAM |
 | **Shared PaaS Subdomain Users**| `10 users` | `25 users` (Protects shared hosts) |
 | **Test Duration** | `30 seconds` | `300 seconds (5 minutes)` |
 | **Ramp-Up Time** | `5 seconds` (Linear) | Mandatory gradual start |
-| **Max Requests / Sec (RPS)** | `50 RPS` | `1,000 RPS` |
-| **Domain Ownership Check** | Mandatory | Must be verified before test starts |
+| **Max Requests / Sec (RPS)** | `50 RPS` | `2,500+ RPS` (Scales dynamically with VUs) |
+| **Domain Ownership Check** | Mandatory | Must be verified before test starts (48h auto-expiry) |
+
+> **Concurrency & Hardware Scaling Note**: Default concurrency is budgeted at **500 MB RAM for 2,250 VUs** using the deterministic model: $\text{RAM (MB)} = 50 + (\text{Active VUs} \times 0.20)$. Users with higher physical hardware RAM can manually scale concurrency up to **75% of total host RAM** (`floor(Host_RAM_MB × 0.75)`) and 70% OS File Descriptors.

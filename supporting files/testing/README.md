@@ -32,7 +32,7 @@ supporting files/testing/
 │   └── analyze_images.py      # Pixel luminance & RGB analyzer
 │
 ├── prototypes/     # Experimental load engine prototypes (async IO benchmarks)
-└── benchmarks/     # Memory usage profiling scripts (verifying <250MB for 1,000 VUs)
+└── benchmarks/     # Memory usage profiling scripts (verifying <500MB for 2,250 VUs, scalable to 75% Host RAM)
 ```
 
 ---
@@ -63,5 +63,5 @@ Configure and start the Pusher application:
 
 ## 4. Testing Protocols & Verification Standards
 1. **Safety Circuit Breaker Validation**: Confirm that when the mock server simulates 5 consecutive 5xx errors or HTTP 429 responses, Pusher's engine halts within < 200ms.
-2. **RAM Profiling Protocol**: Run memory benchmarks to confirm that memory usage stays strictly within the `100MB–250MB` budget for 1,000 virtual users.
+2. **RAM Profiling Protocol**: Run memory benchmarks to confirm that memory usage stays strictly within the `500MB` default budget for 2,250 virtual users ($\text{RAM} = 50 + \text{VUs} \times 0.20$ MB), scaling dynamically up to 75% of physical host hardware RAM and 70% OS file descriptors.
 3. **SSRF Unit Tests**: Run unit tests (`pytest "supporting files/testing/unit/"`) to verify that all private IP ranges and cloud metadata endpoints are blocked in production mode.

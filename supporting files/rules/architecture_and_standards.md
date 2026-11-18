@@ -23,7 +23,7 @@ When developing and testing Pusher itself, developers do not need a live public 
 │                                       │ ──────────────────────────────────────> │                                       │
 │ • Pusher Web UI (React + Tailwind)    │       HTTP Load Traffic (Async I/O)     │ • mock_target_server.py               │
 │ • FastAPI Backend (Python Async)      │                                         │ • Listens on 0.0.0.0:8080             │
-│ • RAM kept < 250MB for 1,000 VUs      │ <────────────────────────────────────── │ • Returns 200 OK, 5xx, or 429 WAF     │
+│ • RAM < 500MB (2,250 VUs, Scalable)   │ <────────────────────────────────────── │ • Returns 200 OK, 5xx, or 429 WAF     │
 │ • PUSHER_MODE=local_dev               │          Live HTTP Responses            │ • Independent port or local host      │
 └───────────────────────────────────────┘                                         └───────────────────────────────────────┘
 ```
@@ -201,6 +201,51 @@ Alerts users if more than 50% of requests are answered by a CDN cache (like Clou
 
 ---
 
+## 5. Option B: 6-Page Streamlined Post-Login UI Architecture
+
+Pusher's frontend interface implements the **Option B Wireframe Design System**: a clean, 6-page navigation architecture that eliminates duplicated controls, keeps the main dashboard strictly as a read-only summary, and isolates setup controls into dedicated specialist views:
+
+```
+[ Top Header: PUSHER | RAM: 50MB / 500MB MAX (4KB Chunk Discard Active) | FD CAP: 70% | ••• Menu ]
+┌─────────────────┬────────────────────────────────────────────────────────────────────────┐
+│ [ NAVIGATION ]  │  ACTIVE VIEW DISPLAY AREA                                              │
+├─────────────────┼────────────────────────────────────────────────────────────────────────┤
+│ 1. Dashboard    │  Pure Read-Only 3-Box Summary:                                         │
+│                 │  • Box 1: Target Status & Live 48h Countdown -> [ MANAGE TARGET -> ]   │
+│                 │  • Box 2: Capacity Scorecard & Staged Profile -> [ EDIT TRAFFIC -> ]   │
+│                 │  • Box 3: Live 1s Telemetry Stream Monitor -> [ VIEW TEST HISTORY -> ] │
+│                 ├────────────────────────────────────────────────────────────────────────┤
+│ 2. Verify Target│  Target Verification Wizard & Cloudflare WAF Mini-Screen Preview:      │
+│                 │  • SSRF validation & IP loopback defense                               │
+│                 │  • 1-Click "Download pusher_guard.py" (Sealed 48-Hour Lockbox)         │
+│                 │  • Live 48-hour countdown timer & "Kill Active Guard ID" button        │
+│                 ├────────────────────────────────────────────────────────────────────────┤
+│ 3. Traffic Setup│  Traffic Profile & Safety Guardrails Configurator:                     │
+│                 │  • 3 Modes: Step-Ramp, Sudden Rush, Steady Crowd with ASCII curve      │
+│                 │  • RAM Budget & Hardware Ceiling: 250MB, 500MB (Default), 1GB, 2GB     │
+│                 │  • Virtual Users slider + numeric input (dynamically capped by RAM)    │
+│                 │  • Circuit breakers: 5xx threshold, 429 auto-abort, p95 ceiling       │
+│                 ├────────────────────────────────────────────────────────────────────────┤
+│ 4. API Builder  │  Multi-Step Sequential HTTP Request Chain Builder:                     │
+│                 │  • Endpoint chaining (e.g., POST /auth/login -> GET /dashboard)        │
+│                 ├────────────────────────────────────────────────────────────────────────┤
+│ 5. Test History │  Searchable & Filterable Archive of Past Load Test Runs:               │
+│                 │  • Search by Run ID / Target URL; filter by Mode and Verdict Status    │
+│                 │  • 2-run checkbox selection for Before-vs-After benchmark comparison   │
+│                 │  • 1-Click [ CLONE CONFIG ] to immediately stage past run parameters   │
+│                 ├────────────────────────────────────────────────────────────────────────┤
+│ 6. Reports      │  Analytical Capacity Reports & Comparative Breakdowns:                 │
+│                 │  • Knee-of-the-Curve saturation point analysis                         │
+│                 │  • Before-vs-After telemetry overlay for selected historical runs      │
+└─────────────────┴────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Option B Rule of Zero UI Duplication
+- **Main Dashboard (`1. Dashboard`) is strictly read-only**: It displays the current operational state, live 1s telemetry stream, and staged configuration. It contains **zero** input boxes, sliders, mode radio buttons, or history logs.
+- All forms, sliders, and configuration toggles are housed strictly in `2. Verify Target` and `3. Traffic Setup`. Navigation between views is initiated via clean directional triggers (`[ MANAGE TARGET IN VERIFY WIZARD → ]`, `[ EDIT TRAFFIC SETUP → ]`, `[ VIEW TEST HISTORY ARCHIVE (X) → ]`).
+
+---
+
 ## 6. Scalable Core + Plugin Directory Blueprint
 
 To keep Pusher clean, maintainable, and easy to extend flexibly, the codebase uses a **"Frozen Core vs. Scalable Plugins"** architecture.
@@ -297,7 +342,7 @@ pusher/
         ├── prototypes/
         │   └── engine_prototype.py               # Standalone async socket & plugin experiments
         ├── benchmarks/
-        │   └── memory_benchmark.py               # [Memory Rule 2] Verifies <250MB RAM at 1,000 VUs
+        │   └── memory_benchmark.py               # [Memory Rule 2] Verifies <500MB RAM at 2,250 VUs (Scalable to 75% Host RAM)
         └── unit/
             └── test_ssrf_and_plugins.py          # [Feature #9, #10, #11] Tests SSRF, verify & breakers
 ```

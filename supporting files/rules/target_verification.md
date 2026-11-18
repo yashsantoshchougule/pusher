@@ -259,6 +259,48 @@ Even if a student verifies ownership of `myproject.vercel.app`, sending 500 user
 
 ---
 
-## 7. Verification Token Lifetime
-* **Token Expiration**: Verification tokens expire in **72 hours** if not verified.
-* **Monthly Re-Check**: Verified domains remain valid for **30 days** before requiring a quick re-check.
+## 7. Sealed 48-Hour `pusher_guard.py` Lockbox Contract
+
+To eliminate security loopholes and prevent stale verification tokens from lingering on remote backends, Pusher implements the **Sealed 48-Hour Lockbox Contract**:
+
+```
+[ Developer UI: "1. Download pusher_guard.py" ]
+                       │
+                       ▼
+    ┌──────────────────────────────────────────────┐
+    │  SEALED LOCKBOX PAYLOAD                      │
+    │  • Token: PG-XXXX-48H                        │
+    │  • Issued At: UTC Timestamp                  │
+    │  • Expiry: T + 48h (172,800 seconds)         │
+    │  • SHA-256 Anti-Tamper Checksum              │
+    └──────────────────────────────────────────────┘
+                       │
+                       ▼
+[ Target Server Mounts Middleware: setup_pusher_guard(app) ]
+                       │
+       ┌───────────────┴───────────────┐
+       ▼                               ▼
+[ Challenge-Response Route ]    [ Auto-Expiring Rate Bypass ]
+GET /__pusher_verify?nonce=...   X-Pusher-Bypass: <SECRET>
+Returns HMAC(token + nonce)     Active ONLY while Timer > 0
+                       │
+                       ▼
+[ 48 Hours Elapsed OR "Kill Active Guard ID" Revocation ]
+                       │
+                       ▼
+[ Engine Hard Lock: Testing Disabled Until Re-Verified ]
+```
+
+### Key Rules of the Sealed Lockbox:
+1. **Strict 1-Project Active Limit**: Only 1 verified target project may be active at any time. Verifying a new target automatically retires prior tokens.
+2. **Challenge-Response Nonce Handshake**: Verification is validated via `GET /__pusher_verify?nonce=<UUIDv4>`. The middleware responds with a cryptographic signature calculated over the token and nonce, preventing replay attacks.
+3. **Deterministic 48-Hour Auto-Deactivation**: Every guard file carries a hardcoded UNIX expiry timestamp ($T + 172,800\text{ seconds}$). Once the countdown ticks to zero, the middleware auto-deactivates the bypass header and Pusher locks all load-testing buttons.
+4. **Immediate Emergency Revocation (`Kill ID`)**: Clicking `Kill ID` in the UI immediately revokes the active token, permanently burns the ID in the revoked registry, resets all countdown timers, and locks testing until a new guard file is issued and verified.
+5. **SHA-256 Anti-Tamper Checksum**: Prevents accidental alteration of the middleware file before deployment.
+6. **Daily Generation Rate Limit (Max 3 / 24-Hour Rolling Window)**:
+   * A user can generate/download at most **3 `pusher_guard.py` files per 24-hour rolling window (`86,400s`)**.
+   * A 4th attempt within 24 hours is strictly rejected with `HTTP 429 Too Many Requests` (`"Daily rate limit reached: You can generate at most 3 pusher_guard.py files per 24 hours."`).
+   * The quota check executes *before* modifying or revoking the active token, ensuring the 3rd valid file remains intact and usable.
+7. **Single-Active Token Superseding & Permanent Burn Registry (`revoked_guard_ids`)**:
+   * Creating a new `pusher_guard.py` immediately kills and supersedes the previous `guard_id`, setting `is_verified = False` until the new file is verified.
+   * Every killed or superseded `guard_id` is permanently recorded in a burned/tombstone registry (`revoked_guard_ids`) and can **never** be verified, re-issued, or used again by any user (`HTTP 403 Forbidden`).

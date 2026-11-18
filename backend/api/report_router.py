@@ -1,0 +1,83 @@
+import json
+from fastapi import APIRouter, HTTPException, Query, Response, status
+from pydantic import BaseModel, Field
+
+from backend.core.report_service import (
+    clear_runs,
+    compare_two_runs,
+    get_all_runs,
+    get_run,
+)
+
+router = APIRouter(prefix="/api", tags=["Reports & History"])
+
+
+class CompareRequest(BaseModel):
+    base_run_id: str = Field(..., description="Baseline Run ID (Before)")
+    candidate_run_id: str = Field(..., description="Candidate Run ID (After)")
+
+
+@router.get("/history")
+async def get_history_endpoint(
+    mode: str | None = Query(None, description="Filter by traffic mode"),
+    verdict: str | None = Query(None, description="Filter by safety verdict"),
+    q: str | None = Query(None, description="Search term for run ID or target URL"),
+):
+    """Retrieve historical load test executions and latest scorecard KPIs."""
+    return get_all_runs(mode=mode, verdict=verdict, q=q)
+
+
+@router.delete("/history")
+async def delete_history_endpoint():
+    """Clear test run history and reset baseline profiles."""
+    clear_runs()
+    return get_all_runs()
+
+
+@router.get("/reports/{run_id}")
+async def get_report_endpoint(run_id: str):
+    """Retrieve full capacity scorecard, Knee of the Curve analysis, and ramp metrics for a run."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Test run '{run_id}' not found.",
+        )
+    return run
+
+
+@router.post("/reports/compare")
+async def compare_reports_endpoint(req: CompareRequest):
+    """Perform mathematical Before-vs-After differential comparison between two runs."""
+    try:
+        return compare_two_runs(req.base_run_id, req.candidate_run_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
+@router.get("/reports/{run_id}/export")
+async def export_report_endpoint(run_id: str):
+    """Export complete load test scorecard and time-series as downloadable JSON."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Test run '{run_id}' not found.",
+        )
+
+    export_payload = {
+        **run,
+        "generator": "Pusher Open-Source Load-Testing Platform",
+        "exported_at": run.get("timestamp"),
+    }
+    content = json.dumps(export_payload, indent=2)
+    filename = f"report_{run_id}.json"
+
+    return Response(
+        content=content,
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

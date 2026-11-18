@@ -24,6 +24,10 @@ plan_<feature_or_component_description>.md
 
 | Plan File | Purpose & Scope |
 | :--- | :--- |
+| [`plan_500mb_ram_ceiling_and_hardware_scaling.md`](plan_500mb_ram_ceiling_and_hardware_scaling.md) | Technical plan to update all project Markdown rules, architecture, and testing documentation to the 500 MB default RAM ceiling (2,250 VUs) and user-expandable hardware RAM scaling model. |
+| [`plan_test_history_and_dashboard_cleanup.md`](plan_test_history_and_dashboard_cleanup.md) | Technical plan to add dedicated `5. Test History` page, expand left sidebar to 6 navigation views, and isolate Box 3 on `1. Dashboard` strictly to live telemetry stream. |
+| [`plan_modular_wireframe_dashboard.md`](plan_modular_wireframe_dashboard.md) | Technical plan for Option B: refactoring `DashboardPage.jsx` into a pure read-only 3-box summary screen with dedicated interactive views for Verify Target, Traffic Setup, API Builder, and Reports. |
+| [`plan_wireframe_dashboard.md`](plan_wireframe_dashboard.md) | Technical implementation plan to build the high-fidelity black-and-white wireframe Dashboard (`DashboardPage.jsx`) with interactive React state, SSRF guard, 48h countdown, traffic launcher, live telemetry, and circuit breakers. |
 | [`plan_responsive_login_scaling.md`](plan_responsive_login_scaling.md) | Technical implementation plan and root-cause analysis for fluid, adaptive responsive scaling of `LoginPage.jsx` across Mobile, Tablet, Laptop, and Monitor screens. |
 | [`plan_palette_migration_taupe_sage_bone.md`](plan_palette_migration_taupe_sage_bone.md) | Technical implementation plan for migrating Pusher to the 4-color Earthy Taupe, Sage & Bone palette (`#A49A87`, `#A5A58D`, `#968F83`, `#E8E5DF`). |
 | [`plan_dashboard_sage_palette.md`](plan_dashboard_sage_palette.md) | Technical implementation plan to migrate `DashboardPage.jsx` to the unified Sage Green, Olive, and Cream palette matching `LoginPage.jsx` and user-uploaded reference. |
@@ -44,7 +48,7 @@ plan_<feature_or_component_description>.md
 | [`plan_scalable_core_and_plugin_architecture.md`](plan_scalable_core_and_plugin_architecture.md) | Scalable Core + Plugin architecture blueprint with exact feature and memory rule mappings. |
 | [`plan_2in1_pusher_guard_middleware_upgrade.md`](plan_2in1_pusher_guard_middleware_upgrade.md) | 2-in-1 `pusher_guard.py` / `pusherGuard.js` middleware and Cloudflare WAF skip rules. |
 | [`plan_2person_team_collaboration_and_wifi_testing.md`](plan_2person_team_collaboration_and_wifi_testing.md) | Division of labor, Git branch rules (`backend-dev` / `frontend-dev`), and 2-laptop Wi-Fi setup. |
-| [`plan_rules_and_security_loophole_hardening.md`](plan_rules_and_security_loophole_hardening.md) | Deep audit of SSRF defenses, memory limits (<250MB), and circuit breakers. |
+| [`plan_rules_and_security_loophole_hardening.md`](plan_rules_and_security_loophole_hardening.md) | Deep audit of SSRF defenses, memory limits (<500MB default, scalable), and circuit breakers. |
 
 ---
 
