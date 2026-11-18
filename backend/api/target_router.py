@@ -41,22 +41,40 @@ class WafProbeRequest(BaseModel):
     is_sandbox: bool = Field(default=False, description="Simulate sandbox response")
 
 
+@router.post("/validate-url")
+async def validate_url_endpoint(payload: ValidateSsrfRequest):
+    """
+    Real-time 3-step validation: syntax & SSRF guard, async DNS lookup, and live HTTP reachability probe.
+    Returns structured validation object with status and typo suggestions.
+    """
+    result = await validate_target_url(payload.target_url, payload.is_sandbox)
+    return dict(result)
+
+
 @router.post("/validate-ssrf")
 async def validate_ssrf_endpoint(payload: ValidateSsrfRequest):
     """
     Validates the target URL against SSRF rules, rejecting loopbacks, private networks, and link-local cloud metadata.
     """
-    valid, message, resolved_ip = validate_target_url(payload.target_url, payload.is_sandbox)
-    if not valid:
+    result = await validate_target_url(payload.target_url, payload.is_sandbox)
+    if not result["valid"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"valid": False, "detail": message, "target_url": payload.target_url},
+            detail={
+                "valid": False,
+                "detail": result["message"],
+                "target_url": payload.target_url,
+                "status": result["status"],
+                "suggestions": result.get("suggestions", []),
+            },
         )
     return {
         "valid": True,
-        "detail": message,
-        "resolved_ip": resolved_ip,
+        "detail": result["message"],
+        "resolved_ip": result.get("resolved_ip"),
         "target_url": payload.target_url,
+        "status": result["status"],
+        "suggestions": result.get("suggestions", []),
     }
 
 
@@ -68,15 +86,19 @@ async def generate_guard_endpoint(
     """
     Generates a sealed, 48-hour tamper-protected pusher_guard.py file with SHA-256 integrity checksum.
     Binds the Guard ID exclusively to the creator device hardware fingerprint.
-    Enforces a strict 3-generation per rolling 24-hour limit and Kill-First invariant.
+    Enforces URL reachability (HTTP 422 if dead/unreachable/nonexistent),
+    a strict 3-generation per rolling 24-hour limit, and Kill-First invariant.
     """
     if not payload.target_url or not payload.target_url.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target URL cannot be empty.")
-    
-    import urllib.parse
-    parsed = urllib.parse.urlparse(payload.target_url.strip())
-    if parsed.scheme.lower() not in ("http", "https"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid scheme '{parsed.scheme}'. Only HTTP and HTTPS are permitted.")
+
+    # 1. Pre-validation: URL syntax, DNS existence & live reachability check
+    validation = await validate_target_url(payload.target_url.strip(), is_sandbox=payload.is_sandbox)
+    if not validation["valid"] or not validation.get("reachable", False):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=validation["message"],
+        )
 
     effective_device_id = payload.device_id or x_device_id or "DEV-LOCAL-CREATOR"
 
@@ -211,7 +233,7 @@ async def waf_probe_endpoint(payload: WafProbeRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target URL cannot be empty.")
 
     # 1. SSRF Boundary Enforcement
-    valid, message, _ = validate_target_url(payload.target_url, payload.is_sandbox)
+    valid, message, _ = await validate_target_url(payload.target_url, payload.is_sandbox)
     if not valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

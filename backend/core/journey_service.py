@@ -13,7 +13,7 @@ import urllib.parse
 import httpx
 from pydantic import BaseModel, Field
 
-from backend.core.target_service import validate_target_url, target_store
+from backend.core.target_service import validate_target_url_sync, target_store
 
 
 class JourneyStepModel(BaseModel):
@@ -148,7 +148,7 @@ def validate_journey_steps(
                 return False, f"SSRF Blocked: Step {idx} points to '{step_origin}', which does not match verified target origin '{target_origin}'."
 
             # Run SSRF IP validation on host
-            valid, msg, _ = validate_target_url(path, is_sandbox=is_sandbox)
+            valid, msg, _ = validate_target_url_sync(path, is_sandbox=is_sandbox)
             if not valid:
                 return False, f"Step {idx} SSRF violation: {msg}"
         elif not path.startswith("/"):

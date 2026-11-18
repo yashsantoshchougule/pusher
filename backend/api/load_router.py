@@ -180,7 +180,7 @@ async def start_load_test(
         if "api.myproject.dev" in req.target_url:
             req.target_url = "http://127.0.0.1:8000/api/sandbox/target"
         else:
-            is_valid, msg, _ = validate_target_url(req.target_url, is_sandbox=False)
+            is_valid, msg, _ = await validate_target_url(req.target_url, is_sandbox=False)
             if not is_valid:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     else:

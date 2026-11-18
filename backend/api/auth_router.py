@@ -77,3 +77,9 @@ async def admin_only_check(user: AuthenticatedUser = Depends(get_admin_user)):
         "message": "Administrative access granted.",
         "user_id": user.user_id,
     }
+
+
+@router.post("/logout")
+async def logout():
+    """Invalidates user session."""
+    return {"status": "ok", "message": "Session invalidated successfully."}

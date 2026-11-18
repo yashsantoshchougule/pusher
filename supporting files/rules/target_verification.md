@@ -7,6 +7,26 @@ Load-testing tools generate hundreds or thousands of web requests per minute. If
 
 ---
 
+## 1.1 Three-Stage Live URL Syntax, Async DNS & HTTP Reachability Auto-Check
+To prevent users from deploying guards or running load tests against non-existent, offline, or mistyped domains, Pusher performs an automatic, debounced (600ms) 3-stage validation (`POST /api/target/validate-url`):
+
+1. **Stage 1 — Syntax & SSRF Boundary Guard**:
+   - Enforces `http://` or `https://` scheme and valid domain syntax (contains dot in hostname).
+   - Rejects loopbacks (`localhost`, `127.0.0.1`), private networks (`10.x`, `172.16.x`, `192.168.x`), and link-local cloud metadata (`169.254.169.254`) with status `SSRF_BLOCKED`.
+2. **Stage 2 — Real-Time Async DNS Resolution**:
+   - Resolves hostname via async DNS with 3.0s timeout.
+   - If the domain does not exist in DNS (`socket.gaierror`), computes close typo matches against common hosting and developer domains (`github.com`, `gitlab.com`, `vercel.app`, `netlify.app`, `railway.app`, etc.) using `difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)`.
+   - Returns status `DNS_NOT_FOUND` and clickable suggestion chips.
+3. **Stage 3 — Live HTTP/HTTPS Reachability Probe**:
+   - Probes target server with lightweight `HEAD` (falling back to `GET` on HTTP 405) with 4.0s timeout.
+   - If server responds with HTTP `< 500`: returns `REACHABLE` (`URL VERIFIED & LIVE`).
+   - If connection times out or is refused: returns `UNREACHABLE` with smart typo suggestions.
+4. **Guard Generation Lockdown**:
+   - `POST /api/target/generate-guard` verifies URL reachability and rejects non-existent/unreachable domains with `HTTP 422 Unprocessable Entity`.
+   - In UI, `DOWNLOAD PUSHER_GUARD.PY` is disabled until target is verified reachable (or Sandbox mode is active).
+
+---
+
 ## 2. The Verification Methods
 
 Pusher offers multiple 100% free ways to verify domain ownership and safely bypass in-code rate limiters:

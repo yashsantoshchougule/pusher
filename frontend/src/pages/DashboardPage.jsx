@@ -33,7 +33,8 @@ import {
   Plus,
   Trash2,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  User
 } from 'lucide-react';
 
 // Modular View Components
@@ -43,11 +44,12 @@ import TrafficSetupView from '../components/dashboard/TrafficSetupView';
 import ApiBuilderView from '../components/dashboard/ApiBuilderView';
 import TestHistoryView from '../components/dashboard/TestHistoryView';
 import ReportsView from '../components/dashboard/ReportsView';
+import ProfileView from '../components/dashboard/ProfileView';
 import { getDeviceId } from '../utils/deviceFingerprint';
 
 export default function DashboardPage({ onLogout, onNavigate }) {
-  // Navigation & Dropdown States (6 Views)
-  const [activeNav, setActiveNav] = useState('dashboard'); // 'dashboard' | 'verify' | 'traffic' | 'api' | 'history' | 'reports'
+  // Navigation & Dropdown States (7 Views)
+  const [activeNav, setActiveNav] = useState('dashboard'); // 'dashboard' | 'verify' | 'traffic' | 'api' | 'history' | 'reports' | 'profile'
   const [menuOpen, setMenuOpen] = useState(false);
   const [sandboxMode, setSandboxMode] = useState(false);
   const [wafModalOpen, setWafModalOpen] = useState(false);
@@ -65,6 +67,15 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   const [isVerified, setIsVerified] = useState(false);
   const [guardTimerSeconds, setGuardTimerSeconds] = useState(0);
   const [verificationError, setVerificationError] = useState(null);
+  const [urlValidation, setUrlValidation] = useState({
+    checking: false,
+    valid: true,
+    reachable: true,
+    status: 'IDLE',
+    message: '',
+    suggestions: [],
+    resolved_ip: null,
+  });
 
   // Quota & Burn Registry Telemetry (3/Day Rate Limit + Permanent Superseding Burn)
   const [guardQuota, setGuardQuota] = useState({
@@ -133,6 +144,37 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   const [latestScorecard, setLatestScorecard] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
 
+  // User Profile State (SQLite Persistent)
+  const [userProfile, setUserProfile] = useState({
+    full_name: 'Lead Test Architect',
+    username: 'pusher_admin',
+    email: 'dev@pusher.internal',
+    role_title: 'Performance Engineer',
+    organization: 'Pusher Ops',
+    github_username: 'pusher-eng',
+    avatar_url: '',
+    bio_notes: 'Hardware load and knee-curve benchmarking lead.',
+    default_ram_ceiling_mb: 500,
+  });
+
+  const handleSaveProfile = async (formData) => {
+    const res = await fetch(`${API_BASE}/api/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formData),
+    });
+    if (!res.ok) {
+      throw new Error('Failed to update profile');
+    }
+    const updated = await res.json();
+    setUserProfile(updated);
+    if (updated.default_ram_ceiling_mb) {
+      setRamLimitMb(updated.default_ram_ceiling_mb);
+      persistTrafficConfig({ ram_limit_mb: updated.default_ram_ceiling_mb });
+    }
+    return updated;
+  };
+
   // Helper to persist traffic profile changes immediately to SQLite
   const persistTrafficConfig = (overrides = {}) => {
     const payload = {
@@ -158,12 +200,13 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
     const hydrateFromDatabase = async () => {
       try {
-        const [limitsRes, targetRes, trafficRes, journeyRes, historyRes] = await Promise.all([
+        const [limitsRes, targetRes, trafficRes, journeyRes, historyRes, profileRes] = await Promise.all([
           fetch(`${API_BASE}/api/system/limits`).catch(() => null),
           fetch(`${API_BASE}/api/target/status`).catch(() => null),
           fetch(`${API_BASE}/api/traffic/config`).catch(() => null),
           fetch(`${API_BASE}/api/journey`).catch(() => null),
           fetch(`${API_BASE}/api/history`).catch(() => null),
+          fetch(`${API_BASE}/api/profile`).catch(() => null),
         ]);
 
         if (limitsRes && limitsRes.ok) {
@@ -223,6 +266,13 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               setCompareBaseId(data.runs[1].run_id || data.runs[1].id);
               setCompareCandidateId(data.runs[0].run_id || data.runs[0].id);
             }
+          }
+        }
+
+        if (profileRes && profileRes.ok) {
+          const data = await profileRes.json();
+          if (data && data.user_key) {
+            setUserProfile(data);
           }
         }
       } catch (err) {
@@ -301,6 +351,96 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   };
 
   const ssrfCheck = validateSsrf(targetUrl, sandboxMode);
+
+  // Automatic Debounced Live URL Reachability, DNS & Typo Auto-Check (600ms)
+  useEffect(() => {
+    if (sandboxMode) {
+      setUrlValidation({
+        checking: false,
+        valid: true,
+        reachable: true,
+        status: 'SANDBOX_ALLOWED',
+        message: 'SANDBOX DEV MODE: Local simulation target allowed',
+        suggestions: [],
+      });
+      return;
+    }
+
+    if (!targetUrl || !targetUrl.trim()) {
+      setUrlValidation({
+        checking: false,
+        valid: false,
+        reachable: false,
+        status: 'EMPTY',
+        message: 'Enter target website or API endpoint (e.g., https://your-app.com)',
+        suggestions: [],
+      });
+      return;
+    }
+
+    // Set immediate checking state
+    setUrlValidation((prev) => ({
+      ...prev,
+      checking: true,
+      status: 'CHECKING',
+      message: 'CHECKING URL & DNS REACHABILITY...',
+    }));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/target/validate-url`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_url: targetUrl.trim(),
+            is_sandbox: Boolean(sandboxMode),
+          }),
+          signal: controller.signal,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          setUrlValidation({
+            checking: false,
+            valid: Boolean(data.valid),
+            reachable: Boolean(data.reachable),
+            status: data.status || (data.valid ? 'REACHABLE' : 'INVALID_URL'),
+            message: data.message || '',
+            suggestions: data.suggestions || [],
+            resolved_ip: data.resolved_ip || null,
+          });
+        } else {
+          const err = await res.json();
+          const detail = err.detail || {};
+          setUrlValidation({
+            checking: false,
+            valid: false,
+            reachable: false,
+            status: detail.status || 'UNREACHABLE',
+            message: detail.message || detail.detail || 'Validation failed.',
+            suggestions: detail.suggestions || [],
+          });
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          setUrlValidation({
+            checking: false,
+            valid: false,
+            reachable: false,
+            status: 'UNREACHABLE',
+            message: 'Unable to reach backend validation service.',
+            suggestions: [],
+          });
+        }
+      }
+    }, 600);
+
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [targetUrl, sandboxMode]);
 
   // 48-Hour Live Countdown Timer
   useEffect(() => {
@@ -463,6 +603,12 @@ export default function DashboardPage({ onLogout, onNavigate }) {
         return;
       }
 
+      if (res.status === 422) {
+        const err = await res.json();
+        setVerificationError(err.detail || 'Target URL is unreachable or invalid in DNS. Enter a live working URL.');
+        return;
+      }
+
       if (res.ok) {
         guardData = await res.json();
       } else {
@@ -510,6 +656,10 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
   const handleVerifyTarget = async () => {
     setVerificationError(null);
+    if (!sandboxMode && (!urlValidation.valid || !urlValidation.reachable)) {
+      setVerificationError(urlValidation.message || 'Target URL must be reachable and verified before executing handshake.');
+      return;
+    }
     if (!ssrfCheck.valid) {
       setVerificationError(ssrfCheck.message);
       return;
@@ -1080,39 +1230,74 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           </div>
         </div>
 
-        {/* Right Action Menu: ••• */}
-        <div className="relative">
+        {/* Right Action Area: User Profile Pill + Options Menu */}
+        <div className="flex items-center gap-2.5">
+          {/* User Profile Pill / Button */}
           <button
             type="button"
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="border-2 border-black px-3 py-1 font-black text-sm tracking-widest hover:bg-black hover:text-white transition-colors cursor-pointer"
-            aria-label="Options Menu"
+            onClick={() => setActiveNav('profile')}
+            className={`border-2 border-black px-2.5 py-1 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center gap-2 ${activeNav === 'profile'
+              ? (themeMode === 'production' ? 'bg-teal-700 text-white' : 'bg-black text-white')
+              : 'bg-white text-black hover:bg-black hover:text-white'
+              }`}
+            title="View & Edit User Profile"
           >
-            •••
+            <div className="w-5 h-5 border border-black bg-slate-900 text-white flex items-center justify-center text-[10px] font-black overflow-hidden shrink-0 select-none">
+              {userProfile.avatar_url ? (
+                <img src={userProfile.avatar_url} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <span>{(userProfile.full_name || userProfile.username || 'PU').slice(0, 2).toUpperCase()}</span>
+              )}
+            </div>
+            <span className="hidden sm:inline font-mono truncate max-w-[130px]">
+              {userProfile.username || userProfile.full_name || 'Profile'}
+            </span>
           </button>
 
-          {menuOpen && (
-            <div className="absolute right-0 mt-2 w-64 border-2 border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] z-50 text-xs">
-              <div className="p-3 border-b-2 border-black font-bold uppercase flex justify-between items-center">
-                <span>Pusher Options</span>
-                <span className="text-[10px] opacity-75">v1.0.0</span>
-              </div>
-              <div className="p-1 space-y-0.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    if (onNavigate) {
-                      onNavigate('waf-setup');
-                    } else {
-                      window.location.hash = '#/waf-setup';
-                    }
-                  }}
-                  className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between cursor-pointer"
-                >
-                  <span>WAF Setup Guide</span>
-                  <Code className="w-3.5 h-3.5" />
-                </button>
+          {/* Right Action Menu: ••• */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuOpen(!menuOpen)}
+              className="border-2 border-black px-3 py-1 font-black text-sm tracking-widest hover:bg-black hover:text-white transition-colors cursor-pointer"
+              aria-label="Options Menu"
+            >
+              •••
+            </button>
+
+            {menuOpen && (
+              <div className="absolute right-0 mt-2 w-64 border-2 border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] z-50 text-xs">
+                <div className="p-3 border-b-2 border-black font-bold uppercase flex justify-between items-center">
+                  <span>Pusher Options</span>
+                  <span className="text-[10px] opacity-75">v1.0.0</span>
+                </div>
+                <div className="p-1 space-y-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setActiveNav('profile');
+                    }}
+                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>User Profile</span>
+                    <User className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      if (onNavigate) {
+                        onNavigate('waf-setup');
+                      } else {
+                        window.location.hash = '#/waf-setup';
+                      }
+                    }}
+                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>WAF Setup Guide</span>
+                    <Code className="w-3.5 h-3.5" />
+                  </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1148,7 +1333,8 @@ export default function DashboardPage({ onLogout, onNavigate }) {
             </div>
           )}
         </div>
-      </header>
+      </div>
+    </header>
 
       {/* ========================================================================= */}
       {/* 2-COLUMN MAIN LAYOUT: LEFT SIDEBAR + MAIN CONTENT AREA                   */}
@@ -1170,6 +1356,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
                 { id: 'api', label: '4. API Builder', desc: 'Multi-Step Request Chains' },
                 { id: 'history', label: '5. Test History', desc: 'Searchable Runs Archive' },
                 { id: 'reports', label: '6. Reports', desc: 'Knee Curve & Comparison' },
+                { id: 'profile', label: '7. User Profile', desc: 'SQLite Profile & Defaults' },
               ].map((item) => (
                 <button
                   key={item.id}
@@ -1264,6 +1451,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               sandboxMode={sandboxMode}
               setSandboxMode={setSandboxMode}
               ssrfCheck={ssrfCheck}
+              urlValidation={urlValidation}
               guardToken={guardToken}
               isVerified={isVerified}
               guardTimerSeconds={guardTimerSeconds}
@@ -1379,6 +1567,17 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               handleExportReport={handleExportReport}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
+            />
+          )}
+
+          {/* VIEW 7: `7. User Profile` */}
+          {activeNav === 'profile' && (
+            <ProfileView
+              profile={userProfile}
+              onSaveProfile={handleSaveProfile}
+              deviceId={deviceId}
+              themeMode={themeMode}
+              setActiveNav={setActiveNav}
             />
           )}
 

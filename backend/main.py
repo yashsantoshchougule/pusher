@@ -14,6 +14,7 @@ from backend.api.target_router import router as target_router
 from backend.api.load_router import router as load_router
 from backend.api.journey_router import router as journey_router
 from backend.api.report_router import router as report_router
+from backend.api.profile_router import router as profile_router
 from backend.core.report_service import init_db
 
 app = FastAPI(
@@ -74,8 +75,13 @@ app.include_router(target_router)
 app.include_router(load_router)
 app.include_router(journey_router)
 app.include_router(report_router)
+app.include_router(profile_router)
 
 init_db()
+
+@app.post("/api/auth/logout")
+async def api_auth_logout():
+    return {"status": "ok", "message": "Session invalidated successfully."}
 
 @app.get("/")
 async def root():

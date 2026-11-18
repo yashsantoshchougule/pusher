@@ -152,12 +152,12 @@ class TestGuardRateLimiterAndBurnRegistry:
         target_store.guard_id = None
 
         # 1. Generate Token 1
-        res1 = client.post("/api/target/generate-guard", json={"target_url": "https://api.test1.dev"})
+        res1 = client.post("/api/target/generate-guard", json={"target_url": "https://api.test1.dev", "is_sandbox": True})
         assert res1.status_code == 200
         token1 = res1.json()["guard_id"]
 
         # 2. Attempt to generate Token 2 without killing Token 1 -> MUST RETURN 409 CONFLICT!
-        res_conflict = client.post("/api/target/generate-guard", json={"target_url": "https://api.test2.dev"})
+        res_conflict = client.post("/api/target/generate-guard", json={"target_url": "https://api.test2.dev", "is_sandbox": True})
         assert res_conflict.status_code == 409
         assert "kill" in res_conflict.json()["detail"].lower() or "active guard" in res_conflict.json()["detail"].lower()
 
@@ -166,7 +166,7 @@ class TestGuardRateLimiterAndBurnRegistry:
         assert kill_res.status_code == 200
 
         # 4. Now generate Token 2 succeeds
-        res2 = client.post("/api/target/generate-guard", json={"target_url": "https://api.test2.dev"})
+        res2 = client.post("/api/target/generate-guard", json={"target_url": "https://api.test2.dev", "is_sandbox": True})
         assert res2.status_code == 200
         token2 = res2.json()["guard_id"]
         assert token2 != token1
@@ -221,7 +221,7 @@ class TestGuardRateLimiterAndBurnRegistry:
         from backend.core.target_service import target_store
         target_store.generation_timestamps.clear()
         target_store.guard_id = None
-        r = client.post("/api/target/generate-guard", json={"target_url": "https://tampertest.dev"})
+        r = client.post("/api/target/generate-guard", json={"target_url": "https://tampertest.dev", "is_sandbox": True})
         assert r.status_code == 200
         content = r.json()["content"]
 
@@ -246,7 +246,7 @@ class TestGuardRateLimiterAndBurnRegistry:
         from backend.core.target_service import target_store
         target_store.generation_timestamps.clear()
         target_store.guard_id = None
-        r = client.post("/api/target/generate-guard", json={"target_url": "https://bypasstest.dev"})
+        r = client.post("/api/target/generate-guard", json={"target_url": "https://bypasstest.dev", "is_sandbox": True})
         assert r.status_code == 200
         guard_id = r.json()["guard_id"]
         secret = target_store.bypass_secret
@@ -299,7 +299,7 @@ class TestGuardRateLimiterAndBurnRegistry:
         target_store.guard_id = None
 
         # Generate guard
-        r = client.post("/api/target/generate-guard", json={"target_url": "https://killtest.dev"})
+        r = client.post("/api/target/generate-guard", json={"target_url": "https://killtest.dev", "is_sandbox": True})
         assert r.status_code == 200
         guard_id = r.json()["guard_id"]
 
@@ -463,7 +463,7 @@ class TestDeviceBoundLockAndTombstoneRegistry:
         # Generate on DEV-ALPHA-001
         res_gen = client.post(
             "/api/target/generate-guard",
-            json={"target_url": "https://api.prodtest.dev"},
+            json={"target_url": "https://api.prodtest.dev", "is_sandbox": True},
             headers={"X-Pusher-Device-ID": "DEV-ALPHA-001"}
         )
         guard_id = res_gen.json()["guard_id"]
@@ -550,6 +550,55 @@ class TestDeviceBoundLockAndTombstoneRegistry:
             headers={"X-Pusher-Device-ID": "DEV-ALPHA-001"}
         )
         assert res_reverify.status_code == 403
+
+
+class TestLiveUrlReachabilityAndDnsValidator:
+    def test_nonexistent_domain_returns_dns_not_found(self):
+        res = client.post("/api/target/validate-url", json={
+            "target_url": "https://gitb-nonexistent-domain-9999.com/",
+            "is_sandbox": False
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["valid"] is False
+        assert data["reachable"] is False
+        assert data["status"] == "DNS_NOT_FOUND"
+        assert "gitb-nonexistent-domain-9999.com" in data["message"]
+
+    def test_close_domain_typo_suggests_github(self):
+        res = client.post("/api/target/validate-url", json={
+            "target_url": "https://gitb.com/",
+            "is_sandbox": False
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["valid"] is False
+        assert data["reachable"] is False
+        assert data["status"] in ("DNS_NOT_FOUND", "UNREACHABLE")
+        assert any("github.com" in s for s in data["suggestions"])
+
+    def test_ssrf_private_ip_returns_ssrf_blocked(self):
+        res = client.post("/api/target/validate-url", json={
+            "target_url": "http://127.0.0.1:8000",
+            "is_sandbox": False
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["valid"] is False
+        assert data["reachable"] is False
+        assert data["status"] == "SSRF_BLOCKED"
+        assert "loopback" in data["message"].lower() or "127.0.0.1" in data["message"]
+
+    def test_generate_guard_rejects_nonexistent_domain_with_422(self):
+        client.post("/api/target/kill")
+        res = client.post("/api/target/generate-guard", json={
+            "target_url": "https://gitb-nonexistent-domain-9999.com/",
+            "is_sandbox": False
+        })
+        assert res.status_code == 422
+        detail = str(res.json()["detail"])
+        assert "INCORRECT URL" in detail or "does not exist" in detail or "cannot be resolved" in detail
+
 
 
 

@@ -23,6 +23,7 @@ export default function VerifyTargetView({
   sandboxMode,
   setSandboxMode,
   ssrfCheck,
+  urlValidation = { checking: false, valid: true, reachable: true, status: 'IDLE', message: '', suggestions: [] },
   guardToken,
   isVerified,
   guardTimerSeconds,
@@ -192,18 +193,69 @@ export default function VerifyTargetView({
             />
           </div>
 
-          {/* SSRF Diagnostic Ribbon */}
+          {/* Real-time Dynamic URL Reachability, DNS & SSRF Diagnostic Ribbon */}
           <div
-            className={`border p-2.5 text-xs font-mono flex items-center justify-between ${
-              ssrfCheck.valid
-                ? (isProd ? 'bg-emerald-50 border-emerald-400 text-emerald-900' : 'bg-white text-black border-black')
-                : (isProd ? 'bg-rose-50 border-rose-400 text-rose-900' : 'bg-black text-white border-black')
+            className={`border-2 p-3 text-xs font-mono transition-all ${
+              urlValidation.checking
+                ? 'bg-slate-100 border-slate-400 text-slate-800'
+                : urlValidation.reachable || sandboxMode
+                ? (isProd ? 'bg-emerald-50 border-emerald-500 text-emerald-900 shadow-sm' : 'bg-white text-black border-black')
+                : (isProd ? 'bg-rose-50 border-rose-500 text-rose-950 shadow-sm' : 'bg-black text-white border-black')
             }`}
           >
-            <span className="font-bold">{ssrfCheck.message}</span>
-            <span className="text-[10px] font-bold border border-current px-1.5 py-0.5">
-              {ssrfCheck.valid ? 'PASSED' : 'DENIED'}
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                {urlValidation.checking ? (
+                  <Clock className="w-4 h-4 animate-spin text-teal-700 shrink-0" />
+                ) : urlValidation.reachable || sandboxMode ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                )}
+                <span className="font-bold">
+                  {urlValidation.checking
+                    ? 'CHECKING URL & DNS REACHABILITY...'
+                    : urlValidation.message || (urlValidation.valid ? 'URL VERIFIED & LIVE: Ready for Guard deployment.' : 'URL invalid or unreachable.')}
+                </span>
+              </div>
+              <span
+                className={`text-[10px] font-black border px-1.5 py-0.5 uppercase tracking-wider shrink-0 ${
+                  urlValidation.checking
+                    ? 'border-slate-500 bg-white text-slate-700'
+                    : urlValidation.reachable || sandboxMode
+                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white border-black')
+                    : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-black border-black')
+                }`}
+              >
+                {urlValidation.checking
+                  ? 'CHECKING...'
+                  : urlValidation.reachable || sandboxMode
+                  ? 'PASSED'
+                  : urlValidation.status || 'FAILED'}
+              </span>
+            </div>
+
+            {/* Smart Domain Typo Suggestions */}
+            {!urlValidation.checking && !urlValidation.reachable && !sandboxMode && urlValidation.suggestions && urlValidation.suggestions.length > 0 && (
+              <div className="mt-2.5 pt-2 border-t border-rose-200 flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-bold text-rose-950 uppercase tracking-wide">
+                  Did you mean:
+                </span>
+                {urlValidation.suggestions.map((suggestion, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => {
+                      setTargetUrl(suggestion);
+                    }}
+                    className="px-2.5 py-1 bg-white hover:bg-teal-700 hover:text-white text-teal-900 border-2 border-teal-600 text-xs font-mono font-bold transition-colors cursor-pointer shadow-xs"
+                    title={`Click to use ${suggestion}`}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Sandbox Toggle */}
@@ -236,9 +288,9 @@ export default function VerifyTargetView({
             <button
               type="button"
               onClick={handleDownloadGuard}
-              disabled={isQuotaDepleted || hasActiveGuard}
+              disabled={isQuotaDepleted || hasActiveGuard || (!sandboxMode && (urlValidation.checking || !urlValidation.reachable))}
               className={`w-full border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors flex items-center justify-center gap-2 ${
-                isQuotaDepleted || hasActiveGuard
+                isQuotaDepleted || hasActiveGuard || (!sandboxMode && (urlValidation.checking || !urlValidation.reachable))
                   ? 'bg-slate-100 text-black/60 opacity-60 cursor-not-allowed border-black/40'
                   : 'bg-white hover:bg-black hover:text-white cursor-pointer'
               }`}
@@ -249,6 +301,10 @@ export default function VerifyTargetView({
                   ? 'QUOTA DEPLETED (3/3 USED)'
                   : hasActiveGuard
                   ? `LOCKED — USE ACTIVE ID (${guardToken}) OR CLICK 'KILL ID' BELOW FIRST`
+                  : !sandboxMode && urlValidation.checking
+                  ? 'CHECKING TARGET URL REACHABILITY...'
+                  : !sandboxMode && !urlValidation.reachable
+                  ? 'ENTER A LIVE WORKING URL ABOVE TO UNLOCK'
                   : 'DOWNLOAD PUSHER_GUARD.PY'}
               </span>
             </button>

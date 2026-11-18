@@ -5,7 +5,9 @@ Target Service:
 - Live challenge-response verification (/__pusher_verify?nonce=...) and Kill revocation
 """
 
+import asyncio
 import base64
+import difflib
 import hashlib
 import hmac
 import ipaddress
@@ -359,62 +361,272 @@ class ActiveTargetStore:
 
 target_store = ActiveTargetStore()
 
-# SSRF Validation Function
-def validate_target_url(target_url: str, is_sandbox: bool = False) -> tuple[bool, str, str | None]:
+COMMON_DOMAINS = [
+    "github.com",
+    "gitlab.com",
+    "vercel.app",
+    "netlify.app",
+    "onrender.com",
+    "railway.app",
+    "fly.dev",
+    "herokuapp.com",
+    "cloudflare.com",
+    "google.com",
+    "example.com",
+]
+
+
+class ValidationResult(dict):
+    """
+    Structured URL & SSRF Validation result.
+    Behaves as a dict for JSON serialization while supporting 3-tuple unpacking
+    `(valid, message, resolved_ip)` for backwards compatibility.
+    """
+    def __iter__(self):
+        yield self.get("valid", False)
+        yield self.get("message", "")
+        yield self.get("resolved_ip", None)
+
+    @property
+    def valid(self) -> bool:
+        return self.get("valid", False)
+
+    @property
+    def reachable(self) -> bool:
+        return self.get("reachable", False)
+
+    @property
+    def message(self) -> str:
+        return self.get("message", "")
+
+
+# SSRF & Real-time Live URL / DNS Reachability Validation Function
+async def validate_target_url(target_url: str, is_sandbox: bool = False) -> ValidationResult:
+    """
+    3-Step Live Target Validation:
+    - If is_sandbox == True: bypass external DNS/HTTP checks immediately.
+    - Step 1: Syntax & SSRF guard (scheme, hostname dot, loopbacks, private networks, cloud metadata).
+    - Step 2: Real-time async DNS lookup with 3.0s timeout and domain typo suggestion generator.
+    - Step 3: Live HTTP/HTTPS reachability probe (HEAD / GET fallback, 4.0s timeout).
+    """
+    if is_sandbox:
+        return ValidationResult({
+            "valid": True,
+            "reachable": True,
+            "status": "SANDBOX_ALLOWED",
+            "message": "SANDBOX DEV MODE: Local simulation target allowed",
+            "suggestions": [],
+            "resolved_ip": "127.0.0.1",
+        })
+
     if not target_url or not target_url.strip():
-        return False, "Target URL cannot be empty.", None
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "INVALID_URL",
+            "message": "INCORRECT URL: Enter a valid website address starting with http:// or https:// (e.g., https://myapp.com).",
+            "suggestions": [],
+            "resolved_ip": None,
+        })
 
     url = target_url.strip()
     parsed = urllib.parse.urlparse(url)
 
     if parsed.scheme.lower() not in ("http", "https"):
-        return False, f"Invalid scheme '{parsed.scheme}'. Only HTTP and HTTPS are permitted.", None
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "INVALID_URL",
+            "message": "INCORRECT URL: Enter a valid website address starting with http:// or https:// (e.g., https://myapp.com).",
+            "suggestions": [],
+            "resolved_ip": None,
+        })
 
-    hostname = parsed.hostname
-    if not hostname:
-        return False, "Unable to extract valid hostname from target URL.", None
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname or "." not in hostname:
+        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.5) if hostname else []
+        suggestions = [f"https://{m}" for m in close_matches]
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "INVALID_URL",
+            "message": "INCORRECT URL: Enter a valid website address starting with http:// or https:// (e.g., https://myapp.com).",
+            "suggestions": suggestions,
+            "resolved_ip": None,
+        })
 
     sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local"}
-
-    # Sandbox Demo Mode allows sandbox.pusher.local, localhost, or api.myproject.dev sandbox targets
-    if is_sandbox:
-        return True, "Sandbox demo target permitted.", "127.0.0.1"
-
-    if hostname.lower() in sandbox_hosts or "sandbox" in hostname.lower():
-        return True, "Sandbox demo target permitted.", "127.0.0.1"
+    if hostname in sandbox_hosts or "sandbox" in hostname:
+        return ValidationResult({
+            "valid": True,
+            "reachable": True,
+            "status": "SANDBOX_ALLOWED",
+            "message": "SANDBOX DEV MODE: Local simulation target allowed",
+            "suggestions": [],
+            "resolved_ip": "127.0.0.1",
+        })
 
     # Explicit loopback string names
-    if hostname.lower() in ("localhost", "0.0.0.0", "127.0.0.1", "::1"):
-        return False, "Loopback addresses (localhost/127.0.0.1) are forbidden for production tests.", None
+    if hostname in ("localhost", "0.0.0.0", "127.0.0.1", "::1"):
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "SSRF_BLOCKED",
+            "message": "Loopback addresses (localhost/127.0.0.1) are forbidden for production tests.",
+            "suggestions": [],
+            "resolved_ip": "127.0.0.1",
+        })
 
-    # DNS Resolution & IP Range Check
+    # Step 2: Real-time Async DNS Resolution
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    loop = asyncio.get_running_loop()
     try:
-        addr_info = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
-    except socket.gaierror as e:
-        return False, f"DNS resolution failed for '{hostname}': {str(e)}", None
+        addr_info = await asyncio.wait_for(
+            loop.getaddrinfo(hostname, port),
+            timeout=3.0,
+        )
+    except socket.gaierror:
+        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
+        suggestions = [f"https://{m}" for m in close_matches]
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "DNS_NOT_FOUND",
+            "message": f"INCORRECT URL: '{hostname}' does not exist or cannot be resolved in DNS.",
+            "suggestions": suggestions,
+            "resolved_ip": None,
+        })
+    except (asyncio.TimeoutError, TimeoutError):
+        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
+        suggestions = [f"https://{m}" for m in close_matches]
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "DNS_NOT_FOUND",
+            "message": f"DNS TIMEOUT: Resolution timed out for '{hostname}'.",
+            "suggestions": suggestions,
+            "resolved_ip": None,
+        })
 
     resolved_ips = {item[4][0] for item in addr_info}
     for ip_str in resolved_ips:
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
-            return False, f"Resolved invalid IP address: '{ip_str}'", None
+            return ValidationResult({
+                "valid": False,
+                "reachable": False,
+                "status": "INVALID_URL",
+                "message": f"Resolved invalid IP address: '{ip_str}'",
+                "suggestions": [],
+                "resolved_ip": None,
+            })
 
         if ip.is_loopback:
-            return False, f"SSRF Blocked: Target resolves to loopback IP '{ip_str}'.", ip_str
+            return ValidationResult({
+                "valid": False,
+                "reachable": False,
+                "status": "SSRF_BLOCKED",
+                "message": f"SSRF Blocked: Target resolves to loopback IP '{ip_str}'.",
+                "suggestions": [],
+                "resolved_ip": ip_str,
+            })
         if ip.is_private:
-            return False, f"SSRF Blocked: Target resolves to private network IP '{ip_str}'.", ip_str
+            return ValidationResult({
+                "valid": False,
+                "reachable": False,
+                "status": "SSRF_BLOCKED",
+                "message": f"SSRF Blocked: Target resolves to private network IP '{ip_str}'.",
+                "suggestions": [],
+                "resolved_ip": ip_str,
+            })
         if ip.is_link_local:
-            return False, f"SSRF Blocked: Target resolves to link-local/cloud metadata IP '{ip_str}'.", ip_str
+            return ValidationResult({
+                "valid": False,
+                "reachable": False,
+                "status": "SSRF_BLOCKED",
+                "message": f"SSRF Blocked: Target resolves to link-local/cloud metadata IP '{ip_str}'.",
+                "suggestions": [],
+                "resolved_ip": ip_str,
+            })
         if ip.is_multicast or ip.is_reserved:
-            return False, f"SSRF Blocked: Target resolves to reserved/multicast IP '{ip_str}'.", ip_str
+            return ValidationResult({
+                "valid": False,
+                "reachable": False,
+                "status": "SSRF_BLOCKED",
+                "message": f"SSRF Blocked: Target resolves to reserved/multicast IP '{ip_str}'.",
+                "suggestions": [],
+                "resolved_ip": ip_str,
+            })
 
-        # Link-local cloud metadata check (169.254.169.254)
         if ip_str == "169.254.169.254":
-            return False, "SSRF Blocked: Link-local cloud instance metadata is strictly forbidden.", ip_str
+            return ValidationResult({
+                "valid": False,
+                "reachable": False,
+                "status": "SSRF_BLOCKED",
+                "message": "SSRF Blocked: Link-local cloud instance metadata is strictly forbidden.",
+                "suggestions": [],
+                "resolved_ip": ip_str,
+            })
 
     first_ip = next(iter(resolved_ips), None)
-    return True, "Target URL passed SSRF security checks.", first_ip
+
+    # Step 3: Live HTTP/HTTPS Reachability Probe
+    try:
+        async with httpx.AsyncClient(timeout=4.0, verify=False, follow_redirects=True) as client:
+            try:
+                resp = await client.head(url)
+                if resp.status_code == 405:  # Method Not Allowed for HEAD
+                    resp = await client.get(url)
+            except (httpx.UnsupportedProtocol, httpx.DecodingError):
+                resp = await client.get(url)
+
+            if resp.status_code < 500:
+                return ValidationResult({
+                    "valid": True,
+                    "reachable": True,
+                    "status": "REACHABLE",
+                    "http_status": resp.status_code,
+                    "resolved_ip": first_ip,
+                    "message": f"URL VERIFIED & LIVE: '{hostname}' responded (HTTP {resp.status_code}) — Ready for Guard deployment.",
+                    "suggestions": [],
+                })
+            else:
+                close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
+                suggestions = [f"https://{m}" for m in close_matches]
+                return ValidationResult({
+                    "valid": False,
+                    "reachable": False,
+                    "status": "UNREACHABLE",
+                    "http_status": resp.status_code,
+                    "message": f"SERVER ERROR: '{hostname}' returned HTTP {resp.status_code}.",
+                    "suggestions": suggestions,
+                    "resolved_ip": first_ip,
+                })
+    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError, httpx.RequestError, httpx.HTTPError):
+        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
+        suggestions = [f"https://{m}" for m in close_matches]
+        return ValidationResult({
+            "valid": False,
+            "reachable": False,
+            "status": "UNREACHABLE",
+            "message": f"UNREACHABLE URL: '{hostname}' exists in DNS, but the web server is offline or refused connection.",
+            "suggestions": suggestions,
+            "resolved_ip": first_ip,
+        })
+
+
+def validate_target_url_sync(target_url: str, is_sandbox: bool = False) -> ValidationResult:
+    """Synchronous bridge for validate_target_url."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, validate_target_url(target_url, is_sandbox)).result()
+        return loop.run_until_complete(validate_target_url(target_url, is_sandbox))
+    except RuntimeError:
+        return asyncio.run(validate_target_url(target_url, is_sandbox))
 
 
 # Generate Sealed 48h pusher_guard.py
