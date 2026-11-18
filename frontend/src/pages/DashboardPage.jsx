@@ -240,6 +240,9 @@ export default function DashboardPage({ onLogout, onNavigate }) {
       if (res.ok) {
         const data = await res.json();
         setTargetUrl(data.target_url || '');
+        if (data.is_sandbox !== undefined) {
+          setSandboxMode(Boolean(data.is_sandbox));
+        }
         setGuardToken(data.guard_id || null);
         setIsVerified(Boolean(data.is_verified));
         setGuardTimerSeconds(data.remaining_seconds || 0);
@@ -1153,7 +1156,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
       <div className="flex-1 flex flex-col md:flex-row bg-white">
 
         {/* LEFT SIDEBAR: 6 DISTINCT VIEWS */}
-        <aside className="w-full md:w-64 border-b-2 md:border-b-0 md:border-r-2 border-black p-4 bg-white flex flex-col justify-between shrink-0">
+        <aside className="w-full md:w-64 border-b-2 md:border-b-0 md:border-r-2 border-black p-4 bg-white flex flex-col justify-between shrink-0 lg:sticky lg:top-4 self-start">
           <div className="space-y-4">
             <div className="text-xs font-black uppercase tracking-wider text-black/60 pb-1 border-b border-black">
               [ NAVIGATION ]

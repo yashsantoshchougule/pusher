@@ -31,22 +31,26 @@ input:-webkit-autofill:active {
   transition: background-color 5000s ease-in-out 0s;
 }
 
-/* Hide scrollbars across all browsers while preserving smooth scrolling */
-html, body, #root, * {
-  scrollbar-width: none !important; /* Firefox */
-  -ms-overflow-style: none !important; /* IE and Edge */
+/* Visible high-contrast brutalist scrollbars */
+html, body, #root {
+  scrollbar-width: thin;
+  scrollbar-color: #0d9488 #031716;
 }
 
 ::-webkit-scrollbar {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent !important;
+  background: #031716;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: transparent !important;
+  background: #0d9488;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #14b8a6;
 }

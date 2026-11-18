@@ -117,6 +117,29 @@ class TestTargetVerificationLifecycle:
         assert status_after.status_code == 200
         assert status_after.json()["is_verified"] is False
 
+    def test_sandbox_verification_myproject_dev_no_dns_error(self):
+        client.post("/api/target/kill")
+        gen_res = client.post("/api/target/generate-guard", json={
+            "target_url": "https://api.myproject.dev",
+            "is_sandbox": True
+        })
+        assert gen_res.status_code == 200
+        guard_id = gen_res.json()["guard_id"]
+
+        verify_res = client.post("/api/target/verify", json={
+            "target_url": "https://api.myproject.dev",
+            "guard_id": guard_id,
+            "is_sandbox": True
+        })
+        assert verify_res.status_code == 200
+        data = verify_res.json()
+        assert data["is_verified"] is True
+        assert data["remaining_seconds"] == 172800
+
+        status_res = client.get("/api/target/status")
+        assert status_res.status_code == 200
+        assert status_res.json()["is_sandbox"] is True
+
 
 class TestGuardRateLimiterAndBurnRegistry:
     def test_kill_first_rule_blocks_second_guard_with_409(self):

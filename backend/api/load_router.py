@@ -131,8 +131,10 @@ async def start_load_test(
     # 3. Target Verification, Device Lock & SSRF Enforcement
     is_sandbox_target = (
         req.is_sandbox
+        or (getattr(target_store, "is_sandbox", False) and target_store.is_verified)
         or "sandbox.pusher.local" in req.target_url.lower()
         or "/api/sandbox/target" in req.target_url.lower()
+        or "api.myproject.dev" in req.target_url.lower()
     )
 
     effective_device_id = req.device_id or x_device_id
@@ -182,8 +184,12 @@ async def start_load_test(
             if not is_valid:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     else:
-        active_guard_id = "SANDBOX-DEV"
-        if "sandbox.pusher.local" in req.target_url or not req.target_url.startswith("http"):
+        active_guard_id = target_store.guard_id or "SANDBOX-DEV"
+        if (
+            "sandbox.pusher.local" in req.target_url
+            or "api.myproject.dev" in req.target_url
+            or not req.target_url.startswith("http")
+        ):
             req.target_url = "http://127.0.0.1:8000/api/sandbox/target"
 
     # 4. Launch Async Load Engine
@@ -200,6 +206,7 @@ async def start_load_test(
         p95_ceiling_ms=req.p95_ceiling_ms,
         use_journey=req.use_journey,
         journey_steps=req.journey_steps,
+        is_sandbox=is_sandbox_target,
     )
 
     return {

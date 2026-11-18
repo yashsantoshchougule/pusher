@@ -29,7 +29,7 @@ class GenerateGuardRequest(BaseModel):
 
 class VerifyTargetRequest(BaseModel):
     target_url: str = Field(..., description="The target domain to verify")
-    guard_id: str = Field(..., description="The unique PG-XXXX-48H token")
+    guard_id: str | None = Field(default=None, description="The unique PG-XXXX-48H token")
     is_sandbox: bool = Field(default=False, description="Demo sandbox verification")
     device_id: str | None = Field(default=None, description="Hardware bound device identifier")
 
@@ -183,6 +183,7 @@ async def get_target_status():
     burned_info = is_guard_burned(target_store.guard_id)
     return {
         "target_url": target_store.target_url,
+        "is_sandbox": bool(target_store.is_sandbox),
         "guard_id": target_store.guard_id,
         "is_verified": target_store.is_verified and remaining > 0,
         "active_guard_active": target_store.active_guard_active,

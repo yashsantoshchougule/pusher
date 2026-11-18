@@ -323,6 +323,7 @@ class ActiveTargetStore:
             burn_guard_id(current_guard, "DEVICE_MISMATCH_VIOLATION", self.creator_device_hash, incoming_hash)
             self.guard_id = None
             self.is_verified = False
+            self.is_sandbox = False
             self.active_guard_active = False
             self.expires_at = 0
             self.last_burn_reason = "DEVICE_MISMATCH_VIOLATION"
@@ -333,6 +334,7 @@ class ActiveTargetStore:
         burn_guard_id(current_guard, "MANUAL_USER_KILL", self.creator_device_hash)
         self.guard_id = None
         self.is_verified = False
+        self.is_sandbox = False
         self.active_guard_active = False
         self.expires_at = 0
         self.last_burn_reason = "MANUAL_USER_KILL"
@@ -372,10 +374,13 @@ def validate_target_url(target_url: str, is_sandbox: bool = False) -> tuple[bool
     if not hostname:
         return False, "Unable to extract valid hostname from target URL.", None
 
-    sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local", "localhost", "127.0.0.1", "0.0.0.0"}
+    sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local"}
 
     # Sandbox Demo Mode allows sandbox.pusher.local, localhost, or api.myproject.dev sandbox targets
-    if is_sandbox and (hostname.lower() in sandbox_hosts or "sandbox" in hostname.lower()):
+    if is_sandbox:
+        return True, "Sandbox demo target permitted.", "127.0.0.1"
+
+    if hostname.lower() in sandbox_hosts or "sandbox" in hostname.lower():
         return True, "Sandbox demo target permitted.", "127.0.0.1"
 
     # Explicit loopback string names
@@ -757,15 +762,23 @@ async def verify_target_handshake(
     sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local", "localhost", "127.0.0.1", "0.0.0.0"}
 
     # Sandbox demo verification passes immediately in memory without external DNS / HTTP calls
-    if is_sandbox or "sandbox" in target_url.lower() or hostname in sandbox_hosts:
+    is_sandbox_mode = (
+        is_sandbox
+        or getattr(target_store, "is_sandbox", False)
+        or "sandbox" in target_url.lower()
+        or hostname in sandbox_hosts
+    )
+
+    if is_sandbox_mode:
         active_id = guard_id or target_store.guard_id or f"PG-SNDB-{secrets.token_hex(2).upper()}-48H"
         target_store.set_target(
             target_url=target_url,
             guard_id=active_id,
-            bypass_secret="sandbox_secret",
+            bypass_secret=target_store.bypass_secret or "sandbox_secret",
             issued_at=int(time.time()),
             expires_at=int(time.time()) + 172800,
             creator_device_id=device_id or target_store.creator_device_id,
+            is_sandbox=True,
         )
         target_store.mark_verified()
         return True, "Sandbox demo target verified successfully.", 172800

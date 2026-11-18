@@ -120,6 +120,7 @@ class LoadEngine:
         self.target_vus: int = 0
         self.traffic_mode: str = "steady_crowd"
         self.target_url: str = ""
+        self.is_sandbox: bool = False
         self.cache_bust: bool = True
         self.active_guard_id: str = ""
         self.handshake_secret: str | None = None
@@ -231,11 +232,28 @@ class LoadEngine:
         p95_ceiling_ms: float = 1500.0,
         use_journey: bool = False,
         journey_steps: list[dict] | None = None,
+        is_sandbox: bool = False,
     ) -> str:
         if self.is_running:
             raise RuntimeError("A load test is already actively running.")
 
-        self.target_url = target_url
+        is_sandbox_target = (
+            is_sandbox
+            or "api.myproject.dev" in target_url.lower()
+            or "sandbox.pusher.local" in target_url.lower()
+            or "/api/sandbox/target" in target_url.lower()
+        )
+        self.is_sandbox = is_sandbox_target
+
+        if is_sandbox_target and (
+            "api.myproject.dev" in target_url.lower()
+            or "sandbox.pusher.local" in target_url.lower()
+            or not target_url.startswith("http")
+        ):
+            self.target_url = "http://127.0.0.1:8000/api/sandbox/target"
+        else:
+            self.target_url = target_url
+
         self.traffic_mode = traffic_mode
         self.target_vus = target_vus
         self.duration_sec = duration_sec
@@ -646,6 +664,12 @@ class LoadEngine:
                     clean_base = self.target_url.rstrip("/")
                     clean_path = resolved_path.lstrip("/")
                     base_req_url = f"{clean_base}/{clean_path}"
+
+                if self.is_sandbox and (
+                    "api.myproject.dev" in base_req_url.lower()
+                    or "sandbox.pusher.local" in base_req_url.lower()
+                ):
+                    base_req_url = "http://127.0.0.1:8000/api/sandbox/target"
 
                 request_url = (
                     append_cache_buster(base_req_url, vu_id, req_seq)
