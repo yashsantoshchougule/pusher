@@ -22,6 +22,26 @@ class Settings(BaseSettings):
         alias="SUPABASE_JWKS_URL"
     )
 
+    # Google OAuth Configuration
+    google_client_id: str = Field(
+        default="",
+        alias="GOOGLE_CLIENT_ID"
+    )
+    google_client_secret: str = Field(
+        default="",
+        alias="GOOGLE_CLIENT_SECRET"
+    )
+
+    # GitHub OAuth Configuration
+    github_client_id: str = Field(
+        default="",
+        alias="GITHUB_CLIENT_ID"
+    )
+    github_client_secret: str = Field(
+        default="",
+        alias="GITHUB_CLIENT_SECRET"
+    )
+
     # Application Mode
     pusher_mode: str = Field(default="local_dev", alias="PUSHER_MODE")  # 'local_dev' | 'production'
     port: int = Field(default=8000, alias="PORT")
