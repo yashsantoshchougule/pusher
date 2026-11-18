@@ -1240,7 +1240,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               ? (themeMode === 'production' ? 'bg-teal-700 text-white' : 'bg-black text-white')
               : 'bg-white text-black hover:bg-black hover:text-white'
               }`}
-            title="View & Edit User Profile"
+            title="View & Edit User Profile & Session"
           >
             <div className="w-5 h-5 border border-black bg-slate-900 text-white flex items-center justify-center text-[10px] font-black overflow-hidden shrink-0 select-none">
               {userProfile.avatar_url ? (
@@ -1249,8 +1249,8 @@ export default function DashboardPage({ onLogout, onNavigate }) {
                 <span>{(userProfile.full_name || userProfile.username || 'PU').slice(0, 2).toUpperCase()}</span>
               )}
             </div>
-            <span className="hidden sm:inline font-mono truncate max-w-[130px]">
-              {userProfile.username || userProfile.full_name || 'Profile'}
+            <span className="font-mono truncate max-w-[220px]">
+              [ PROFILE: {userProfile.full_name || userProfile.username || userProfile.email || 'OPERATOR'} ]
             </span>
           </button>
 
@@ -1298,43 +1298,34 @@ export default function DashboardPage({ onLogout, onNavigate }) {
                     <span>WAF Setup Guide</span>
                     <Code className="w-3.5 h-3.5" />
                   </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setActiveNav('reports');
-                  }}
-                  className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
-                >
-                  <span>Capacity Reports</span>
-                  <FileText className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setActiveNav('history');
-                  }}
-                  className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
-                >
-                  <span>Run History</span>
-                  <History className="w-3.5 h-3.5" />
-                </button>
-                <div className="border-t border-black my-1" />
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="w-full text-left px-3 py-2 font-bold uppercase text-red-600 hover:bg-red-600 hover:text-white transition-colors flex items-center justify-between"
-                >
-                  <span>Log Out / Exit</span>
-                  <span>→</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setActiveNav('reports');
+                    }}
+                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
+                  >
+                    <span>Capacity Reports</span>
+                    <FileText className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setActiveNav('history');
+                    }}
+                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
+                  >
+                    <span>Run History</span>
+                    <History className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
 
       {/* ========================================================================= */}
       {/* 2-COLUMN MAIN LAYOUT: LEFT SIDEBAR + MAIN CONTENT AREA                   */}
@@ -1578,6 +1569,8 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               deviceId={deviceId}
               themeMode={themeMode}
               setActiveNav={setActiveNav}
+              onLogout={onLogout}
+              onNavigate={onNavigate}
             />
           )}
 
