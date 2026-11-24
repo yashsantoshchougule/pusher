@@ -1,5 +1,6 @@
 import json
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from backend.api.auth_deps import require_operator
 from pydantic import BaseModel, Field
 
 from backend.core.report_service import (
@@ -9,7 +10,7 @@ from backend.core.report_service import (
     get_run,
 )
 
-router = APIRouter(prefix="/api", tags=["Reports & History"])
+router = APIRouter(prefix="/api", tags=["Reports & History"], dependencies=[Depends(require_operator)])
 
 
 class CompareRequest(BaseModel):
@@ -22,9 +23,14 @@ async def get_history_endpoint(
     mode: str | None = Query(None, description="Filter by traffic mode"),
     verdict: str | None = Query(None, description="Filter by safety verdict"),
     q: str | None = Query(None, description="Search term for run ID or target URL"),
+    limit: int = Query(25, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=250),
 ):
     """Retrieve historical load test executions and latest scorecard KPIs."""
-    return get_all_runs(mode=mode, verdict=verdict, q=q)
+    try:
+        return get_all_runs(mode=mode, verdict=verdict, q=q, limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.delete("/history")

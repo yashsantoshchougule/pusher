@@ -5,26 +5,42 @@ Journey Service for Multi-Step Sequential API Testing:
 - 1-VU Dry-Run Validator with First-4KB Token Extraction and Interpolation
 """
 
-import hashlib
-import hmac
+import asyncio
 import json
+import math
+import re
 import time
-import urllib.parse
+from urllib.parse import quote
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue, ValidationError, field_validator
 
-from backend.core.target_service import validate_target_url_sync, target_store
+from backend.core.dry_run_control import DryRunControl
+from backend.core.request_owner import request_owner
+from backend.core.target_policy import DestinationError, journey_target, parse_target, sandbox_target, target_client
 
 
 class JourneyStepModel(BaseModel):
-    step_id: int | str
-    name: str = Field(..., min_length=1, max_length=100)
-    method: str = Field("GET", pattern="^(GET|POST|PUT|DELETE|PATCH)$")
+    step_id: int | str | None = None
+    name: str = Field("Step", min_length=1, max_length=100)
+    method: str = Field("GET", pattern=r"(?i)^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$")
     path: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
-    body: str | None = None
-    expected_status: int = 200
+    body: JsonValue = None
+    required_headers: list[str] = Field(default_factory=list)
+    requires_body: bool = False
+    requires_query: bool = False
+    expected_status: int = Field(200, ge=100, le=599)
     extract_json_key: str | None = None
+
+    @field_validator("headers")
+    @classmethod
+    def validate_headers(cls, headers: dict[str, str]) -> dict[str, str]:
+        for name, value in headers.items():
+            if not re.fullmatch(r"[!#$%&'*+.^_\x60|~0-9A-Za-z-]+", name):
+                raise ValueError("Invalid HTTP header name")
+            if not re.fullmatch(r"[\t -~]*", value) or value.strip(" \t") != value:
+                raise ValueError("Invalid HTTP header value")
+        return headers
 
 
 DEFAULT_SANDBOX_STEPS = [
@@ -55,56 +71,136 @@ DEFAULT_SANDBOX_STEPS = [
         "path": "/api/sandbox/checkout",
         "headers": {"Authorization": "Bearer {{token}}", "Content-Type": "application/json"},
         "body": '{"item_id": "ITEM-9065", "quantity": 1}',
-        "expected_status": 200,
+        "expected_status": 201,
         "extract_json_key": None,
     },
 ]
 
 
-class JourneyStore:
-    def __init__(self):
-        self.last_dry_run_context: dict = {}
-        self.last_dry_run_timestamp: str | None = None
+class JourneyInputError(ValueError):
+    pass
 
+
+def render_journey_value(text: str, context: dict[str, str], *, url_component: bool = False) -> str:
+    def replace(match):
+        key = match[1]
+        if key not in context:
+            raise JourneyInputError(f"Required journey variable '{key}' is unavailable.")
+        value = context[key]
+        return quote(value, safe="") if url_component else value
+
+    return re.sub(r"\{\{([^{}]+)\}\}", replace, text)
+
+
+def prepare_journey_request(step, context, headers):
+    path = render_journey_value(step.get("path", ""), context, url_component=True)
+    headers.update({name: render_journey_value(value, context) for name, value in (step.get("headers") or {}).items()})
+    return path, encode_journey_body(step.get("body"), context, headers)
+
+
+def append_cache_buster(url: str, vu_id: int, req_seq: int) -> str:
+    nonce = f"{int(time.time() * 1000)}_{vu_id}_{req_seq}"
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}_cb={nonce}"
+
+
+def journey_request_headers():
+    return {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "User-Agent": "Pusher-LoadEngine/1.0",
+    }
+
+
+def build_journey_request(step, context, base, is_sandbox, cache_bust, vu_id, req_seq):
+    headers = journey_request_headers()
+    path, content = prepare_journey_request(step, context, headers)
+    url = str(journey_target(path, base, is_sandbox))
+    if cache_bust:
+        url = append_cache_buster(url, vu_id, req_seq)
+    return url, headers, content
+
+
+def extract_journey_value(key: str, preview: bytes) -> str:
+    try:
+        payload = json.loads(preview)
+        value = payload[key]
+    except (ValueError, KeyError, TypeError):
+        value = None
+    if (not isinstance(value, (str, bool, int, float)) or not str(value).strip()
+            or (isinstance(value, float) and not math.isfinite(value))):
+        raise JourneyInputError(f"Could not extract required field '{key}' from the response.")
+    return str(value)
+
+
+def _render_json(value, context):
+    if isinstance(value, str):
+        return render_journey_value(value, context)
+    if isinstance(value, list):
+        return [_render_json(item, context) for item in value]
+    if isinstance(value, dict):
+        return {render_journey_value(key, context): _render_json(item, context) for key, item in value.items()}
+    return value
+
+
+def encode_journey_body(body, context, headers) -> bytes | None:
+    if body is None or body == "":
+        return None
+    if isinstance(body, str):
+        text = body
+        if "{{" in body:
+            try:
+                value = json.loads(body)
+            except ValueError:
+                text = render_journey_value(body, context)
+            else:
+                text = json.dumps(_render_json(value, context))
+    else:
+        text = json.dumps(_render_json(body, context))
+    if not any(key.lower() == "content-type" for key in headers):
+        try:
+            json.loads(text)
+        except ValueError:
+            pass
+        else:
+            headers["Content-Type"] = "application/json"
+    return text.encode("utf-8")
+
+
+class JourneyStore:
     @property
     def steps(self) -> list[dict]:
         from backend.core.database import db_get_journey
-        return db_get_journey().get("steps", [])
+        return db_get_journey(request_owner.get()).get("steps", [])
 
     @property
     def use_journey(self) -> bool:
         from backend.core.database import db_get_journey
-        return db_get_journey().get("use_journey", False)
+        return db_get_journey(request_owner.get()).get("use_journey", False)
 
     @property
     def last_dry_run_results(self) -> list[dict]:
         from backend.core.database import db_get_journey
-        return db_get_journey().get("last_dry_run") or []
+        return db_get_journey(request_owner.get()).get("last_dry_run") or []
 
     @last_dry_run_results.setter
     def last_dry_run_results(self, val: list[dict]):
         from backend.core.database import db_save_journey_dry_run
-        db_save_journey_dry_run(val)
+        db_save_journey_dry_run(val, request_owner.get())
 
     def get_journey(self) -> dict:
         from backend.core.database import db_get_journey
-        data = db_get_journey()
+        data = db_get_journey(request_owner.get())
         return {
             "steps": data.get("steps", []),
             "use_journey": data.get("use_journey", False),
             "dry_run_results": data.get("last_dry_run") or [],
-            "dry_run_timestamp": self.last_dry_run_timestamp,
+            "dry_run_timestamp": data.get("dry_run_timestamp"),
         }
 
-    def save_journey(self, steps: list[dict], use_journey: bool = False) -> None:
+    def save_journey(self, steps: list[dict], use_journey: bool = False) -> dict:
         from backend.core.database import db_save_journey
-        db_save_journey(use_journey=use_journey, steps=steps[:10])
+        return db_save_journey(use_journey=use_journey, steps=steps[:10], user_id=request_owner.get())
 
-    def save_dry_run(self, results: list[dict], context: dict | None = None) -> None:
-        from backend.core.database import db_save_journey_dry_run
-        self.last_dry_run_context = context or {}
-        self.last_dry_run_timestamp = time.strftime("%H:%M:%S")
-        db_save_journey_dry_run(results)
 
 
 journey_store = JourneyStore()
@@ -114,6 +210,7 @@ def validate_journey_steps(
     steps: list[dict],
     active_target_url: str | None = None,
     is_sandbox: bool = False,
+    require_runtime: bool = False,
 ) -> tuple[bool, str | None]:
     """
     Enforces Same-Origin SSRF protection for each step in the chain.
@@ -127,42 +224,55 @@ def validate_journey_steps(
     if len(steps) > 10:
         return False, "Journey exceeds maximum limit of 10 steps."
 
-    target = active_target_url or target_store.target_url or "http://127.0.0.1:8000"
-    target_parsed = urllib.parse.urlparse(target)
-    target_origin = f"{target_parsed.scheme}://{target_parsed.netloc}".lower()
-
-    for idx, s in enumerate(steps, 1):
-        path = s.get("path", "").strip()
-        if not path:
-            return False, f"Step {idx} has an empty endpoint path."
-
-        # If full URL is provided, verify origin matches
-        if path.startswith("http://") or path.startswith("https://"):
-            step_parsed = urllib.parse.urlparse(path)
-            step_origin = f"{step_parsed.scheme}://{step_parsed.netloc}".lower()
-
-            if is_sandbox and ("/api/sandbox/" in path or "sandbox.pusher.local" in step_origin):
-                continue
-
-            if step_origin != target_origin:
-                return False, f"SSRF Blocked: Step {idx} points to '{step_origin}', which does not match verified target origin '{target_origin}'."
-
-            # Run SSRF IP validation on host
-            valid, msg, _ = validate_target_url_sync(path, is_sandbox=is_sandbox)
-            if not valid:
-                return False, f"Step {idx} SSRF violation: {msg}"
-        elif not path.startswith("/"):
-            return False, f"Step {idx} path must begin with '/' or be a valid full URL."
+    try:
+        parse = sandbox_target if is_sandbox else parse_target
+        base = parse(active_target_url) if active_target_url else None
+    except DestinationError as exc:
+        return False, str(exc)
+    seen_ids = set()
+    for idx, step in enumerate(steps, 1):
+        try:
+            validated = JourneyStepModel.model_validate(step, strict=True)
+        except ValidationError as exc:
+            field = exc.errors()[0]["loc"]
+            return False, f"Step {idx}: invalid {field[0] if field else 'step'}."
+        if require_runtime:
+            supplied = {name.lower() for name in validated.headers}
+            if any(name.lower() not in supplied for name in validated.required_headers):
+                return False, f"Step {idx}: re-enter the required headers before running."
+            if validated.requires_body and validated.body in (None, ""):
+                return False, f"Step {idx}: re-enter the required body before running."
+            if validated.requires_query and not validated.path.partition("?")[2]:
+                return False, f"Step {idx}: re-enter the required query string before running."
+        if validated.step_id:
+            step_id = str(validated.step_id)
+            if step_id in seen_ids:
+                return False, f"Step {idx}: duplicate step_id."
+            seen_ids.add(step_id)
+        path = validated.path
+        if base is None:
+            if not path.startswith("/") or path.startswith("//") or chr(92) in path:
+                return False, f"Step {idx} must use a root-relative path until a target is configured."
+            continue
+        try:
+            journey_target(path, base, is_sandbox)
+        except DestinationError as exc:
+            return False, f"Step {idx}: {exc}"
 
     return True, None
+
+
+DRY_RUN_TIMEOUT_SEC = 10.0
 
 
 async def execute_dry_run(
     steps: list[dict],
     base_url: str = "http://127.0.0.1:8000",
-    guard_id: str = "PG-ACTIVE",
     client: httpx.AsyncClient | None = None,
-) -> list[dict]:
+    is_sandbox: bool = False,
+    control: DryRunControl | None = None,
+    cache_bust: bool = False,
+) -> tuple[list[dict], dict[str, str]]:
     """
     1-VU Dry-Run Validator:
     Executes each step in sequence, extracting variables (like {{token}}) from the first
@@ -170,126 +280,110 @@ async def execute_dry_run(
     """
     results = []
     context: dict[str, str] = {}
+    control = control or DryRunControl(request_owner.get())
+    loop = asyncio.get_running_loop()
+    guard_remaining = control.guard_expires_at - time.time()
+    deadline = loop.time() + min(DRY_RUN_TIMEOUT_SEC, guard_remaining)
+    deadline_reason = "guard_expired" if guard_remaining <= DRY_RUN_TIMEOUT_SEC else "timeout"
 
+    def interrupted() -> bool:
+        if control.reason is None:
+            if time.time() >= control.guard_expires_at:
+                control.reason = "guard_expired"
+            elif loop.time() >= deadline:
+                control.reason = deadline_reason
+        return control.reason is not None
+
+    base = parse_target(base_url)
     own_client = False
     if client is None:
-        client = httpx.AsyncClient(timeout=10.0, follow_redirects=True)
+        client = target_client(base, is_sandbox, timeout=DRY_RUN_TIMEOUT_SEC)
         own_client = True
 
     try:
-        for s in steps:
-            step_id = s.get("step_id", len(results) + 1)
-            name = s.get("name", f"Step {step_id}")
-            method = s.get("method", "GET").upper()
-            raw_path = s.get("path", "")
-            expected_status = s.get("expected_status", 200)
-            extract_key = s.get("extract_json_key")
+        async with asyncio.timeout_at(deadline) as timer:
+            control.timer = timer
+            for req_seq, s in enumerate(steps, 1):
+                if interrupted():
+                    break
+                step_id = s.get("step_id", len(results) + 1)
+                name = s.get("name", f"Step {step_id}")
+                method = s.get("method", "GET").upper()
+                raw_path = s.get("path", "")
+                expected_status = s.get("expected_status", 200)
+                extract_key = s.get("extract_json_key")
 
-            # Interpolate path
-            resolved_path = raw_path
-            for k, v in context.items():
-                resolved_path = resolved_path.replace(f"{{{{{k}}}}}", str(v))
-
-            if resolved_path.startswith("http://") or resolved_path.startswith("https://"):
-                url = resolved_path
-            else:
-                clean_base = base_url.rstrip("/")
-                clean_path = resolved_path.lstrip("/")
-                url = f"{clean_base}/{clean_path}"
-
-            # Interpolate headers with signed Pusher bypass credentials
-            curr_min = str(int(time.time() // 60))
-            secret = target_store.bypass_secret or "bypass_secret_demo"
-            sig = hmac.new(
-                secret.encode("utf-8"),
-                f"{guard_id}:{curr_min}".encode("utf-8"),
-                hashlib.sha256
-            ).hexdigest()
-            headers = {
-                "X-Pusher-Guard-ID": guard_id,
-                "X-Pusher-Timestamp": curr_min,
-                "X-Pusher-Signature": sig,
-                "X-Pusher-Bypass": f"{guard_id}-SIGNED",
-                "User-Agent": "Pusher-DryRun/1.0",
-            }
-            raw_headers = s.get("headers") or {}
-            for hk, hv in raw_headers.items():
-                val = str(hv)
-                for ck, cv in context.items():
-                    val = val.replace(f"{{{{{ck}}}}}", str(cv))
-                headers[hk] = val
-
-            # Interpolate body
-            body_content = s.get("body")
-            if body_content:
-                for ck, cv in context.items():
-                    body_content = body_content.replace(f"{{{{{ck}}}}}", str(cv))
-
-            t0 = time.perf_counter()
-            passed = False
-            status_code = 0
-            error_msg = None
-            extracted_val = None
-
-            try:
-                # 4 KB chunk discard streaming execution
-                async with client.stream(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    content=body_content.encode("utf-8") if body_content else None,
-                ) as resp:
-                    status_code = resp.status_code
-                    first_chunk = b""
-                    async for chunk in resp.aiter_bytes(chunk_size=4096):
-                        if not first_chunk:
-                            first_chunk = chunk
-                        # Discard subsequent chunks immediately
-
-                latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
-
-                if status_code == expected_status or (expected_status == 200 and status_code in (200, 201)):
-                    passed = True
-                else:
-                    error_msg = f"Expected status {expected_status}, received {status_code}"
-
-                # Extract JSON token from first 4 KB chunk if requested
-                if passed and extract_key and first_chunk:
-                    try:
-                        parsed_json = json.loads(first_chunk.decode("utf-8", errors="ignore"))
-                        if isinstance(parsed_json, dict) and extract_key in parsed_json:
-                            extracted_val = str(parsed_json[extract_key])
-                            context[extract_key] = extracted_val
-                    except Exception as e:
-                        error_msg = f"Failed to extract '{extract_key}' from response: {str(e)}"
-                        passed = False
-
-            except Exception as e:
-                latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                t0 = time.perf_counter()
                 passed = False
-                error_msg = str(e)
+                status_code = 0
+                error_msg = None
+                extracted_val = None
 
-            results.append({
-                "step_id": step_id,
-                "name": name,
-                "method": method,
-                "path": raw_path,
-                "status_code": status_code,
-                "latency_ms": latency_ms,
-                "passed": passed,
-                "extracted_var": extract_key if extracted_val else None,
-                "error": error_msg,
-            })
+                try:
+                    url, headers, body_content = build_journey_request(
+                        s, context, base, is_sandbox, cache_bust, 0, req_seq,
+                    )
+                    # 4 KB chunk discard streaming execution
+                    async with client.stream(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        content=body_content,
+                    ) as resp:
+                        status_code = resp.status_code
+                        first_chunk = b""
+                        async for chunk in resp.aiter_bytes(chunk_size=4096):
+                            if not first_chunk:
+                                first_chunk = chunk
+                            # Discard subsequent chunks immediately
 
-            # If a step fails in dry run, stop subsequent steps
-            if not passed:
-                break
+                    if interrupted():
+                        break
+                    latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
 
+                    if status_code == expected_status:
+                        passed = True
+                    else:
+                        error_msg = f"Expected status {expected_status}, received {status_code}"
+
+                    if passed and extract_key:
+                        extracted_val = extract_journey_value(extract_key, first_chunk)
+                        context[extract_key] = extracted_val
+
+                except (JourneyInputError, DestinationError) as e:
+                    latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                    passed = False
+                    error_msg = str(e)
+                except (httpx.RequestError, ValueError):
+                    latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                    passed = False
+                    error_msg = "Journey request failed."
+
+                results.append({
+                    "step_id": step_id,
+                    "name": name,
+                    "method": method,
+                    "path": raw_path.partition("?")[0],
+                    "status_code": status_code,
+                    "latency_ms": latency_ms,
+                    "passed": passed,
+                    "extracted_var": extract_key if extracted_val else None,
+                    "error": error_msg,
+                })
+
+                # If a step fails in dry run, stop subsequent steps
+                if not passed:
+                    break
+
+            interrupted()
+    except TimeoutError:
+        if not timer.expired():
+            raise
+        control.reason = control.reason or deadline_reason
     finally:
+        control.timer = None
         if own_client:
             await client.aclose()
 
     journey_store.last_dry_run_results = results
-    journey_store.last_dry_run_context = context
-    journey_store.last_dry_run_timestamp = time.strftime("%H:%M:%S")
-    return results
+    return results, context

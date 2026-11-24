@@ -6,29 +6,64 @@
 
 ## 🌟 What is Pusher?
 
-**Pusher** is an open-source, asynchronous website load testing tool built for developers, indie hackers, and small engineering teams. It allows you to simulate hundreds of concurrent virtual users (VUs) against your web applications to find bottlenecks, measure latency (`p50`, `p90`, `p95`, `p99`), and discover your server's breaking point before your users do.
+**Pusher** is an open-source, asynchronous website load testing tool for developers and engineering teams. It simulates concurrent virtual users against your web applications to identify bottlenecks and measure whole-run p95 latency and error rates.
 
-Built with a **₹0 (100% Free) requirement**, Pusher requires zero paid cloud services, zero external API keys, and runs efficiently on consumer hardware (16GB RAM laptops) consuming less than **500MB of RAM for 2,250 virtual users by default (scalable up to 75% of host RAM)**.
+Pusher's offline sandbox runs locally without cloud credentials. Its default 500 MB engine budget models up to 2,250 virtual users, subject to host and target limits. Measure actual memory use and throughput on the intended host before using that number as a capacity estimate.
 
 ---
 
 ## ⚡ Key Highlights & Safety Features
 
-- 🛑 **Mandatory Target Verification**: Prevents abuse by requiring domain ownership verification (via free DNS TXT records or the downloadable 2-in-1 Pusher Guard middleware).
-- 🛡️ **2-in-1 Pusher Guard Middleware & 48-Hour Sealed Lockbox**:
-  - Drop-in middleware for FastAPI, Flask, and Express that verifies domain ownership and bypasses in-app rate limiters.
+- 🛑 **Mandatory Target Verification**: Prove ownership of a live target with the downloadable Pusher Guard.
+- 🛡️ **48-Hour Pusher Guard**:
+  - An ownership verification route for FastAPI, Starlette, and Flask. Target requests use the app's normal authentication and rate limits.
   - **3/Day Rate Limiter**: Enforces a strict quota of at most 3 guard files per 24-hour rolling window (`HTTP 429 Too Many Requests`).
-  - **Instant Superseding & Permanent ID Burn**: Generating a new file permanently burns the previous ID into `revoked_guard_ids`; revoked IDs can never be verified or used again (`HTTP 403 Forbidden`).
+  - **Permanent Revocation**: Revoke the existing Guard before generating another. Pusher rejects revoked IDs.
 - ⚡ **3 Automatic Safety Circuit Breakers**:
-  1. *Crash Breaker*: Instantly halts test on 5 consecutive 5xx errors or >25% error ratio.
-  2. *Firewall (WAF) Breaker*: Stops immediately on HTTP 429 / 403 firewall challenges to protect your IP from blacklisting.
-  3. *Latency Breaker*: Cuts test if `p95` latency exceeds 8 seconds.
-- 🔴 **Instant Emergency Stop**: UI button halts all engine coroutines and closes sockets in under **200 milliseconds**.
-- 💻 **Local Mock Target Testing (`PUSHER_MODE=local_dev`)**: Built-in mock target server (`mock_target_server.py`) allows testing 200 OK, 5xx crashes, and 429 WAF blocks safely without cloud bills or public DNS records.
+  1. *Crash Breaker*: Stops on five consecutive 5xx responses or a rolling five-second 5xx ratio over the configured limit (maximum 25%, with at least 20 responses).
+  2. *Firewall Breaker*: Stops on three HTTP 429 responses within three seconds or an HTTP 403 with a recognized firewall signature.
+  3. *Latency Breaker*: Stops when rolling p95 exceeds the configured ceiling (maximum 8 seconds) or the timeout rate exceeds 30%, with at least 20 completed requests in the window. Each request has a five-second deadline by default.
+- 🔴 **Emergency Stop**: Cancels active workers, drains requests, and closes the run's HTTP client before allowing another run. Stop latency depends on the host and connection and must be measured separately.
+- 💻 **Offline sandbox (`PUSHER_MODE=local_dev`)**: Use the built-in loopback target for a local smoke check. A separate mock server under the testing directory simulates HTTP 5xx and 429 responses.
 
 ---
 
 ## 📁 Repository Structure
+
+### Install and run
+
+Use Python 3.12.14 with `uv` and Node.js 24. The backend and test dependencies are locked in `uv.lock`.
+
+```powershell
+uv sync --locked
+npm ci --prefix frontend
+```
+
+If `uv` cannot discover Python 3.12.14, install that version and run `uv sync --locked --python <path-to-python>`.
+
+For the offline sandbox, run the backend on loopback and start Vite in a separate terminal.
+
+```powershell
+$env:PUSHER_MODE = 'local_dev'
+$env:PUSHER_OFFLINE_DEV = 'true'
+uv run --locked python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+```powershell
+npm run dev --prefix frontend
+```
+
+Open `http://127.0.0.1:3000/`, choose **Continue offline**, and verify `http://127.0.0.1:8000/api/sandbox/target` with Sandbox Simulation enabled.
+
+For shared use, set `PUSHER_MODE=production` and `PUSHER_OFFLINE_DEV=false`. Set the backend's Supabase values using the root `.env.example` as a reference. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for the same project before building the frontend. Missing frontend settings disable cloud sign-in. Enable the intended providers in Supabase and allow the deployed frontend root URL in the redirect settings. Keep backend service credentials out of the frontend.
+
+```powershell
+uv run --locked python -m pytest
+node --test (Get-ChildItem -LiteralPath 'supporting files/testing/unit' -Filter 'test_*.mjs' | ForEach-Object FullName)
+node 'supporting files/testing/unit/test_time_mapping.cjs'
+uv run --locked python 'supporting files/testing/verification/check_local_sandbox.py'
+npm run build --prefix frontend
+```
 
 ```
 pusher/
@@ -55,13 +90,25 @@ pusher/
 
 ---
 
+### Saved journeys
+
+Saved journeys retain endpoint paths, step settings, recognized content types, and extracted-variable header templates such as `Bearer {{token}}`. Query strings, request bodies, and other header values stay in the current tab and must be supplied again after reopening a saved journey. Keep credentials out of step names and path segments.
+
+Main target queries also stay in the current tab. Re-enter them after reopening, or verify the URL without the query to clear the requirement for single-target runs. Journey steps supply their own queries.
+
+If the database predates this change, stop the backend and select the intended `PUSHER_DB_PATH` before running the following maintenance command. It removes old request inputs, target and journey step queries from reports, and dry-run error text, compacts the database, and preserves the templates. Treat older database backups as sensitive and rotate any previously saved credentials.
+
+```powershell
+uv run --locked python -c 'from backend.core.database import scrub_legacy_journey_inputs; scrub_legacy_journey_inputs()'
+```
+
 ## 📖 Project Documentation & Rules
 
 All core technical specifications and collaboration guidelines are organized inside `supporting files/rules/`:
 
 1. [Architecture & Standards](supporting%20files/rules/architecture_and_standards.md) — Tech stack, system flowcharts, and 13 core features.
-2. [Target Verification](supporting%20files/rules/target_verification.md) — DNS verification and the 2-in-1 Pusher Guard middleware.
-3. [Safety Limits & Breakers](supporting%20files/rules/safety_limits.md) — Circuit breakers, SSRF IP blocking, and event-loop lag monitoring.
+2. [Target Verification](supporting%20files/rules/target_verification.md) — Origin checks, Guard ownership proof, and loopback sandbox setup.
+3. [Safety Limits & Breakers](supporting%20files/rules/safety_limits.md) — Circuit breakers, emergency stop, and planned safety features.
 4. [Memory Management](supporting%20files/rules/memory_management.md) — Zero-leak streaming, circular metrics buffers, and RAM profiling.
 5. [GitHub Workflow](supporting%20files/rules/github_workflow.md) — Branching strategy, manual git rules, and AI safety boundaries.
 6. [Team Collaboration](supporting%20files/rules/team_collaboration.md) — Modular subsystems, flexible task ownership, and API contracts.
@@ -69,6 +116,8 @@ All core technical specifications and collaboration guidelines are organized ins
 ---
 
 ## 👥 Modular Subsystems & Flexible Roles
+
+The browser uses same-origin `/api` requests. Vite forwards HTTP and WebSocket traffic to `http://127.0.0.1:8000` in development. Set `PUSHER_DEV_API_ORIGIN` in the Vite process environment if the backend uses a different port. In a shared deployment, serve the frontend and proxy `/api` on the same HTTPS origin. Forward WebSocket upgrades for `/api/load/ws`, preserve the public Host header, and keep offline mode disabled.
 
 - **Backend & Engine Subsystem**: Fast async socket pool, domain verifier, Pusher Guard generator, circuit breakers.
 - **Frontend UI Subsystem**: Live dashboard, Chart.js telemetry, Emergency Stop button, verification wizard.

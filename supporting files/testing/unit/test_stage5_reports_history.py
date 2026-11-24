@@ -136,12 +136,13 @@ def test_get_history_filtering_and_scorecard():
 
 
 def test_get_single_run_report():
-    """Verify GET /api/reports/{run_id} returns detailed capacity report with knee metrics."""
+    """An older report keeps its measurements but lacks evidence for a capacity recommendation."""
     res = client.get("/api/reports/RUN-T101")
     assert res.status_code == 200
     report = res.json()
     assert report["run_id"] == "RUN-T101"
-    assert report["knee_vus"] > 0
+    assert report["knee_vus"] == 0
+    assert report["bottleneck_summary"] == "Capacity unavailable"
     assert report["peak_rps"] > 0
     assert "timeseries" in report
     assert len(report["timeseries"]) > 0
@@ -165,6 +166,7 @@ def test_compare_two_runs():
     assert "deltas" in diff
     assert diff["deltas"]["peak_rps_delta"] > 0
     assert diff["deltas"]["p95_ms_delta"] < 0
+    assert "knee_vus_delta" not in diff["deltas"]
     assert diff["overall_verdict"] == "IMPROVED"
     assert "summary" in diff
 
@@ -177,10 +179,16 @@ def test_export_report_attachment():
     assert "report_RUN-T101.json" in res.headers.get("content-disposition", "")
     exported = res.json()
     assert exported["run_id"] == "RUN-T101"
+    assert exported["knee_vus"] == 0 and exported["bottleneck_summary"] == "Capacity unavailable"
 
 
 def test_load_engine_auto_persists_to_sqlite():
     """Verify completed load test run is automatically persisted into SQLite database."""
+    with TestClient(app) as client:
+        verify_report_persistence(client)
+
+
+def verify_report_persistence(client):
     # Verify sandbox target first
     verify_res = client.post("/api/target/verify", json={
         "target_url": "http://127.0.0.1:8000/api/sandbox/target",

@@ -6,9 +6,18 @@ Provides drop-in dependencies for endpoints:
   • get_admin_user: Requires administrative role.
 """
 
+import ipaddress
+from urllib.parse import urlsplit
+
+import httpx
 from fastapi import Request, Depends, HTTPException, status
+from starlette.requests import HTTPConnection
+
+from backend.core.config import settings
 from backend.core.jwks_verifier import jwks_verifier, AuthenticatedUser, AuthError
+from backend.core.request_owner import request_owner
 from backend.core.security import extract_bearer_token, auth_rate_limiter
+from backend.core.target_service import target_scope
 
 async def get_current_user(request: Request) -> AuthenticatedUser:
     """
@@ -60,7 +69,7 @@ async def get_admin_user(user: AuthenticatedUser = Depends(get_current_user)) ->
     is_admin = (
         user.role in ("service_role", "supabase_admin") or
         user.app_metadata.get("role") == "admin" or
-        user.metadata.get("is_admin") is True
+        user.app_metadata.get("is_admin") is True
     )
 
     if not is_admin:
@@ -69,3 +78,62 @@ async def get_admin_user(user: AuthenticatedUser = Depends(get_current_user)) ->
             detail="Administrative privileges required to access this resource."
         )
     return user
+
+
+def offline_connection(connection: HTTPConnection) -> bool:
+    if not settings.offline_dev or settings.pusher_mode != "local_dev" or not connection.client:
+        return False
+    try:
+        if not ipaddress.ip_address(connection.client.host).is_loopback:
+            return False
+        origin_header = connection.headers.get("origin")
+        allowed_hosts = {"localhost", "127.0.0.1", "::1"}
+        if settings.host not in allowed_hosts or connection.url.hostname not in allowed_hosts:
+            return False
+        return not origin_header or (
+            urlsplit(origin_header).hostname in allowed_hosts and origin_header in settings.allowed_origins
+        )
+    except ValueError:
+        return False
+
+
+async def resolve_operator(connection: HTTPConnection, token: str | None = None) -> AuthenticatedUser:
+    if not token and not connection.headers.get("authorization") and offline_connection(connection):
+        return AuthenticatedUser(user_id="offline:operator", email="local@pusher.internal", email_confirmed=True)
+    if token is None:
+        auth = connection.headers.get("authorization", "").split()
+        if len(auth) != 2 or auth[0].lower() != "bearer":
+            raise HTTPException(status_code=401, detail="A verified session is required.",
+                                headers={"WWW-Authenticate": "Bearer"})
+        token = auth[1]
+    try:
+        user = await jwks_verifier.verify_token(token)
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    if not user.email_confirmed and settings.supabase_url and settings.supabase_publishable_key:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    settings.supabase_url.rstrip("/") + "/auth/v1/user",
+                    headers={"Authorization": f"Bearer {token}", "apikey": settings.supabase_publishable_key},
+                )
+                response.raise_for_status()
+                details = response.json()
+                user.email_confirmed = details.get("id") == user.user_id and bool(details.get("email_confirmed_at"))
+        except (httpx.HTTPError, ValueError):
+            pass
+    if not user.email_confirmed:
+        raise HTTPException(status_code=403, detail="Verify your email before accessing Pusher.")
+    return user.model_copy(update={"user_id": f"supabase:{user.user_id}"})
+
+
+async def require_operator(request: Request):
+    actor = await resolve_operator(request)
+    request.state.actor = actor
+    owner = request_owner.set(actor.user_id)
+    target = target_scope.set(None)
+    try:
+        yield actor
+    finally:
+        target_scope.reset(target)
+        request_owner.reset(owner)

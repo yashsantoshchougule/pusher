@@ -1,3 +1,9 @@
+import { journeyRequestError, restoreJourneyInputs, saveAndLaunchJourney } from '../lib/journeyLaunch';
+import { restoreTargetQuery, targetOrigin, targetTemplate } from '../lib/targetInput';
+import { mapTelemetry } from '../lib/telemetry';
+import { operatorFetch, operatorToken } from '../lib/operatorApi';
+import { watchRun } from '../lib/runMonitor';
+import { createTrafficProfile, DEFAULT_TRAFFIC_PROFILE, trafficPhases } from '../lib/trafficProfile';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Shield,
@@ -47,11 +53,14 @@ import ReportsView from '../components/dashboard/ReportsView';
 import ProfileView from '../components/dashboard/ProfileView';
 import { getDeviceId } from '../utils/deviceFingerprint';
 
-export default function DashboardPage({ onLogout, onNavigate }) {
+export default function DashboardPage({ operator, onLogout, onNavigate, appearance = 'light', onAppearanceChange }) {
+  const maxJourneySteps = 10;
   // Navigation & Dropdown States (7 Views)
   const [activeNav, setActiveNav] = useState('dashboard'); // 'dashboard' | 'verify' | 'traffic' | 'api' | 'history' | 'reports' | 'profile'
   const [menuOpen, setMenuOpen] = useState(false);
   const [sandboxMode, setSandboxMode] = useState(false);
+  const [sandboxTargetUrl, setSandboxTargetUrl] = useState(null);
+  const liveTargetDraft = useRef(null);
   const [wafModalOpen, setWafModalOpen] = useState(false);
 
   // Theme Mode: 'production' (polished accents & colored badges) vs 'wireframe' (strict monochrome)
@@ -63,14 +72,22 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
   // Target Verification & 48h Timer States (Shared across views - Zero hardcoded values)
   const [targetUrl, setTargetUrl] = useState('');
+  const [confirmedTarget, setConfirmedTarget] = useState('');
+  const [confirmedSandbox, setConfirmedSandbox] = useState(false);
+  const [requiresTargetQuery, setRequiresTargetQuery] = useState(false);
+  const targetGuardRef = useRef(null);
   const [guardToken, setGuardToken] = useState(null);
-  const [isVerified, setIsVerified] = useState(false);
+  const sandboxRequiresRevocation = sandboxMode && Boolean(guardToken) && !confirmedSandbox;
+  const [guardChecksum, setGuardChecksum] = useState(null);
+  const [isGuardVerified, setIsGuardVerified] = useState(false);
   const [guardTimerSeconds, setGuardTimerSeconds] = useState(0);
+  const verifiedOrigin = isGuardVerified ? targetOrigin(confirmedTarget) : null;
+  const isVerified = Boolean(verifiedOrigin && sandboxMode === confirmedSandbox && targetOrigin(targetUrl) === verifiedOrigin);
   const [verificationError, setVerificationError] = useState(null);
   const [urlValidation, setUrlValidation] = useState({
     checking: false,
     valid: true,
-    reachable: true,
+    ready: false,
     status: 'IDLE',
     message: '',
     suggestions: [],
@@ -88,47 +105,55 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   const [supersededNotice, setSupersededNotice] = useState(null);
 
   // Backend API Base & Hardware Limits (Dynamically populated from /api/system/limits)
-  const API_BASE = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? 'http://127.0.0.1:8000'
-    : '';
-
-  const [hardwareLimits, setHardwareLimits] = useState({
-    total_system_ram_mb: null,
-    max_safe_ram_mb: null,
-    fd_cap_pct: 70,
-    open_files_soft: null,
-  });
+  const [hardwareLimits, setHardwareLimits] = useState(null);
 
   // Traffic Setup & Safety Controls (Shared across views)
-  const [trafficMode, setTrafficMode] = useState('step_ramp');
-  const [ramLimitMb, setRamLimitMb] = useState(500);
-  const [vus, setVus] = useState(100);
-  const [duration, setDuration] = useState(30);
-  const [max5xxThreshold, setMax5xxThreshold] = useState(5);
-  const [wafAutoAbort, setWafAutoAbort] = useState(true);
-  const [p95Ceiling, setP95Ceiling] = useState(1500);
-  const [cacheBusting, setCacheBusting] = useState(true);
-  const [testRunning, setTestRunning] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
-
-  // Live Telemetry Stream State
-  const [elapsed, setElapsed] = useState(0);
-  const [telemetry, setTelemetry] = useState({
-    currentVus: 0,
-    liveRps: 0,
-    p95Latency: 0,
-    errorRate: 0.0,
-    circuitBreaker: 'ARMED',
-    bytesDiscardedMb: 0.0,
-  });
+  const [trafficConfig, setTrafficConfig] = useState(DEFAULT_TRAFFIC_PROFILE);
+  const [trafficLoading, setTrafficLoading] = useState(true);
+  const [trafficSaveError, setTrafficSaveError] = useState('');
+  const [trafficCloneNotice, setTrafficCloneNotice] = useState('');
+  const [trafficSaving, setTrafficSaving] = useState(false);
+  const trafficActionInProgress = useRef(false);
+  const trafficProfile = useRef(null);
+  if (!trafficProfile.current) {
+    trafficProfile.current = createTrafficProfile(operatorFetch, setTrafficConfig, setTrafficSaveError);
+  }
+  const {
+    mode: trafficMode, ram_limit_mb: ramLimitMb, virtual_users: vus, duration_sec: duration,
+    max_error_pct: max5xxThreshold, p95_ceiling_ms: p95Ceiling, cache_bust: cacheBusting,
+  } = trafficConfig;
+  const [runStatus, setRunStatus] = useState(null);
+  const [statusUnavailable, setStatusUnavailable] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState('');
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState('');
+  const launchInProgress = useRef(false);
+  const runMonitor = useRef(null);
+  const testRunning = runStatus?.is_running ?? false;
+  const canStart = Boolean(runStatus && !testRunning && !statusUnavailable && !launching);
+  const telemetry = mapTelemetry(runStatus ?? undefined);
+  const elapsed = runStatus?.elapsed_sec ?? 0;
 
   // Stage 4: Multi-Step API Journey Builder State
   const [useJourney, setUseJourney] = useState(false);
   const [journeySteps, setJourneySteps] = useState([]);
+  const [journeySelectionStatus, setJourneySelectionStatus] = useState('loading');
+  const journeyModeEdited = useRef(false);
+  const journeyStepsEdited = useRef(false);
+  const journeyRevision = useRef(0);
+  const journeySavePending = useRef(false);
+  const [journeySaving, setJourneySaving] = useState(false);
+  const resetJourneyPending = useRef(false);
+  const [resettingJourney, setResettingJourney] = useState(false);
   const [isDryRunning, setIsDryRunning] = useState(false);
+  const dryRunPending = useRef(null);
+  const stopPendingFor = useRef(null);
+  const [dryRunStopping, setDryRunStopping] = useState(false);
+  const dryRunRevision = useRef(0);
   const [dryRunResults, setDryRunResults] = useState(null);
   const [journeyMessage, setJourneyMessage] = useState(null);
-  const [stepMetrics, setStepMetrics] = useState([]);
+  const stepMetrics = runStatus?.step_metrics ?? [];
 
   // Stage 5: Test History & Reports State
   const [historySearch, setHistorySearch] = useState('');
@@ -143,6 +168,11 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   const [reportMode, setReportMode] = useState('single');
   const [latestScorecard, setLatestScorecard] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
+  const [historyCursor, setHistoryCursor] = useState(null);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const historyRequest = useRef(null);
 
   // User Profile State (SQLite Persistent)
   const [userProfile, setUserProfile] = useState({
@@ -158,7 +188,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   });
 
   const handleSaveProfile = async (formData) => {
-    const res = await fetch(`${API_BASE}/api/profile`, {
+    const res = await operatorFetch(`/api/profile`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(formData),
@@ -169,28 +199,27 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     const updated = await res.json();
     setUserProfile(updated);
     if (updated.default_ram_ceiling_mb) {
-      setRamLimitMb(updated.default_ram_ceiling_mb);
-      persistTrafficConfig({ ram_limit_mb: updated.default_ram_ceiling_mb });
+      await updateTrafficConfig({ ram_limit_mb: updated.default_ram_ceiling_mb });
     }
     return updated;
   };
 
-  // Helper to persist traffic profile changes immediately to SQLite
-  const persistTrafficConfig = (overrides = {}) => {
-    const payload = {
-      mode: overrides.mode ?? trafficMode,
-      ram_limit_mb: overrides.ram_limit_mb ?? ramLimitMb,
-      virtual_users: overrides.virtual_users ?? vus,
-      duration_sec: overrides.duration_sec ?? duration,
-      max_error_pct: overrides.max_error_pct ?? max5xxThreshold,
-      p95_ceiling_ms: overrides.p95_ceiling_ms ?? p95Ceiling,
-      cache_bust: overrides.cache_bust !== undefined ? Boolean(overrides.cache_bust) : Boolean(cacheBusting),
-    };
-    fetch(`${API_BASE}/api/traffic/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).catch(() => {});
+  const updateTrafficConfig = (overrides) => {
+    setTrafficCloneNotice('');
+    trafficProfile.current.edit(overrides);
+    return trafficProfile.current.save();
+  };
+
+  const saveTrafficAndThen = async (next) => {
+    if (trafficActionInProgress.current) return;
+    trafficActionInProgress.current = true;
+    setTrafficSaving(true);
+    try {
+      if (await trafficProfile.current.save()) await next();
+    } finally {
+      trafficActionInProgress.current = false;
+      setTrafficSaving(false);
+    }
   };
 
   // Parallel hydration from SQLite APIs on initial mount
@@ -198,75 +227,38 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     document.body.style.backgroundColor = '#ffffff';
     getDeviceId().then((id) => setDeviceId(id));
 
+    operatorFetch('/api/traffic/config')
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Traffic profile unavailable');
+        trafficProfile.current.hydrate(await response.json());
+      })
+      .catch(() => setTrafficSaveError('Could not load the saved traffic profile. Saving will use the settings shown here.'))
+      .finally(() => setTrafficLoading(false));
+
+    operatorFetch('/api/journey')
+      .then(async response => {
+        if (!response.ok) throw new Error('Journey configuration unavailable');
+        const data = await response.json();
+        if (typeof data.use_journey !== 'boolean' || !Array.isArray(data.steps)) throw new Error('Invalid journey configuration');
+        if (!journeyModeEdited.current) setUseJourney(data.use_journey);
+        if (!journeyStepsEdited.current) setJourneySteps(data.steps);
+        if (data.dry_run_results && !journeyStepsEdited.current && !dryRunPending.current) {
+          setDryRunResults(previous => previous ?? data.dry_run_results);
+        }
+        setJourneySelectionStatus('ready');
+      })
+      .catch(() => setJourneySelectionStatus('unavailable'));
+
     const hydrateFromDatabase = async () => {
       try {
-        const [limitsRes, targetRes, trafficRes, journeyRes, historyRes, profileRes] = await Promise.all([
-          fetch(`${API_BASE}/api/system/limits`).catch(() => null),
-          fetch(`${API_BASE}/api/target/status`).catch(() => null),
-          fetch(`${API_BASE}/api/traffic/config`).catch(() => null),
-          fetch(`${API_BASE}/api/journey`).catch(() => null),
-          fetch(`${API_BASE}/api/history`).catch(() => null),
-          fetch(`${API_BASE}/api/profile`).catch(() => null),
+        const [limitsRes, profileRes] = await Promise.all([
+          operatorFetch(`/api/system/limits`).catch(() => null),
+          operatorFetch(`/api/profile`).catch(() => null),
         ]);
 
         if (limitsRes && limitsRes.ok) {
           const data = await limitsRes.json();
           setHardwareLimits(data);
-        }
-
-        if (targetRes && targetRes.ok) {
-          const data = await targetRes.json();
-          setTargetUrl(data.target_url || '');
-          setGuardToken(data.guard_id || null);
-          setIsVerified(Boolean(data.is_verified));
-          setGuardTimerSeconds(data.remaining_seconds || 0);
-          setLastBurnReason(data.last_burn_reason || null);
-          setGuardQuota({
-            used: data.daily_generations_used ?? 0,
-            max: data.daily_generations_max ?? 3,
-            remaining: data.daily_generations_remaining ?? 3,
-            revokedCount: data.revoked_count ?? 0,
-            lastRevokedId: data.last_revoked_guard_id ?? null,
-          });
-        }
-
-        if (trafficRes && trafficRes.ok) {
-          const data = await trafficRes.json();
-          if (data.mode) setTrafficMode(data.mode);
-          if (data.ram_limit_mb) setRamLimitMb(data.ram_limit_mb);
-          if (data.virtual_users) setVus(data.virtual_users);
-          if (data.duration_sec) setDuration(data.duration_sec);
-          if (data.max_error_pct !== undefined) setMax5xxThreshold(data.max_error_pct);
-          if (data.p95_ceiling_ms !== undefined) setP95Ceiling(data.p95_ceiling_ms);
-          if (data.cache_bust !== undefined) setCacheBusting(Boolean(data.cache_bust));
-        }
-
-        if (journeyRes && journeyRes.ok) {
-          const data = await journeyRes.json();
-          if (data.steps && data.steps.length > 0) {
-            setJourneySteps(data.steps);
-          } else {
-            setJourneySteps([]);
-          }
-          if (data.use_journey !== undefined) {
-            setUseJourney(Boolean(data.use_journey));
-          }
-          if (data.dry_run_results) {
-            setDryRunResults(data.dry_run_results);
-          }
-        }
-
-        if (historyRes && historyRes.ok) {
-          const data = await historyRes.json();
-          setRunHistory(data.runs || []);
-          setLatestScorecard(data.scorecard || null);
-          if (data.runs && data.runs.length > 0) {
-            setSelectedReportId(data.runs[0].run_id || data.runs[0].id);
-            if (data.runs.length >= 2) {
-              setCompareBaseId(data.runs[1].run_id || data.runs[1].id);
-              setCompareCandidateId(data.runs[0].run_id || data.runs[0].id);
-            }
-          }
         }
 
         if (profileRes && profileRes.ok) {
@@ -286,15 +278,23 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   // Fetch Target Status & Quota Telemetry on navigation
   const fetchTargetStatus = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/target/status`);
+      const res = await operatorFetch(`/api/target/status`);
       if (res.ok) {
         const data = await res.json();
-        setTargetUrl(data.target_url || '');
+        const sameGuard = Boolean(data.guard_id && targetGuardRef.current === data.guard_id);
+        targetGuardRef.current = data.guard_id || null;
+        setTargetUrl((draft) => restoreTargetQuery(data.target_url || '', draft, sameGuard));
+        setConfirmedTarget(data.target_url || '');
+        setConfirmedSandbox(Boolean(data.is_sandbox));
+        setSandboxTargetUrl(data.sandbox_url || null);
+        setRequiresTargetQuery(Boolean(data.requires_target_query));
         if (data.is_sandbox !== undefined) {
-          setSandboxMode(Boolean(data.is_sandbox));
+          setSandboxMode(Boolean(data.sandbox_url && data.is_sandbox));
         }
         setGuardToken(data.guard_id || null);
-        setIsVerified(Boolean(data.is_verified));
+        setGuardChecksum(data.checksum_sha256 || null);
+        if (data.needs_guard_replacement) setVerificationError('Revoke this old Guard and install a newly generated file.');
+        setIsGuardVerified(Boolean(data.is_verified));
         setGuardTimerSeconds(data.remaining_seconds || 0);
         setLastBurnReason(data.last_burn_reason || null);
         setGuardQuota({
@@ -311,6 +311,18 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   useEffect(() => {
     fetchTargetStatus();
   }, [activeNav]);
+
+  const handleToggleSandbox = () => {
+    if (!sandboxTargetUrl) return;
+    if (sandboxMode) {
+      setTargetUrl(liveTargetDraft.current ?? (confirmedSandbox ? '' : confirmedTarget));
+    } else {
+      liveTargetDraft.current = targetUrl;
+      setTargetUrl(confirmedSandbox ? confirmedTarget : sandboxTargetUrl);
+    }
+    setSandboxMode(!sandboxMode);
+    setVerificationError(null);
+  };
 
   // SSRF Validation Logic
   const validateSsrf = (url, isSandbox) => {
@@ -354,23 +366,11 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
   // Automatic Debounced Live URL Reachability, DNS & Typo Auto-Check (600ms)
   useEffect(() => {
-    if (sandboxMode) {
-      setUrlValidation({
-        checking: false,
-        valid: true,
-        reachable: true,
-        status: 'SANDBOX_ALLOWED',
-        message: 'SANDBOX DEV MODE: Local simulation target allowed',
-        suggestions: [],
-      });
-      return;
-    }
-
     if (!targetUrl || !targetUrl.trim()) {
       setUrlValidation({
         checking: false,
         valid: false,
-        reachable: false,
+        ready: false,
         status: 'EMPTY',
         message: 'Enter target website or API endpoint (e.g., https://your-app.com)',
         suggestions: [],
@@ -389,7 +389,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     const controller = new AbortController();
     const timeoutId = setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/target/validate-url`, {
+        const res = await operatorFetch(`/api/target/validate-url`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -404,8 +404,8 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           setUrlValidation({
             checking: false,
             valid: Boolean(data.valid),
-            reachable: Boolean(data.reachable),
-            status: data.status || (data.valid ? 'REACHABLE' : 'INVALID_URL'),
+            ready: Boolean(data.ready),
+            status: data.status || (data.valid ? 'DNS_READY' : 'INVALID_URL'),
             message: data.message || '',
             suggestions: data.suggestions || [],
             resolved_ip: data.resolved_ip || null,
@@ -416,7 +416,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           setUrlValidation({
             checking: false,
             valid: false,
-            reachable: false,
+            ready: false,
             status: detail.status || 'UNREACHABLE',
             message: detail.message || detail.detail || 'Validation failed.',
             suggestions: detail.suggestions || [],
@@ -427,7 +427,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           setUrlValidation({
             checking: false,
             valid: false,
-            reachable: false,
+            ready: false,
             status: 'UNREACHABLE',
             message: 'Unable to reach backend validation service.',
             suggestions: [],
@@ -444,18 +444,18 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
   // 48-Hour Live Countdown Timer
   useEffect(() => {
-    if (!isVerified || guardTimerSeconds <= 0) return;
+    if (!isGuardVerified || guardTimerSeconds <= 0) return;
     const interval = setInterval(() => {
       setGuardTimerSeconds((prev) => {
         if (prev <= 1) {
-          setIsVerified(false);
+          setIsGuardVerified(false);
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [isVerified, guardTimerSeconds]);
+  }, [isGuardVerified, guardTimerSeconds]);
 
   const formatTimer = (totalSeconds) => {
     const hours = Math.floor(totalSeconds / 3600);
@@ -464,112 +464,36 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   };
 
-  // Real-Time WebSocket Telemetry Client
+  // Restore the owner's run independently of WebSocket availability.
   useEffect(() => {
-    let ws = null;
-    let reconnectTimeout = null;
+    setRunStatus(null);
+    setStatusUnavailable(false);
+    setStopError('');
+    setStopping(false);
 
-    const connectWs = () => {
-      try {
+    const monitor = watchRun({
+      fetch: operatorFetch,
+      getToken: operatorToken,
+      openSocket: () => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        // Connect to 127.0.0.1:8000 directly or via Vite proxy
-        const wsUrl = `${protocol}//${window.location.host}/api/load/ws`;
-        ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-          setWsConnected(true);
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.is_running !== undefined) {
-              setElapsed(data.elapsed_sec);
-              setTelemetry({
-                currentVus: data.current_vus ?? 460,
-                liveRps: data.live_rps ?? 0,
-                p95Latency: data.p95_latency_ms ?? 0,
-                errorRate: data.error_rate_pct ?? 0.0,
-                circuitBreaker: data.circuit_status ?? 'ARMED',
-                bytesDiscardedMb: data.bytes_discarded_mb ?? 0,
-              });
-              setTestRunning(data.is_running);
-              if (data.step_metrics) {
-                setStepMetrics(data.step_metrics);
-              }
-              if (data.use_journey !== undefined) {
-                setUseJourney(data.use_journey);
-              }
-              if (data.run_history && data.run_history.length > 0) {
-                setRunHistory(data.run_history);
-              }
-            }
-          } catch { }
-        };
-
-        ws.onclose = () => {
-          setWsConnected(false);
-          reconnectTimeout = setTimeout(connectWs, 2000);
-        };
-
-        ws.onerror = () => {
-          setWsConnected(false);
-        };
-      } catch {
-        setWsConnected(false);
-      }
-    };
-
-    connectWs();
-
+        return new WebSocket(`${protocol}//${window.location.host}/api/load/ws`);
+      },
+      onStatus: (data, ended) => {
+        setRunStatus(data);
+        setStatusUnavailable(false);
+        if (ended) setHistoryVersion((version) => version + 1);
+      },
+      onStatusError: () => setStatusUnavailable(true),
+      onStopping: setStopping,
+      onStopError: setStopError,
+    });
+    runMonitor.current = monitor;
     return () => {
-      if (ws) ws.close();
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      runMonitor.current = null;
+      monitor.close();
     };
-  }, []);
+  }, [operator.user_id, guardToken, confirmedTarget]);
 
-  // Polling fallback when test is running
-  const testTimerRef = useRef(null);
-  useEffect(() => {
-    if (!testRunning) {
-      if (testTimerRef.current) clearInterval(testTimerRef.current);
-      return;
-    }
-
-    testTimerRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/load/status`);
-        if (res.ok) {
-          const data = await res.json();
-          setElapsed(data.elapsed_sec);
-          setTelemetry({
-            currentVus: data.current_vus ?? 460,
-            liveRps: data.live_rps ?? 0,
-            p95Latency: data.p95_latency_ms ?? 0,
-            errorRate: data.error_rate_pct ?? 0.0,
-            circuitBreaker: data.circuit_status ?? 'ARMED',
-            bytesDiscardedMb: data.bytes_discarded_mb ?? 0,
-          });
-          if (data.step_metrics) {
-            setStepMetrics(data.step_metrics);
-          }
-          if (data.use_journey !== undefined) {
-            setUseJourney(data.use_journey);
-          }
-          if (data.run_history && data.run_history.length > 0) {
-            setRunHistory(data.run_history);
-          }
-          if (!data.is_running) {
-            setTestRunning(false);
-            clearInterval(testTimerRef.current);
-          }
-          return;
-        }
-      } catch { }
-    }, 1000);
-
-    return () => clearInterval(testTimerRef.current);
-  }, [testRunning]);
 
   // Actions: Download Guard with Rate Limiting (3/Day), Hardware Device Binding & Superseding Feedback
   const handleDownloadGuard = async () => {
@@ -578,7 +502,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     let guardData = null;
 
     try {
-      const res = await fetch(`${API_BASE}/api/target/generate-guard`, {
+      const res = await operatorFetch(`/api/target/generate-guard`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -605,7 +529,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
       if (res.status === 422) {
         const err = await res.json();
-        setVerificationError(err.detail || 'Target URL is unreachable or invalid in DNS. Enter a live working URL.');
+        setVerificationError(err.detail || 'Check the target URL and DNS before generating a Guard.');
         return;
       }
 
@@ -621,8 +545,11 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     }
 
     if (guardData?.guard_id) {
+      targetGuardRef.current = guardData.guard_id;
+      setRequiresTargetQuery(Boolean(guardData.requires_target_query));
       setGuardToken(guardData.guard_id);
-      setIsVerified(false); // Newly generated guard requires re-verification
+      setGuardChecksum(guardData.checksum_sha256);
+      setIsGuardVerified(false); // Newly generated guard requires re-verification
       setLastBurnReason(null);
 
       // Update quota telemetry
@@ -641,7 +568,11 @@ export default function DashboardPage({ onLogout, onNavigate }) {
       }
     }
 
-    const scriptContent = guardData?.content || `# pusher_guard.py\nGUARD_TOKEN = "${guardToken}"\n`;
+    if (!guardData?.content) {
+      setVerificationError('The server did not return a Guard file.');
+      return;
+    }
+    const scriptContent = guardData.content;
 
     const blob = new Blob([scriptContent], { type: 'text/x-python;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -656,8 +587,12 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
   const handleVerifyTarget = async () => {
     setVerificationError(null);
-    if (!sandboxMode && (!urlValidation.valid || !urlValidation.reachable)) {
-      setVerificationError(urlValidation.message || 'Target URL must be reachable and verified before executing handshake.');
+    if (sandboxRequiresRevocation) {
+      setVerificationError('Revoke the current live Guard before verifying the sandbox.');
+      return;
+    }
+    if (!sandboxMode && (!urlValidation.valid || !urlValidation.ready)) {
+      setVerificationError(urlValidation.message || 'Check the target URL and DNS before attempting ownership verification.');
       return;
     }
     if (!ssrfCheck.valid) {
@@ -666,7 +601,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/api/target/verify`, {
+      const res = await operatorFetch(`/api/target/verify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -682,8 +617,15 @@ export default function DashboardPage({ onLogout, onNavigate }) {
 
       if (res.ok) {
         const data = await res.json();
-        setIsVerified(true);
-        setGuardTimerSeconds(data.remaining_seconds || 172800);
+        setIsGuardVerified(Boolean(data.is_verified));
+        setGuardToken(data.guard_id || '');
+        targetGuardRef.current = data.guard_id || null;
+        setRequiresTargetQuery(Boolean(data.requires_target_query));
+        const query = data.requires_target_query ? new URL(targetUrl.trim()).search : '';
+        setTargetUrl((draft) => draft === targetUrl ? data.target_url + query : draft);
+        setConfirmedTarget(data.target_url);
+        setConfirmedSandbox(sandboxMode);
+        setGuardTimerSeconds(data.remaining_seconds || 0);
         setLastBurnReason(null);
         return;
       } else {
@@ -694,60 +636,15 @@ export default function DashboardPage({ onLogout, onNavigate }) {
         return;
       }
     } catch {
-      if (sandboxMode) {
-        setIsVerified(true);
-        setGuardTimerSeconds(172800);
-      } else {
-        setVerificationError('Target unreachable. Verify endpoint or enable Sandbox Simulation.');
-      }
-    }
-  };
-
-  const handleTestCrossDeviceBlock = async () => {
-    setVerificationError(null);
-    const foreignDeviceId = 'DEV-FOREIGN-9999';
-
-    try {
-      const res = await fetch(`${API_BASE}/api/target/verify`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Pusher-Device-ID': foreignDeviceId,
-        },
-        body: JSON.stringify({
-          target_url: targetUrl,
-          guard_id: guardToken,
-          is_sandbox: Boolean(sandboxMode),
-          device_id: foreignDeviceId,
-        }),
-      });
-
-      if (res.status === 403) {
-        const err = await res.json();
-        const msg = err.detail?.detail || err.detail || 'DEVICE SECURITY VIOLATION: Cross-device access blocked.';
-        setVerificationError(msg);
-        setIsVerified(false);
-        setGuardTimerSeconds(0);
-        setLastBurnReason('DEVICE_MISMATCH_VIOLATION');
-        fetchTargetStatus();
-      } else if (!res.ok) {
-        const err = await res.json();
-        setVerificationError(err.detail?.detail || err.detail || 'Cross-device verification blocked.');
-        setIsVerified(false);
-        setGuardTimerSeconds(0);
-        fetchTargetStatus();
-      }
-    } catch {
-      setVerificationError('CROSS-DEVICE SECURITY VIOLATION: Cross-device access detected — Guard ID killed and burned.');
-      setIsVerified(false);
-      setGuardTimerSeconds(0);
-      setLastBurnReason('DEVICE_MISMATCH_VIOLATION');
+      setIsGuardVerified(false);
+      setVerificationError('Unable to verify the target. Check your connection to Pusher.');
     }
   };
 
   const handleKillGuard = async () => {
+    setVerificationError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/target/kill`, {
+      const res = await operatorFetch(`/api/target/kill`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -755,31 +652,52 @@ export default function DashboardPage({ onLogout, onNavigate }) {
         },
         body: JSON.stringify({ device_id: deviceId }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setIsVerified(false);
+      const data = await res.json();
+      if (!res.ok) {
+        const message = data?.detail?.detail || data?.detail;
+        setVerificationError(typeof message === 'string' ? message : 'Failed to revoke the Guard. Try again.');
+      } else if (data?.is_verified === false && Object.hasOwn(data, 'revoked_guard_id')) {
+        setIsGuardVerified(false);
         setGuardToken(null);
         setGuardTimerSeconds(0);
-        setLastBurnReason('MANUAL_USER_KILL');
+        setLastBurnReason(data.last_burn_reason || null);
         setSupersededNotice(
-          `Guard ID ${guardToken || ''} has been permanently revoked and burned. Verification locked.`
+          data.revoked_guard_id ? `Guard ID ${data.revoked_guard_id} was revoked.` : null
         );
-        fetchTargetStatus();
       } else {
-        const err = await res.json();
-        setVerificationError(err.detail?.detail || err.detail || 'Failed to kill Guard ID.');
+        setVerificationError('Could not confirm revocation. Check your connection and try again.');
       }
     } catch {
-      setIsVerified(false);
-      setGuardToken(null);
-      setGuardTimerSeconds(0);
-      setLastBurnReason('MANUAL_USER_KILL');
+      setVerificationError('Could not confirm revocation. Check your connection and try again.');
+    } finally {
+      await fetchTargetStatus();
     }
   };
 
   // Stage 4 Journey Handlers
+  useEffect(() => {
+    dryRunRevision.current += 1;
+    setDryRunResults(previous => Array.isArray(previous) ? previous : null);
+    setJourneyMessage(null);
+  }, [targetUrl, guardToken, isVerified, sandboxMode, cacheBusting]);
+
+  const changeJourneyMode = (enabled) => {
+    journeyRevision.current += 1;
+    journeyModeEdited.current = true;
+    setUseJourney(enabled);
+  };
+
+  const editJourneySteps = (steps) => {
+    dryRunRevision.current += 1;
+    setDryRunResults(null);
+    setJourneyMessage(null);
+    journeyRevision.current += 1;
+    journeyStepsEdited.current = true;
+    setJourneySteps(steps);
+  };
+
   const handleUpdateStep = (index, field, value) => {
-    setJourneySteps((prev) => {
+    editJourneySteps((prev) => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [field]: value };
       return updated;
@@ -787,31 +705,32 @@ export default function DashboardPage({ onLogout, onNavigate }) {
   };
 
   const handleAddStep = () => {
-    const nextIdx = journeySteps.length + 1;
-    setJourneySteps((prev) => [
-      ...prev,
-      {
-        step_id: `step_${nextIdx}`,
+    const stepId = `step-${crypto.getRandomValues(new Uint32Array(4)).join('-')}`;
+    editJourneySteps((prev) => {
+      if (prev.length >= maxJourneySteps) return prev;
+      const nextIdx = prev.length + 1;
+      return [...prev, {
+        step_id: stepId,
         name: `Sequential Action ${nextIdx}`,
         method: 'GET',
-        path: `/api/sandbox/resource_${nextIdx}`,
-        headers: { Authorization: 'Bearer {{token}}' },
+        path: sandboxMode ? '/api/sandbox/items' : '/',
+        headers: {},
         body: null,
         expected_status: 200,
         extract_json_key: null,
-      },
-    ]);
+      }];
+    });
   };
 
   const handleDeleteStep = (index) => {
     if (journeySteps.length <= 1) return;
-    setJourneySteps((prev) => prev.filter((_, i) => i !== index));
+    editJourneySteps((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleMoveStep = (index, delta) => {
     const targetIdx = index + delta;
     if (targetIdx < 0 || targetIdx >= journeySteps.length) return;
-    setJourneySteps((prev) => {
+    editJourneySteps((prev) => {
       const copy = [...prev];
       const temp = copy[index];
       copy[index] = copy[targetIdx];
@@ -820,74 +739,115 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     });
   };
 
-  const handleResetJourneyDefaults = () => {
-    setJourneySteps([
-      {
-        step_id: 'step_1',
-        name: 'Simulated OAuth Login & Token Issue',
-        method: 'POST',
-        path: '/api/sandbox/auth/token',
-        headers: { 'Content-Type': 'application/json' },
-        body: { username: 'load_tester', role: 'tester' },
-        expected_status: 200,
-        extract_json_key: 'access_token',
-      },
-      {
-        step_id: 'step_2',
-        name: 'Fetch Paginated Resource Catalog',
-        method: 'GET',
-        path: '/api/sandbox/items?limit=20',
-        headers: { Authorization: 'Bearer {{token}}' },
-        body: null,
-        expected_status: 200,
-        extract_json_key: null,
-      },
-      {
-        step_id: 'step_3',
-        name: 'Process Checkout Order',
-        method: 'POST',
-        path: '/api/sandbox/checkout',
-        headers: { Authorization: 'Bearer {{token}}', 'Content-Type': 'application/json' },
-        body: { item_id: 'ITEM-101', quantity: 1 },
-        expected_status: 200,
-        extract_json_key: null,
-      },
-    ]);
-    setJourneyMessage('Reset journey steps to Sandbox defaults.');
+  const handleResetJourneyDefaults = async () => {
+    if (!sandboxTargetUrl || resetJourneyPending.current) return;
+    if (journeySteps.length && !window.confirm('Replace the current journey with the sandbox preset? Unsaved steps will be replaced.')) return;
+    resetJourneyPending.current = true;
+    setResettingJourney(true);
+    const revision = journeyRevision.current;
+    try {
+      const response = await operatorFetch('/api/journey/sandbox-defaults');
+      if (!response.ok) throw new Error('Preset unavailable');
+      const { steps } = await response.json();
+      if (!Array.isArray(steps) || !steps.length) throw new Error('Invalid preset');
+      if (revision !== journeyRevision.current) {
+        setJourneyMessage('The journey changed while loading the preset. Your current steps are still in the editor.');
+        return;
+      }
+      editJourneySteps(steps);
+      setJourneyMessage('Reset journey steps to sandbox defaults.');
+    } catch {
+      setJourneyMessage('Could not load the sandbox preset. Your current steps are still in the editor.');
+    } finally {
+      resetJourneyPending.current = false;
+      setResettingJourney(false);
+    }
   };
 
   const handleExecuteDryRun = async () => {
+    if (dryRunPending.current) return;
+    if (!isVerified || !verifiedOrigin || !guardToken) {
+      setJourneyMessage('Verify the target before running a journey.');
+      return;
+    }
+    if (!journeySteps.length) {
+      setJourneyMessage('Add at least one step before running a journey.');
+      return;
+    }
+    const writes = journeySteps.some(step => !['GET', 'HEAD', 'OPTIONS'].includes((step.method || 'GET').toUpperCase()));
+    if (writes && !window.confirm(`Run these steps once against ${verifiedOrigin}? They can change data on the target.`)) return;
+    const id = crypto.getRandomValues(new Uint32Array(4)).join('-');
+    dryRunPending.current = id;
+    const revision = ++dryRunRevision.current;
     setIsDryRunning(true);
+    setDryRunStopping(false);
+    setDryRunResults(null);
     setJourneyMessage(null);
     try {
-      const res = await fetch(`${API_BASE}/api/journey/dry-run`, {
+      const res = await operatorFetch(`/api/journey/dry-run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ steps: journeySteps }),
+        body: JSON.stringify({ dry_run_id: id, guard_id: guardToken, steps: journeySteps, cache_bust: cacheBusting }),
       });
+      const data = await res.json();
+      if (revision !== dryRunRevision.current) return;
       if (res.ok) {
-        const data = await res.json();
         setDryRunResults(data);
-        if (data.all_passed) {
-          setJourneyMessage(`1-VU Dry-Run PASSED (${data.total_steps}/${data.total_steps} steps). Token chaining verified.`);
+        if (data.status === 'cancelled') {
+          setJourneyMessage(data.message);
+        } else if (data.all_passed) {
+          setJourneyMessage(`1-VU Dry-Run PASSED (${data.total_steps}/${data.total_steps} steps).`);
         } else {
           setJourneyMessage(`1-VU Dry-Run FAILED: ${data.steps.filter((s) => !s.passed).length} step(s) failed.`);
         }
       } else {
-        const err = await res.json();
-        setJourneyMessage(err.detail || 'Dry-run execution failed.');
+        setJourneyMessage(journeyRequestError(data.detail, 'Dry-run execution failed.'));
       }
     } catch {
-      setJourneyMessage('Error contacting backend for dry-run.');
+      if (revision === dryRunRevision.current) setJourneyMessage('Error contacting backend for dry-run.');
     } finally {
+      dryRunPending.current = null;
       setIsDryRunning(false);
     }
   };
 
+  const handleStopDryRun = async () => {
+    const id = dryRunPending.current;
+    if (!id || stopPendingFor.current === id) return;
+    stopPendingFor.current = id;
+    setDryRunStopping(true);
+    try {
+      const response = await operatorFetch('/api/journey/dry-run/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run_id: id }),
+      });
+      if (!response.ok && dryRunPending.current === id) {
+        const data = await response.json();
+        if (dryRunPending.current === id) setJourneyMessage(journeyRequestError(data.detail, 'Could not stop the dry run.'));
+      }
+    } catch {
+      if (dryRunPending.current === id) setJourneyMessage('Could not confirm the dry run stopped. Try again.');
+    } finally {
+      if (stopPendingFor.current === id) {
+        stopPendingFor.current = null;
+        setDryRunStopping(false);
+      }
+    }
+  };
+
   const handleSaveJourney = async (enable = null) => {
+    if (journeySavePending.current) return null;
+    if (!journeySteps.length) {
+      setJourneyMessage('Add at least one step before saving.');
+      return null;
+    }
+    journeySavePending.current = true;
+    setJourneySaving(true);
+    const revision = journeyRevision.current;
     const newUseJourney = enable !== null ? enable : useJourney;
     try {
-      const res = await fetch(`${API_BASE}/api/journey/save`, {
+      const res = await operatorFetch(`/api/journey/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -897,49 +857,70 @@ export default function DashboardPage({ onLogout, onNavigate }) {
       });
       if (res.ok) {
         const data = await res.json();
+        if (revision !== journeyRevision.current) {
+          setJourneyMessage('An earlier draft was saved. Your latest edits are still here. Save again to include them.');
+          return null;
+        }
+        data.steps = restoreJourneyInputs(data.steps, journeySteps);
+        journeyStepsEdited.current = true;
         setJourneySteps(data.steps);
-        setUseJourney(data.use_journey);
-        setJourneyMessage('Multi-step journey configuration saved.');
-        return true;
+        changeJourneyMode(data.use_journey);
+        setJourneyMessage('Journey saved. Query strings, request bodies, and private header values stay in this tab.');
+        return data;
       } else {
         const err = await res.json();
-        setJourneyMessage(err.detail || 'Failed to save journey.');
-        return false;
+        setJourneyMessage(journeyRequestError(err.detail, 'Failed to save journey.'));
+        return null;
       }
     } catch {
       setJourneyMessage('Error contacting backend to save journey.');
-      return false;
+      return null;
+    } finally {
+      journeySavePending.current = false;
+      setJourneySaving(false);
     }
   };
 
-  const handleSaveAndLaunchJourney = async () => {
-    await handleSaveJourney(true);
-    setUseJourney(true);
-    handleStartTest();
+  const handleSaveAndLaunchJourney = () => {
+    if (journeyLaunchBlocker || journeySavePending.current || launchInProgress.current) return;
+    return saveAndLaunchJourney(handleSaveJourney, launchTest);
   };
 
-  const handleStartTest = async () => {
+  const journeySelectionKnown = journeyModeEdited.current || journeySelectionStatus === 'ready';
+  const handleStartTest = () => launchTest({ use_journey: useJourney, steps: journeySteps, selectionKnown: journeySelectionKnown });
+
+  const launchTest = async (journey) => {
+    if (!canStart || launchInProgress.current) return;
     if (!isVerified) {
       setActiveNav('verify');
       setVerificationError('Target must be verified with active 48h guard before launching test.');
       return;
     }
+    if (journey.selectionKnown === false) {
+      setLaunchError('Open API Journey Builder to confirm what the test should run.');
+      return;
+    }
     setVerificationError(null);
+    setLaunchError('');
+    launchInProgress.current = true;
+    setLaunching(true);
+    const monitor = runMonitor.current;
+    const showError = (message) => {
+      if (activeNav === 'api') setJourneyMessage(message);
+      else setLaunchError(message);
+    };
 
     try {
-      const isSandboxTarget = sandboxMode || targetUrl.includes('sandbox.pusher.local') || targetUrl.includes('/api/sandbox/target');
-      const resolvedTarget = isSandboxTarget && !targetUrl.startsWith('http')
-        ? `${API_BASE}/api/sandbox/target`
-        : targetUrl;
-
-      const res = await fetch(`${API_BASE}/api/load/start`, {
+      const isSandboxTarget = sandboxMode;
+      const res = await operatorFetch(`/api/load/start`, {
         method: 'POST',
+        signal: AbortSignal.timeout(10000),
         headers: {
           'Content-Type': 'application/json',
           'X-Pusher-Device-ID': deviceId,
         },
         body: JSON.stringify({
-          target_url: resolvedTarget,
+          target_url: targetUrl,
           traffic_mode: trafficMode,
           target_vus: vus,
           duration_sec: duration,
@@ -948,100 +929,93 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           max_error_pct: max5xxThreshold,
           p95_ceiling_ms: p95Ceiling,
           is_sandbox: isSandboxTarget,
-          use_journey: useJourney,
-          journey_steps: useJourney ? journeySteps : null,
+          use_journey: journey.use_journey,
+          journey_steps: journey.use_journey ? journey.steps : null,
           device_id: deviceId,
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setTestRunning(true);
-        setElapsed(0);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.snapshot) {
+        monitor?.accept(data.snapshot);
         setActiveNav('dashboard');
-        return;
+      } else if (res.ok) {
+        throw new Error('Start response did not include a run snapshot');
       } else {
-        const err = await res.json();
-        setActiveNav('verify');
-        setVerificationError(err.detail || 'Failed to start load test.');
+        showError(typeof data?.detail === 'string' ? data.detail : 'Pusher could not start the load test. Review your settings and try again.');
+        if (res.status === 409) void monitor?.refresh();
       }
-    } catch (err) {
-      setActiveNav('verify');
-      setVerificationError('Unable to connect to backend engine. Verify server is running on http://127.0.0.1:8000');
+    } catch {
+      showError('Pusher could not confirm that the test started. Checking run status before you can retry.');
+      setStatusUnavailable(true);
+      void monitor?.refresh();
+    } finally {
+      launchInProgress.current = false;
+      setLaunching(false);
     }
   };
 
-  const handleStopTest = async () => {
-    try {
-      await fetch(`${API_BASE}/api/load/stop`, { method: 'POST' });
-    } catch { }
-    setTestRunning(false);
-  };
+  const handleStopTest = () => runMonitor.current?.stop(runStatus?.run_id);
 
   const handleSimulateSpike = async () => {
+    setStopError('');
+    const monitor = runMonitor.current;
     try {
-      const res = await fetch(`${API_BASE}/api/load/simulate-spike`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error_burst_count: 50, status_code: 503 }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setTelemetry((prev) => ({
-          ...prev,
-          errorRate: data.error_rate_pct || 18.5,
-          circuitBreaker: data.circuit_status || 'AUTO-ABORT (TRIPPED: 5xx Spike)',
-        }));
-        setTestRunning(false);
-        return;
-      }
-    } catch { }
-
-    setTelemetry((prev) => ({
-      ...prev,
-      errorRate: 18.5,
-      circuitBreaker: 'AUTO-ABORT (TRIPPED: 5xx Spike)',
-    }));
-    setTestRunning(false);
+      const response = await operatorFetch('/api/load/simulate-spike', { method: 'POST' });
+      if (!response.ok) throw new Error('Pusher could not simulate the spike.');
+      await monitor?.refresh();
+    } catch (error) {
+      setStopError(error.message);
+    }
   };
 
   // Stage 5 History & Report Actions
-  const fetchHistory = async () => {
+  const fetchHistory = async (cursor = null) => {
+    historyRequest.current?.abort();
+    const controller = new AbortController();
+    historyRequest.current = controller;
+    setHistoryLoading(true);
+    setHistoryError('');
+    const params = new URLSearchParams();
+    if (historyModeFilter !== 'ALL') params.set('mode', historyModeFilter);
+    if (historyStatusFilter !== 'ALL') params.set('verdict', historyStatusFilter);
+    if (historySearch.trim()) params.set('q', historySearch.trim());
+    if (cursor) params.set('cursor', cursor);
     try {
-      const params = new URLSearchParams();
-      if (historyModeFilter && historyModeFilter !== 'ALL') params.append('mode', historyModeFilter);
-      if (historyStatusFilter && historyStatusFilter !== 'ALL') params.append('verdict', historyStatusFilter);
-      if (historySearch && historySearch.trim()) params.append('q', historySearch.trim());
-
-      const res = await fetch(`${API_BASE}/api/history?${params.toString()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.runs && data.runs.length > 0) {
-          setRunHistory(data.runs);
-        }
-        if (data.scorecard) {
-          setLatestScorecard(data.scorecard);
-        }
-      }
-    } catch { }
+      const res = await operatorFetch('/api/history?' + params.toString(), { signal: controller.signal });
+      if (!res.ok) throw new Error('Could not load test history.');
+      const { runs, scorecard, next_cursor } = await res.json();
+      if (controller.signal.aborted) return;
+      setRunHistory((previous) => cursor ? [...previous, ...runs] : runs);
+      setLatestScorecard(scorecard);
+      setHistoryCursor(next_cursor);
+    } catch (error) {
+      if (!controller.signal.aborted) setHistoryError(error.message);
+    } finally {
+      if (!controller.signal.aborted) setHistoryLoading(false);
+    }
   };
 
   useEffect(() => {
-    fetchHistory();
-  }, [activeNav, historyModeFilter, historyStatusFilter]);
+    historyRequest.current?.abort();
+    setHistoryCursor(null);
+    const timer = setTimeout(() => fetchHistory(), 200);
+    return () => {
+      clearTimeout(timer);
+      historyRequest.current?.abort();
+    };
+  }, [historyModeFilter, historyStatusFilter, historySearch, historyVersion]);
 
   const handleClearArchive = async () => {
+    setHistoryError('');
     try {
-      const res = await fetch(`${API_BASE}/api/history`, { method: 'DELETE' });
-      if (res.ok) {
-        const data = await res.json();
-        setRunHistory(data.runs || []);
-        if (data.scorecard) setLatestScorecard(data.scorecard);
-        setSelectedForCompare([]);
-      }
-    } catch {
-      setRunHistory([]);
+      const response = await operatorFetch('/api/history', { method: 'DELETE' });
+      if (!response.ok) throw new Error('Could not clear test history.');
+      setSingleRunReport(null);
       setSelectedForCompare([]);
+      setHistoryVersion((version) => version + 1);
+    } catch (error) {
+      setHistoryError(error.message);
     }
   };
 
@@ -1049,7 +1023,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     const idToFetch = runId || selectedReportId;
     if (!idToFetch) return;
     try {
-      const res = await fetch(`${API_BASE}/api/reports/${idToFetch}`);
+      const res = await operatorFetch(`/api/reports/${idToFetch}`);
       if (res.ok) {
         const data = await res.json();
         setSingleRunReport(data);
@@ -1059,10 +1033,17 @@ export default function DashboardPage({ onLogout, onNavigate }) {
         return;
       }
     } catch { }
+    setSingleRunReport(null);
     setSelectedReportId(idToFetch);
     setReportMode('single');
     setActiveNav('reports');
   };
+
+  useEffect(() => {
+    if (activeNav === 'reports' && reportMode === 'single' && !selectedReportId && runHistory.length > 0) {
+      handleViewSingleReport(runHistory[0].run_id);
+    }
+  }, [activeNav, reportMode, selectedReportId, runHistory]);
 
   const handleCompareRuns = async (baseId, candId) => {
     const base = baseId || compareBaseId || (selectedForCompare.length >= 2 ? selectedForCompare[1] : null);
@@ -1071,8 +1052,9 @@ export default function DashboardPage({ onLogout, onNavigate }) {
       setActiveNav('history');
       return;
     }
+    setCompareData(null);
     try {
-      const res = await fetch(`${API_BASE}/api/reports/compare`, {
+      const res = await operatorFetch(`/api/reports/compare`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_run_id: base, candidate_run_id: cand }),
@@ -1093,18 +1075,45 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     setActiveNav('reports');
   };
 
-  const handleExportReport = (runId) => {
+  const handleExportReport = async (runId) => {
     const id = runId || selectedReportId;
     if (id) {
-      window.open(`${API_BASE}/api/reports/${id}/export`, '_blank');
+      const response = await operatorFetch(`/api/reports/${encodeURIComponent(id)}/export`);
+      if (!response.ok) throw new Error('Export unavailable');
+      const url = URL.createObjectURL(await response.blob());
+      const download = document.createElement('a');
+      download.href = url;
+      download.download = `report_${id}.json`;
+      download.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     }
   };
 
   const handleCloneRun = (run) => {
-    const matchedMode = run.mode.toLowerCase().includes('step') ? 'step_ramp' : run.mode.toLowerCase().includes('rush') ? 'sudden_rush' : 'steady_crowd';
-    setTrafficMode(matchedMode);
-    setVus(run.peakVus || run.vus || 460);
-    setDuration(run.duration || 60);
+    const plannedMode = run.mode?.toLowerCase().replace(/[- ]/g, '_');
+    const plannedDuration = run.duration_sec ?? run.duration;
+    const overrides = {};
+    const notes = [];
+    if (['step_ramp', 'sudden_rush', 'steady_crowd'].includes(plannedMode)) {
+      overrides.mode = plannedMode;
+    } else {
+      notes.push('The report has no recognized traffic mode. Kept the current mode.');
+    }
+    if (Number.isInteger(plannedDuration) && plannedDuration > 0 && plannedDuration <= 86400) {
+      overrides.duration_sec = plannedDuration;
+    } else {
+      notes.push('The report has no valid planned duration. Kept the current duration.');
+    }
+    if (Number.isInteger(run.target_vus) && run.target_vus > 0) {
+      overrides.virtual_users = maxAllowedVus > 0 ? Math.min(run.target_vus, maxAllowedVus) : run.target_vus;
+      if (overrides.virtual_users < run.target_vus) {
+        notes.push(`Reduced the cloned user count from ${run.target_vus.toLocaleString()} to ${overrides.virtual_users.toLocaleString()} to fit the current limit.`);
+      }
+    } else {
+      notes.push('The report has no planned user count. Kept the current user count.');
+    }
+    trafficProfile.current.edit(overrides);
+    setTrafficCloneNotice(notes.join(' ') || 'Copied the planned traffic settings. Review and save them below.');
     setActiveNav('traffic');
   };
 
@@ -1120,67 +1129,77 @@ export default function DashboardPage({ onLogout, onNavigate }) {
     });
   };
 
-  const filteredRuns = runHistory.filter((run) => {
-    const runId = run.id || run.run_id || '';
-    const matchSearch = runId.toLowerCase().includes(historySearch.toLowerCase()) || (run.target || '').toLowerCase().includes(historySearch.toLowerCase());
-    const matchMode = historyModeFilter === 'ALL' || (run.mode || '').toUpperCase().includes(historyModeFilter);
-    const matchStatus = historyStatusFilter === 'ALL' || run.verdictCategory === historyStatusFilter;
-    return matchSearch && matchMode && matchStatus;
-  });
+
 
   // RAM & Concurrency Scaling Model
-  const BASE_ENGINE_RAM_MB = 50;
-  const RAM_PER_VU_MB = 0.20;
-  const SYSTEM_HOST_RAM_MB = hardwareLimits.total_system_ram_mb;
-  const maxHardwareSafeRamMb = hardwareLimits.max_safe_ram_mb || (SYSTEM_HOST_RAM_MB ? Math.floor(SYSTEM_HOST_RAM_MB * 0.75) : 12288);
-  const maxAllowedVus = Math.floor((ramLimitMb - BASE_ENGINE_RAM_MB) / RAM_PER_VU_MB);
-  const estimatedRam = Math.min(ramLimitMb, Math.round(BASE_ENGINE_RAM_MB + vus * RAM_PER_VU_MB));
-  const estimatedFdPercent = Math.min(70, Math.round(15 + (vus / Math.max(1, maxAllowedVus)) * 55));
+  const {
+    max_safe_ram_mb: maxHardwareSafeRamMb, base_engine_ram_mb: baseEngineRamMb,
+    ram_per_vu_mb: ramPerVuMb, max_worker_vus: maxWorkerVus,
+  } = hardwareLimits ?? {};
+  const capacityKnown = Number.isInteger(maxHardwareSafeRamMb) && Number.isInteger(maxWorkerVus)
+    && Number.isFinite(baseEngineRamMb) && ramPerVuMb > 0;
+  const trafficVuLimit = (budget) => capacityKnown
+    ? Math.max(0, Math.min(maxWorkerVus, Math.floor((Math.min(budget, maxHardwareSafeRamMb) - baseEngineRamMb) / ramPerVuMb)))
+    : null;
+  const maxAllowedVus = trafficVuLimit(ramLimitMb);
+  const estimatedRam = capacityKnown ? Math.round(baseEngineRamMb + vus * ramPerVuMb) : null;
+  const trafficCapacityError = !capacityKnown ? 'Hardware limits are unavailable.'
+    : ramLimitMb > maxHardwareSafeRamMb ? 'Reduce the RAM budget to the host limit.'
+    : vus > maxAllowedVus ? `Reduce virtual users to ${maxAllowedVus.toLocaleString()} or fewer.`
+    : '';
+  let launchBlocker = '';
+  if (launching) launchBlocker = 'Starting load test…';
+  else if (testRunning) launchBlocker = 'A load test is already running.';
+  else if (statusUnavailable) launchBlocker = 'Run status unavailable. Retrying…';
+  else if (!runStatus) launchBlocker = 'Checking run status…';
+  else if (!isVerified) launchBlocker = 'Verify the target before launching.';
+  else if (trafficLoading) launchBlocker = 'Loading traffic profile…';
+  else if (trafficSaving) launchBlocker = 'Saving traffic profile…';
+
+  const missingJourneySteps = 'Add journey steps in API Journey Builder.';
+  const journeyLaunchBlocker = launchBlocker || (!journeySteps.length ? missingJourneySteps : trafficCapacityError);
+  let trafficLaunchBlocker = launchBlocker;
+  if (!trafficLaunchBlocker && !journeySelectionKnown) trafficLaunchBlocker = journeySelectionStatus === 'loading'
+    ? 'Loading saved run type…' : 'Run type unavailable. Choose one in API Journey Builder.';
+  if (!trafficLaunchBlocker) trafficLaunchBlocker = useJourney && !journeySteps.length ? missingJourneySteps : trafficCapacityError;
+  const trafficRunType = !journeySelectionKnown ? 'Waiting for run selection'
+    : useJourney ? `API journey · ${journeySteps.length} ${journeySteps.length === 1 ? 'step' : 'steps'}`
+    : 'Single URL';
   const modeLabel = trafficMode === 'step_ramp' ? 'STEP-RAMP' : trafficMode === 'sudden_rush' ? 'SUDDEN RUSH' : 'STEADY CROWD';
 
   const handleSetRamLimit = (newLimit) => {
-    const parsed = Math.max(100, Math.min(maxHardwareSafeRamMb, Number(newLimit) || 500));
-    setRamLimitMb(parsed);
-    const newMaxVus = Math.floor((parsed - BASE_ENGINE_RAM_MB) / RAM_PER_VU_MB);
-    const nextVus = vus > newMaxVus ? newMaxVus : vus;
-    if (vus > newMaxVus) {
-      setVus(newMaxVus);
-    }
-    persistTrafficConfig({ ram_limit_mb: parsed, virtual_users: nextVus });
+    if (!capacityKnown || maxHardwareSafeRamMb < 51) return;
+    const parsed = Math.max(51, Math.min(maxHardwareSafeRamMb, Math.floor(newLimit) || 500));
+    const newMaxVus = trafficVuLimit(parsed);
+    updateTrafficConfig({ ram_limit_mb: parsed, virtual_users: Math.min(vus, newMaxVus) });
   };
 
   const handleUpdateTrafficMode = (mode) => {
-    setTrafficMode(mode);
-    persistTrafficConfig({ mode });
+    updateTrafficConfig({ mode });
   };
 
   const handleUpdateVus = (newVus) => {
-    setVus(newVus);
-    persistTrafficConfig({ virtual_users: newVus });
+    updateTrafficConfig({ virtual_users: newVus });
   };
 
   const handleUpdateDuration = (newDur) => {
-    setDuration(newDur);
-    persistTrafficConfig({ duration_sec: newDur });
+    updateTrafficConfig({ duration_sec: newDur });
   };
 
   const handleUpdateMax5xx = (val) => {
-    setMax5xxThreshold(val);
-    persistTrafficConfig({ max_error_pct: val });
+    updateTrafficConfig({ max_error_pct: val });
   };
 
   const handleUpdateP95Ceiling = (val) => {
-    setP95Ceiling(val);
-    persistTrafficConfig({ p95_ceiling_ms: val });
+    updateTrafficConfig({ p95_ceiling_ms: val });
   };
 
   const handleUpdateCacheBusting = (val) => {
-    setCacheBusting(val);
-    persistTrafficConfig({ cache_bust: val });
+    updateTrafficConfig({ cache_bust: val });
   };
 
   return (
-    <div className="min-h-screen w-full bg-white text-black font-mono selection:bg-black selection:text-white flex flex-col antialiased">
+    <div data-appearance={appearance} className="pusher-workspace min-h-screen w-full bg-white text-black font-mono selection:bg-black selection:text-white flex flex-col antialiased">
       {/* ========================================================================= */}
       {/* TOP HEADER                                                                */}
       {/* ========================================================================= */}
@@ -1382,7 +1401,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               </span>
             </div>
             <div className="font-mono text-[10px] truncate border border-black p-1.5 bg-white">
-              {targetUrl}
+              {targetTemplate(targetUrl)}
             </div>
             <div className="flex justify-between items-center text-[10px]">
               <span className="font-bold">GUARD TOKEN:</span>
@@ -1409,7 +1428,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           {/* VIEW 1: `1. Dashboard` (READ-ONLY 3-BOX SUMMARY SCREEN) */}
           {activeNav === 'dashboard' && (
             <OverviewBoxes
-              targetUrl={targetUrl}
+              targetUrl={targetTemplate(targetUrl)}
               isVerified={isVerified}
               guardToken={guardToken}
               guardTimerSeconds={guardTimerSeconds}
@@ -1422,12 +1441,18 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               estimatedRam={estimatedRam}
               ramLimitMb={ramLimitMb}
               testRunning={testRunning}
+              canStart={canStart}
+              statusUnavailable={statusUnavailable}
+              stopping={stopping}
               elapsed={elapsed}
               telemetry={telemetry}
               stepMetrics={stepMetrics}
-              useJourney={useJourney}
+              useJourney={testRunning ? Boolean(runStatus.use_journey) : useJourney}
               handleStartTest={handleStartTest}
               handleStopTest={handleStopTest}
+              stopError={stopError}
+              launchError={launchError}
+              launching={launching}
               handleSimulateSpike={handleSimulateSpike}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
@@ -1438,13 +1463,18 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           {activeNav === 'verify' && (
             <VerifyTargetView
               targetUrl={targetUrl}
+              requiresTargetQuery={requiresTargetQuery}
               setTargetUrl={setTargetUrl}
               sandboxMode={sandboxMode}
-              setSandboxMode={setSandboxMode}
+              sandboxTargetUrl={sandboxTargetUrl}
+              sandboxRequiresRevocation={sandboxRequiresRevocation}
+              handleToggleSandbox={handleToggleSandbox}
               ssrfCheck={ssrfCheck}
               urlValidation={urlValidation}
               guardToken={guardToken}
               isVerified={isVerified}
+              verifiedOrigin={verifiedOrigin}
+              isGuardVerified={isGuardVerified}
               guardTimerSeconds={guardTimerSeconds}
               formatTimer={formatTimer}
               verificationError={verificationError}
@@ -1454,9 +1484,9 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               deviceId={deviceId}
               lastBurnReason={lastBurnReason}
               handleDownloadGuard={handleDownloadGuard}
+              guardChecksum={guardChecksum}
               handleVerifyTarget={handleVerifyTarget}
               handleKillGuard={handleKillGuard}
-              handleTestCrossDeviceBlock={handleTestCrossDeviceBlock}
               setWafModalOpen={setWafModalOpen}
               onNavigate={onNavigate}
               setActiveNav={setActiveNav}
@@ -1475,20 +1505,30 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               vus={vus}
               setVus={handleUpdateVus}
               maxAllowedVus={maxAllowedVus}
+              trafficVuLimit={trafficVuLimit}
+              maxWorkerVus={maxWorkerVus}
+              phases={trafficPhases(trafficMode, vus, duration, hardwareLimits?.traffic_schedule)}
               duration={duration}
               setDuration={handleUpdateDuration}
               max5xxThreshold={max5xxThreshold}
               setMax5xxThreshold={handleUpdateMax5xx}
-              wafAutoAbort={wafAutoAbort}
-              setWafAutoAbort={setWafAutoAbort}
               p95Ceiling={p95Ceiling}
+              maxP95Ceiling={hardwareLimits?.max_p95_ceiling_ms}
               setP95Ceiling={handleUpdateP95Ceiling}
               cacheBusting={cacheBusting}
               setCacheBusting={handleUpdateCacheBusting}
               estimatedRam={estimatedRam}
-              estimatedFdPercent={estimatedFdPercent}
-              isVerified={isVerified}
-              handleStartTest={handleStartTest}
+              trafficLaunchBlocker={trafficLaunchBlocker}
+              launchError={launchError}
+              runType={trafficRunType}
+              handleStartTest={() => {
+                if (!trafficLaunchBlocker) return saveTrafficAndThen(handleStartTest);
+              }}
+              handleSaveTraffic={() => saveTrafficAndThen(() => setActiveNav('dashboard'))}
+              trafficSaving={trafficSaving}
+              trafficLoading={trafficLoading}
+              trafficSaveError={trafficSaveError}
+              trafficCloneNotice={trafficCloneNotice}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1498,9 +1538,10 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           {activeNav === 'api' && (
             <ApiBuilderView
               journeySteps={journeySteps}
+              maxJourneySteps={maxJourneySteps}
               setJourneySteps={setJourneySteps}
               useJourney={useJourney}
-              setUseJourney={setUseJourney}
+              setUseJourney={changeJourneyMode}
               journeyMessage={journeyMessage}
               setJourneyMessage={setJourneyMessage}
               isDryRunning={isDryRunning}
@@ -1510,9 +1551,16 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               handleDeleteStep={handleDeleteStep}
               handleMoveStep={handleMoveStep}
               handleResetJourneyDefaults={handleResetJourneyDefaults}
+              sandboxPresetAvailable={Boolean(sandboxTargetUrl)}
+              resettingJourney={resettingJourney}
               handleExecuteDryRun={handleExecuteDryRun}
+              dryRunTarget={isVerified ? verifiedOrigin : null}
+              handleStopDryRun={handleStopDryRun}
+              dryRunStopping={dryRunStopping}
               handleSaveJourney={handleSaveJourney}
+              journeySaving={journeySaving}
               handleSaveAndLaunchJourney={handleSaveAndLaunchJourney}
+              journeyLaunchBlocker={journeyLaunchBlocker}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1522,7 +1570,11 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           {activeNav === 'history' && (
             <TestHistoryView
               runHistory={runHistory}
-              filteredRuns={filteredRuns}
+              filteredRuns={runHistory}
+              historyLoading={historyLoading}
+              historyError={historyError}
+              hasMoreHistory={Boolean(historyCursor)}
+              onLoadMore={() => fetchHistory(historyCursor)}
               historySearch={historySearch}
               setHistorySearch={setHistorySearch}
               historyModeFilter={historyModeFilter}
@@ -1566,9 +1618,12 @@ export default function DashboardPage({ onLogout, onNavigate }) {
             <ProfileView
               profile={userProfile}
               onSaveProfile={handleSaveProfile}
+              appearance={appearance}
+              onAppearanceChange={onAppearanceChange}
               deviceId={deviceId}
               themeMode={themeMode}
               setActiveNav={setActiveNav}
+              operator={operator}
               onLogout={onLogout}
               onNavigate={onNavigate}
             />
@@ -1585,7 +1640,7 @@ export default function DashboardPage({ onLogout, onNavigate }) {
           <div className="bg-white border-2 border-black max-w-2xl w-full p-6 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center border-b-2 border-black pb-3">
               <h3 className="text-base font-black uppercase">
-                COMPLETE WAF &amp; MIDDLEWARE BYPASS GUIDE
+                GUARD &amp; EDGE DIAGNOSTICS
               </h3>
               <button
                 type="button"
@@ -1600,19 +1655,13 @@ export default function DashboardPage({ onLogout, onNavigate }) {
               <div className="border border-black p-3">
                 <span className="font-bold block uppercase mb-1">1. How Pusher Guard Works:</span>
                 <p>
-                  Pusher Guard uses an out-of-band token (<code className="font-bold">{guardToken}</code>) validated in application middleware to confirm the tester owns the infrastructure. This prevents accidental DDoS against unauthorized third parties.
+                  Pusher Guard serves an ownership challenge. Test requests use the target app’s normal authentication and traffic controls.
                 </p>
               </div>
 
               <div className="border border-black p-3">
-                <span className="font-bold block uppercase mb-1">2. Cloudflare Rate Limiting Skip Rule:</span>
-                <p className="mb-2">
-                  To prevent Cloudflare from blocking load tests with HTTP 429 challenges, create a WAF Custom Skip Rule:
-                </p>
-                <div className="bg-black text-white p-2 text-[10px] font-mono">
-                  Expression: http.request.headers["x-pusher-guard"] eq "{guardToken}"<br />
-                  Action: Skip &gt; All Rate Limiting Rules
-                </div>
+                <span className="font-bold block uppercase mb-1">2. Investigate Blocks</span>
+                <p>Check the app and edge provider’s event logs for 403 and 429 responses.</p>
               </div>
 
               <div className="border border-black p-3">

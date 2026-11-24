@@ -6,7 +6,7 @@ This folder stores all architectural plans, technical design specifications, and
 
 ## 📋 Plan Naming Convention
 
-Every plan created for the project follows this self-describing format:
+Project-wide plans use this format. Audit remediation plans start with their issue ID.
 
 ```text
 plan_<feature_or_component_description>.md
@@ -14,13 +14,12 @@ plan_<feature_or_component_description>.md
 
 ### Examples:
 - `plan_scalable_core_and_plugin_architecture.md` — Technical blueprint for Frozen Core and plug-and-play plugins.
-- `plan_2in1_pusher_guard_middleware_upgrade.md` — Specification for the verification and rate-limit bypass middleware.
-- `plan_2person_team_collaboration_and_wifi_testing.md` — 2-person Git boundaries, API contracts, and local Wi-Fi testing.
+- `R06-ownership-only-guard.md` — Ownership-only Guard and target security controls.
 - `plan_rules_and_security_loophole_hardening.md` — Initial audit hardening for SSRF, memory caps, and circuit breakers.
 
 ---
 
-## 🗂️ Index of Current Plans
+## 🗂️ Plan index
 
 | Plan File | Purpose & Scope |
 | :--- | :--- |
@@ -46,10 +45,10 @@ plan_<feature_or_component_description>.md
 | [`plan_remove_hardcoded_roles_and_refactor_local_testing.md`](plan_remove_hardcoded_roles_and_refactor_local_testing.md) | Removes hardcoded 2-person and 2-laptop roles, establishes flexible team ownership and local mock server testing (`PUSHER_MODE=local_dev`). |
 | [`plan_exact_scalable_blueprint_alignment.md`](plan_exact_scalable_blueprint_alignment.md) | Exact alignment of all 5 rule files to the finalized Scalable Core + Plugin architecture blueprint. |
 | [`plan_scalable_core_and_plugin_architecture.md`](plan_scalable_core_and_plugin_architecture.md) | Scalable Core + Plugin architecture blueprint with exact feature and memory rule mappings. |
-| [`plan_2in1_pusher_guard_middleware_upgrade.md`](plan_2in1_pusher_guard_middleware_upgrade.md) | 2-in-1 `pusher_guard.py` / `pusherGuard.js` middleware and Cloudflare WAF skip rules. |
-| [`plan_2person_team_collaboration_and_wifi_testing.md`](plan_2person_team_collaboration_and_wifi_testing.md) | Division of labor, Git branch rules (`backend-dev` / `frontend-dev`), and 2-laptop Wi-Fi setup. |
+| [`plan_2in1_pusher_guard_middleware_upgrade.md`](plan_2in1_pusher_guard_middleware_upgrade.md) | Superseded by [the ownership-only Guard plan](R06-ownership-only-guard.md). |
+| [`plan_2person_team_collaboration_and_wifi_testing.md`](plan_2person_team_collaboration_and_wifi_testing.md) | Superseded by [flexible team roles and local testing](plan_remove_hardcoded_roles_and_refactor_local_testing.md). |
 | [`plan_rules_and_security_loophole_hardening.md`](plan_rules_and_security_loophole_hardening.md) | Deep audit of SSRF defenses, memory limits (<500MB default, scalable), and circuit breakers. |
 
 ---
 
-> **Note**: Whenever an implementation plan is formulated, it will automatically be documented here in clean Markdown for permanent review and tracking.
+The plan index records design intent. Use the current code and verification results to establish implementation status.

@@ -6,16 +6,23 @@ Journey Router:
 """
 
 import asyncio
-from fastapi import APIRouter, HTTPException, Request, status
+from time import perf_counter
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from backend.api.auth_deps import require_operator
 from pydantic import BaseModel, Field
 
+from backend.core.config import settings
+from backend.core.database import db_get_traffic_config
+from backend.core.dry_run_control import DryRunControl, active_dry_runs
+from backend.core.request_owner import request_owner
 from backend.core.journey_service import (
+    DEFAULT_SANDBOX_STEPS,
     journey_store,
     validate_journey_steps,
     execute_dry_run,
 )
-from backend.core.target_service import target_store
+from backend.core.target_service import DestinationError, active_target, verified_destination
 
 router = APIRouter(prefix="/api", tags=["API Journey"])
 
@@ -38,10 +45,11 @@ async def sandbox_login(req: dict = None):
 async def sandbox_items(request: Request):
     """Streams 4 KB-8 KB resource catalog payload with authorization support."""
     async def chunk_streamer():
-        # Yield 2 x 4096-byte chunks (8 KB total)
-        for _ in range(2):
-            await asyncio.sleep(0.005)
-            yield b"[" + b'{"id": 101, "sku": "PUSHER-VU-ITEM", "price": 49.99},' * 70 + b'{"id": 199, "sku": "LAST", "price": 99.99}]'
+        items = b'{"id": 101, "sku": "PUSHER-VU-ITEM", "price": 49.99},' * 70
+        await asyncio.sleep(0.005)
+        yield b"[" + items
+        await asyncio.sleep(0.005)
+        yield items + b'{"id": 199, "sku": "LAST", "price": 99.99}]'
 
     return StreamingResponse(
         chunk_streamer(),
@@ -72,24 +80,34 @@ class SaveJourneyRequest(BaseModel):
 
 class DryRunRequest(BaseModel):
     steps: list[dict] | None = None
+    cache_bust: bool | None = None
+    dry_run_id: str | None = Field(None, min_length=1, max_length=100)
+    guard_id: str | None = Field(None, min_length=1, max_length=100)
 
 
-@router.get("/journey")
+class StopDryRunRequest(BaseModel):
+    dry_run_id: str = Field(min_length=1, max_length=100)
+
+
+@router.get("/journey", dependencies=[Depends(require_operator)])
 async def get_journey_endpoint():
     """Retrieve saved journey steps, use_journey toggle state, and latest dry-run results."""
     return journey_store.get_journey()
 
 
-@router.post("/journey/save")
+@router.get("/journey/sandbox-defaults", dependencies=[Depends(require_operator)])
+async def get_sandbox_journey_defaults():
+    if settings.pusher_mode != "local_dev":
+        raise HTTPException(status_code=404, detail="The sandbox preset is available in local development.")
+    return {"steps": DEFAULT_SANDBOX_STEPS}
+
+
+@router.post("/journey/save", dependencies=[Depends(require_operator)])
 async def save_journey_endpoint(req: SaveJourneyRequest):
     """Enforces Same-Origin SSRF validation and saves the ordered step chain."""
-    is_sandbox = "sandbox" in (target_store.target_url or "").lower() or any(
-        "/api/sandbox/" in s.get("path", "") for s in req.steps
-    )
+    target_store = active_target()
     is_valid, err_msg = validate_journey_steps(
-        req.steps,
-        active_target_url=target_store.target_url,
-        is_sandbox=is_sandbox,
+        req.steps, active_target_url=target_store.target_url, is_sandbox=bool(target_store.is_sandbox),
     )
     if not is_valid:
         raise HTTPException(
@@ -97,18 +115,29 @@ async def save_journey_endpoint(req: SaveJourneyRequest):
             detail=err_msg or "Invalid journey step specification.",
         )
 
-    journey_store.save_journey(req.steps, use_journey=req.use_journey)
+    saved = journey_store.save_journey(req.steps, use_journey=req.use_journey)
     return {
         "status": "saved",
         "count": len(req.steps),
-        "steps": req.steps,
+        "steps": saved["steps"],
         "use_journey": req.use_journey,
         "message": "Journey chain saved successfully.",
     }
 
 
-@router.post("/journey/dry-run")
-async def dry_run_endpoint(req: DryRunRequest, request: Request):
+@router.post("/journey/dry-run/stop", dependencies=[Depends(require_operator)])
+async def stop_dry_run_endpoint(req: StopDryRunRequest):
+    run = next((run for run in active_dry_runs
+                if run.owner_id == request_owner.get() and run.dry_run_id == req.dry_run_id), None)
+    if run is None:
+        raise HTTPException(status_code=404, detail="That dry run is no longer active or has not started yet.")
+    run.cancel("stopped")
+    await run.done.wait()
+    return {"status": "stopped"}
+
+
+@router.post("/journey/dry-run", dependencies=[Depends(require_operator)])
+async def dry_run_endpoint(req: DryRunRequest):
     """
     Executes a 1-VU dry-run through each step sequentially, extracting {{token}}
     and returning an audit report for each step.
@@ -117,23 +146,37 @@ async def dry_run_endpoint(req: DryRunRequest, request: Request):
     if not steps:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No steps provided for dry run.")
 
-    # Base URL determination
-    base_url = str(request.base_url).rstrip("/")
-    if target_store.target_url and not any("/api/sandbox/" in s.get("path", "") for s in steps):
-        base_url = target_store.target_url.rstrip("/")
+    target_store = active_target()
+    is_sandbox = bool(target_store.is_sandbox)
+    if req.guard_id and req.guard_id != target_store.guard_id:
+        raise HTTPException(status_code=409, detail="The verified target changed. Refresh the dashboard before running.")
+    try:
+        base_url = str(verified_destination(target_store.target_url or "", is_sandbox))
+    except DestinationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    valid, message = validate_journey_steps(steps, base_url, is_sandbox, require_runtime=True)
+    if not valid:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=message)
 
-    guard_id = target_store.guard_id or "PG-ACTIVE"
-    client = None
-    if request.base_url.hostname in ("test", "testserver"):
-        import httpx
-        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=request.app), base_url=base_url)
+    owner = request_owner.get()
+    if req.dry_run_id and any(run.owner_id == owner and run.dry_run_id == req.dry_run_id for run in active_dry_runs):
+        raise HTTPException(status_code=409, detail="This dry run is already active.")
+    control = DryRunControl(owner, target_store.guard_id, target_store.expires_at, dry_run_id=req.dry_run_id)
+    cache_bust = req.cache_bust
+    if cache_bust is None:
+        cache_bust = bool(db_get_traffic_config(owner)["cache_bust"])
+    started = perf_counter()
+    active_dry_runs.add(control)
+    try:
+        results, context = await execute_dry_run(
+            steps, base_url=base_url, is_sandbox=is_sandbox, control=control, cache_bust=cache_bust,
+        )
+    finally:
+        active_dry_runs.discard(control)
+        control.done.set()
 
-    results = await execute_dry_run(steps, base_url=base_url, guard_id=guard_id, client=client)
-    context = getattr(journey_store, "last_dry_run_context", {})
-    journey_store.save_dry_run(results, context)
-
-    total_ms = round(sum(r.get("latency_ms", 0.0) for r in results), 1)
-    all_passed = len(results) == len(steps) and all(r.get("passed") for r in results)
+    total_ms = round((perf_counter() - started) * 1000.0, 1)
+    all_passed = control.reason is None and len(results) == len(steps) and all(r.get("passed") for r in results)
 
     formatted_steps = []
     for r in results:
@@ -150,8 +193,8 @@ async def dry_run_endpoint(req: DryRunRequest, request: Request):
             "error": r.get("error"),
         })
 
-    return {
-        "status": "completed",
+    outcome = {
+        "status": "cancelled" if control.reason else "completed",
         "results": results,
         "all_passed": all_passed,
         "total_steps": len(steps),
@@ -159,3 +202,12 @@ async def dry_run_endpoint(req: DryRunRequest, request: Request):
         "extracted_context": context,
         "steps": formatted_steps,
     }
+    if control.reason:
+        outcome["reason"] = control.reason
+        outcome["message"] = {
+            "timeout": "Dry run reached its overall deadline.",
+            "guard_expired": "Dry run cancelled because the Guard expired.",
+            "guard_revoked": "Dry run cancelled because the Guard was revoked.",
+            "stopped": "Dry run stopped by the operator.",
+        }[control.reason]
+    return outcome

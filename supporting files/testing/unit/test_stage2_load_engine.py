@@ -94,7 +94,7 @@ def test_load_start_validation_rejects_unverified_target():
     }
     res = client.post("/api/load/start", json=payload)
     assert res.status_code == 403
-    assert "unverified or expired" in res.json()["detail"].lower()
+    assert "verify the target" in res.json()["detail"].lower()
 
 
 def test_load_start_validation_rejects_excessive_vus():
@@ -117,9 +117,13 @@ async def test_load_start_stop_status_lifecycle():
     """Verify full start -> status -> stop lifecycle against built-in sandbox."""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        verification = await ac.post("/api/target/verify", json={
+            "is_sandbox": True, "target_url": "http://127.0.0.1:8000/api/sandbox/target",
+        })
+        assert verification.status_code == 200
         # 1. Start sandbox test
         start_payload = {
-            "target_url": "http://test/api/sandbox/target",
+            "target_url": "http://127.0.0.1:8000/api/sandbox/target",
             "traffic_mode": "step_ramp",
             "target_vus": 20,
             "duration_sec": 10,

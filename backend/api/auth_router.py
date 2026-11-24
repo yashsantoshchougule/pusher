@@ -3,12 +3,13 @@ FastAPI Authentication Router
 Endpoints for user profile, token verification, and health monitoring.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from backend.core.jwks_verifier import AuthenticatedUser, jwks_verifier
 from backend.core.supabase_admin import supabase_admin
 from backend.api.auth_deps import get_current_user, get_verified_user, get_admin_user
+from backend.core.config import settings
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
@@ -79,7 +80,12 @@ async def admin_only_check(user: AuthenticatedUser = Depends(get_admin_user)):
     }
 
 
-@router.post("/logout")
-async def logout():
-    """Invalidates user session."""
-    return {"status": "ok", "message": "Session invalidated successfully."}
+@router.get("/oauth/config")
+async def get_oauth_config() -> Dict[str, Any]:
+    """Returns client-safe OAuth configurations."""
+    return {
+        "google_client_id": settings.google_client_id,
+        "github_client_id": settings.github_client_id,
+        "has_google_secret": bool(settings.google_client_secret),
+        "has_github_secret": bool(settings.github_client_secret),
+    }

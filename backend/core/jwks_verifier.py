@@ -91,14 +91,15 @@ class JWKSVerifier:
             raise AuthError(detail="Malformed JWT token header", status_code=401)
 
         alg = unverified_header.get("alg")
-        if not alg or alg == "none":
+        if alg not in {"ES256", "RS256", "HS256"}:
             # Loophole Defense: Reject 'none' algorithm forgery attacks
             raise AuthError(detail="Insecure or missing JWT algorithm", status_code=401)
 
         kid = unverified_header.get("kid")
 
         # Step 2: Fetch cached JWKS keys
-        keys = await self.fetch_jwks()
+        symmetric = alg == "HS256" and not kid and bool(settings.supabase_jwt_secret)
+        keys = await self.fetch_jwks() if not symmetric else {}
 
         # If kid is missing or unknown, try a force refresh once to handle key rotation
         if kid and kid not in keys:
@@ -108,7 +109,7 @@ class JWKSVerifier:
 
         # Step 3: Decode and cryptographically verify signature
         try:
-            if selected_key:
+            if selected_key and alg in {"ES256", "RS256"}:
                 # Asymmetric verification (ES256 / RS256)
                 claims = jwt.decode(
                     token,
@@ -117,21 +118,22 @@ class JWKSVerifier:
                     options={
                         "verify_aud": False,  # We will check aud explicitly below
                         "verify_iss": False,  # We will check iss explicitly below
-                        "verify_exp": True,
+                        "require_exp": True,
                     }
                 )
-            else:
-                # If key is not in JWKS, attempt verification with Supabase JWT Secret if provided
+            elif symmetric:
                 claims = jwt.decode(
                     token,
-                    settings.supabase_secret_key,
-                    algorithms=[alg, "HS256"],
+                    settings.supabase_jwt_secret,
+                    algorithms=["HS256"],
                     options={
-                        "verify_exp": True,
+                        "require_exp": True,
                         "verify_aud": False,
                         "verify_iss": False,
                     }
                 )
+            else:
+                raise AuthError(detail="No trusted signing key for this token.", status_code=401)
         except ExpiredSignatureError:
             # Loophole Defense: Clean error on expired tokens
             raise AuthError(detail="Authentication token has expired. Please log in again.", status_code=401, error_code="token_expired")
@@ -145,7 +147,7 @@ class JWKSVerifier:
             raise AuthError(detail=f"Invalid token audience: expected 'authenticated', got '{aud}'", status_code=401)
 
         iss = claims.get("iss")
-        if iss and self._expected_issuer not in iss:
+        if not settings.supabase_url or iss != self._expected_issuer:
             raise AuthError(detail="Invalid token issuer", status_code=401)
 
         # Step 5: Check User ID

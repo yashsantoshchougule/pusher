@@ -17,17 +17,20 @@ import {
   Sliders,
   LogOut,
   ArrowRight,
-  KeyRound
+  KeyRound,
+  Moon
 } from 'lucide-react';
-import { getAuthSession, clearAuthSession } from '../../utils/authSession';
 
 export default function ProfileView({
   profile,
   onSaveProfile,
+  appearance = 'light',
+  onAppearanceChange,
   deviceId = 'DEV-LOCAL-CREATOR',
   themeMode = 'production',
   setActiveNav,
   onLogout,
+  operator,
   onNavigate,
 }) {
   const [formData, setFormData] = useState({
@@ -45,11 +48,9 @@ export default function ProfileView({
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [avatarError, setAvatarError] = useState(false);
-  const [authSession, setAuthSession] = useState(() => getAuthSession());
-
-  useEffect(() => {
-    setAuthSession(getAuthSession());
-  }, []);
+  const [signOutError, setSignOutError] = useState('');
+  const signedIn = operator && !operator.offline;
+  const darkAppearance = appearance === 'dark';
 
   useEffect(() => {
     if (profile) {
@@ -110,28 +111,10 @@ export default function ProfileView({
 
   const handleSignOut = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
-    } catch (e) {}
-    clearAuthSession();
-    setAuthSession(null);
-    if (onLogout) {
-      onLogout();
-    } else if (onNavigate) {
-      onNavigate('auth');
-    } else {
-      window.location.hash = '#/';
-    }
-  };
-
-  const handleSwitchAccount = () => {
-    clearAuthSession();
-    setAuthSession(null);
-    if (onLogout) {
-      onLogout();
-    } else if (onNavigate) {
-      onNavigate('auth');
-    } else {
-      window.location.hash = '#/';
+      setSignOutError('');
+      await onLogout();
+    } catch (error) {
+      setSignOutError(error.message);
     }
   };
 
@@ -180,8 +163,20 @@ export default function ProfileView({
           </p>
         </div>
 
-        {/* Quick Action Badges */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 md:shrink-0">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={darkAppearance}
+            onClick={() => onAppearanceChange(darkAppearance ? 'light' : 'dark')}
+            className="inline-flex items-center gap-2 border-2 border-black px-3 py-1.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+          >
+            <Moon aria-hidden="true" className="h-3.5 w-3.5" />
+            <span>Dark mode</span>
+            <span aria-hidden="true" className={`relative h-4 w-8 rounded-full ${darkAppearance ? 'bg-teal-700' : 'bg-slate-200'}`}>
+              <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-[#fff] shadow-sm transition-transform motion-reduce:transition-none ${darkAppearance ? 'translate-x-4' : ''}`} />
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => setActiveNav && setActiveNav('dashboard')}
@@ -326,7 +321,7 @@ export default function ProfileView({
                   ACCOUNT SESSION &amp; ACCESS
                 </span>
               </div>
-              {authSession ? (
+              {signedIn ? (
                 <span className={`px-2 py-0.5 text-[10px] font-black uppercase border border-black ${
                   themeMode === 'production' ? 'bg-emerald-600 text-white' : 'bg-black text-white'
                 }`}>
@@ -339,24 +334,25 @@ export default function ProfileView({
               )}
             </div>
 
-            {authSession ? (
+            {signedIn ? (
               <div className="space-y-3">
                 <div className="bg-slate-50 border border-black/40 p-2.5 text-xs space-y-1">
                   <div className="flex justify-between items-center">
                     <span className="font-bold text-black/70">SIGNED IN AS:</span>
-                    <span className="font-mono font-bold truncate max-w-[170px]" title={authSession.user?.email || formData.email}>
-                      {authSession.user?.email || formData.email || 'operator@pusher.internal'}
+                    <span className="font-mono font-bold truncate max-w-[170px]" title={operator.email || formData.email}>
+                      {operator.email || formData.email || 'operator@pusher.internal'}
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-[11px]">
                     <span className="font-bold text-black/70">USER ID:</span>
-                    <span className="font-mono opacity-80 truncate max-w-[170px]" title={authSession.user?.user_id || profile?.user_key}>
-                      {authSession.user?.user_id || profile?.user_key || 'default_user'}
+                    <span className="font-mono opacity-80 truncate max-w-[170px]" title={profile?.user_key}>
+                      {profile?.user_key || 'default_user'}
                     </span>
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-2 pt-1">
+                  {signOutError && <p role="alert">{signOutError}</p>}
                   <button
                     type="button"
                     onClick={handleSignOut}
@@ -368,7 +364,7 @@ export default function ProfileView({
 
                   <button
                     type="button"
-                    onClick={handleSwitchAccount}
+                    onClick={handleSignOut}
                     className="w-full border-2 border-black px-3 py-2 text-xs font-black uppercase bg-white text-black hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
                   >
                     <span>[ LOG IN WITH ANOTHER ACCOUNT → ]</span>

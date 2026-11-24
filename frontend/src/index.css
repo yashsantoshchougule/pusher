@@ -51,3 +51,115 @@ input:-webkit-autofill:active {
 ::-webkit-scrollbar-thumb:hover {
   background: #857E72;
 }
+
+/* Apply the dashboard palette to existing utilities within the workspace. */
+.pusher-workspace[data-appearance="dark"] {
+  --workspace-canvas: #011425;
+  --workspace-surface: #242424;
+  --workspace-border: #5c7c89;
+  --workspace-accent: #1f4959;
+  --workspace-text: #fff;
+  --workspace-muted: #bacbd2;
+  color-scheme: dark;
+  background: var(--workspace-canvas);
+  color: var(--workspace-text);
+}
+
+html:has(.pusher-workspace[data-appearance="dark"]) {
+  scrollbar-color: #5c7c89 #011425;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-white, .hover\:bg-white:hover) {
+  background-color: var(--workspace-surface);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-slate-50, .bg-gray-50, .bg-slate-950) {
+  background-color: var(--workspace-canvas);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-slate-100, .bg-slate-200) {
+  background-color: #34434b;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-black, .bg-slate-900, .hover\:bg-black:hover, .focus\:bg-black:focus) {
+  background-color: var(--workspace-accent);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.hover\:bg-black\/5:hover, .focus\:bg-slate-50:focus, .hover\:bg-slate-800:hover) {
+  background-color: #34434b;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.text-black, .hover\:text-black:hover, .text-slate-700, .text-slate-800) {
+  color: var(--workspace-text);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.text-black\/40, .text-black\/50, .text-black\/60, .text-black\/70, .text-black\/80, .text-slate-500) {
+  color: var(--workspace-muted);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.border-black, .border-black\/20, .border-black\/30, .border-black\/40) {
+  border-color: var(--workspace-border);
+}
+
+.pusher-workspace[data-appearance="dark"] .accent-black {
+  accent-color: #6ba3be;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-emerald-50, .bg-emerald-100, .bg-teal-50) {
+  background-color: #13322e;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.text-emerald-600, .text-emerald-700, .text-emerald-800, .text-emerald-900, .text-emerald-950, .text-teal-700, .text-teal-800, .text-teal-900) {
+  color: #99f6e4;
+}
+
+.pusher-workspace[data-appearance="dark"] .bg-emerald-600 {
+  background-color: #047857;
+}
+
+.pusher-workspace[data-appearance="dark"] .hover\:bg-emerald-700:hover {
+  background-color: #065f46;
+}
+
+.pusher-workspace[data-appearance="dark"] .hover\:bg-teal-700:hover {
+  background-color: var(--workspace-accent);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-rose-50, .bg-rose-100, .hover\:bg-rose-100:hover, .hover\:bg-rose-200:hover) {
+  background-color: #4c1726;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.text-red-700, .text-rose-600, .text-rose-700, .text-rose-800, .text-rose-900, .text-rose-950) {
+  color: #fecdd3;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-amber-50, .bg-amber-100) {
+  background-color: #412b16;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.bg-amber-500, .hover\:bg-amber-600:hover) {
+  background-color: #92400e;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(.text-amber-600, .text-amber-800, .text-amber-900, .text-amber-950) {
+  color: #fde68a;
+}
+
+.pusher-workspace[data-appearance="dark"] .hover\:text-white:hover {
+  color: var(--workspace-text);
+}
+
+.pusher-workspace[data-appearance="dark"] :is(input, select, textarea)::placeholder {
+  color: var(--workspace-muted);
+}
+
+.pusher-workspace[data-appearance="dark"] input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 50px var(--workspace-surface) inset !important;
+  -webkit-text-fill-color: var(--workspace-text) !important;
+  caret-color: var(--workspace-text) !important;
+}
+
+.pusher-workspace[data-appearance="dark"] :is(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid #6ba3be;
+  outline-offset: 2px;
+}

@@ -14,12 +14,16 @@ Maintains persistent, per-user partitioned state in backend/pusher_runs.db:
 """
 
 import json
+import re
 import sqlite3
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+from backend.core.config import settings
 
-DB_PATH = Path(__file__).resolve().parent.parent / "pusher_runs.db"
+DB_PATH = settings.database_path.resolve()
+
+def target_template(url: str) -> str:
+    return url.split("#", 1)[0].partition("?")[0]
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -31,7 +35,7 @@ def get_db_connection() -> sqlite3.Connection:
 
 
 def init_all_tables() -> None:
-    """Initializes all required schema tables, applies migrations, and cleans legacy mock runs."""
+    """Initializes all required schema tables and applies migrations."""
     conn = get_db_connection()
     try:
         with conn:
@@ -109,6 +113,8 @@ def init_all_tables() -> None:
                         user_id, id, target_url, is_sandbox, guard_id, active_guard_active, is_verified
                     ) VALUES ('default_test_user', 1, '', 0, NULL, 0, 0);
                 """)
+            if "requires_target_query" not in ats_cols:
+                conn.execute("ALTER TABLE active_target_state ADD COLUMN requires_target_query INTEGER DEFAULT 0;")
 
             # 2. Guard Generations (Multi-Row: 3/day rate limit tracking per user)
             conn.execute("""
@@ -239,6 +245,8 @@ def init_all_tables() -> None:
                     FROM journey_steps_legacy;
                 """)
                 conn.execute("DROP TABLE journey_steps_legacy;")
+            if "runtime_fields_json" not in jstep_cols:
+                conn.execute("ALTER TABLE journey_steps ADD COLUMN runtime_fields_json TEXT;")
 
             # 7. Journey Settings (Scoped by user_id)
             conn.execute("""
@@ -308,6 +316,13 @@ def init_all_tables() -> None:
             tr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(test_runs);").fetchall()]
             if "user_id" not in tr_cols:
                 conn.execute("ALTER TABLE test_runs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_test_user';")
+            if "metrics_scope" not in tr_cols:
+                conn.execute("ALTER TABLE test_runs ADD COLUMN metrics_scope TEXT NOT NULL DEFAULT 'legacy_window';")
+            if "capacity_checked" not in tr_cols:
+                conn.execute("ALTER TABLE test_runs ADD COLUMN capacity_checked INTEGER NOT NULL DEFAULT 0;")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS test_runs_owner_order ON test_runs(user_id, created_at DESC, run_id DESC)"
+            )
 
             # 9. User Profiles (Persistent Profile State)
             conn.execute("""
@@ -347,10 +362,6 @@ def init_all_tables() -> None:
                 );
             """)
 
-            # Eliminate legacy mock / fake seed runs completely
-            conn.execute("""
-                DELETE FROM test_runs WHERE run_id IN ('RUN-101', 'RUN-102', 'RUN-103');
-            """)
     finally:
         conn.close()
 
@@ -445,6 +456,7 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
         if not row:
             return {
                 "target_url": "",
+                "requires_target_query": False,
                 "is_sandbox": False,
                 "guard_id": None,
                 "handshake_secret": None,
@@ -458,7 +470,9 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
                 "last_burn_reason": None,
             }
         return {
-            "target_url": row["target_url"] or "",
+            "target_url": target_template(row["target_url"] or ""),
+            "requires_target_query": bool(row["requires_target_query"])
+            or bool((row["target_url"] or "").split("#", 1)[0].partition("?")[2]),
             "is_sandbox": bool(row["is_sandbox"]),
             "guard_id": row["guard_id"],
             "handshake_secret": row["handshake_secret"],
@@ -476,6 +490,7 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
 
 
 def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_user") -> None:
+    url = state.get("target_url") or ""
     conn = get_db_connection()
     try:
         with conn:
@@ -484,8 +499,8 @@ def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_us
                 INSERT INTO active_target_state (
                     user_id, target_url, is_sandbox, guard_id, handshake_secret, expected_file_sha256,
                     creator_device_hash, bound_host_hash, issued_at, expires_at, active_guard_active,
-                    is_verified, last_burn_reason, id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    is_verified, last_burn_reason, requires_target_query, id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(user_id) DO UPDATE SET
                     target_url = excluded.target_url,
                     is_sandbox = excluded.is_sandbox,
@@ -498,11 +513,12 @@ def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_us
                     expires_at = excluded.expires_at,
                     active_guard_active = excluded.active_guard_active,
                     is_verified = excluded.is_verified,
+                    requires_target_query = excluded.requires_target_query,
                     last_burn_reason = excluded.last_burn_reason;
                 """,
                 (
                     user_id,
-                    state.get("target_url", ""),
+                    target_template(url),
                     1 if state.get("is_sandbox") else 0,
                     state.get("guard_id"),
                     state.get("handshake_secret"),
@@ -514,6 +530,7 @@ def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_us
                     1 if state.get("active_guard_active") else 0,
                     1 if state.get("is_verified") else 0,
                     state.get("last_burn_reason"),
+                    int(bool(state.get("requires_target_query") or url.split("#", 1)[0].partition("?")[2])),
                 ),
             )
     finally:
@@ -679,6 +696,123 @@ def db_save_traffic_config(config: Dict[str, Any], user_id: str = "default_test_
 
 
 # --- Journey Steps & Settings (Scoped by user_id) ---
+def journey_step_metadata(steps: list[dict]) -> list[dict]:
+    if not isinstance(steps, list):
+        return []
+    return [
+        {**step, "path": step["path"].partition("?")[0]} if isinstance(step.get("path"), str) else step
+        for step in steps if isinstance(step, dict)
+    ]
+
+
+def _journey_inputs(step: dict) -> tuple[dict, dict]:
+    safe_headers = {}
+    required_headers = set(step.get("required_headers", []))
+    headers = step.get("headers") or {}
+    if isinstance(headers, dict):
+        for name, value in headers.items():
+            if isinstance(value, str) and (
+                (name.lower() == "content-type" and value in {
+                    "application/json", "application/x-www-form-urlencoded", "application/xml", "text/plain",
+                })
+                or re.fullmatch(r"(?:Bearer )?\{\{[A-Za-z0-9_.-]+\}\}", value)
+            ):
+                safe_headers[name] = value
+                required_headers.discard(name)
+            else:
+                required_headers.add(name)
+    return safe_headers, {
+        "required_headers": sorted(required_headers),
+        "requires_body": bool(step.get("requires_body")) or step.get("body") not in (None, ""),
+        "requires_query": bool(step.get("requires_query")) or bool(step.get("path", "/").partition("?")[2]),
+    }
+
+
+def _stored_journey_inputs(row) -> dict:
+    raw_headers = row["headers_json"] or "{}"
+    try:
+        headers = json.loads(raw_headers)
+    except ValueError:
+        headers = None
+    if row["runtime_fields_json"] is not None:
+        fields = json.loads(row["runtime_fields_json"])
+        fields["requires_query"] = fields.get("requires_query", False) or bool(row["path"].partition("?")[2])
+        return {"headers": headers, "body": None, **fields}
+
+    raw_body = row["body_json"]
+    try:
+        body = json.loads(raw_body) if raw_body else None
+    except ValueError:
+        body = raw_body
+    safe_headers, runtime_fields = _journey_inputs({"headers": headers, "body": body, "path": row["path"]})
+    # Keep malformed legacy headers invalid without returning their raw values.
+    return {"headers": safe_headers if isinstance(headers, dict) else [], "body": None, **runtime_fields}
+
+
+def _dry_run_history(results):
+    if not results:
+        return None
+    return [
+        {key: value for key, value in step.items() if key != "error"}
+        for step in journey_step_metadata(results)
+    ]
+
+
+def scrub_legacy_journey_inputs() -> None:
+    """Remove old request inputs during offline SQLite maintenance."""
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA secure_delete=ON;")
+        with conn:
+            for row in conn.execute(
+                "SELECT user_id, target_url, requires_target_query FROM active_target_state WHERE instr(target_url, '?') > 0;"
+            ).fetchall():
+                url = row["target_url"]
+                conn.execute(
+                    "UPDATE active_target_state SET target_url = ?, requires_target_query = ? WHERE user_id = ?;",
+                    (target_template(url), int(bool(row["requires_target_query"] or url.split("#", 1)[0].partition("?")[2])),
+                     row["user_id"]),
+                )
+            for row in conn.execute("SELECT run_id, target_url FROM test_runs WHERE instr(target_url, '?') > 0;").fetchall():
+                conn.execute("UPDATE test_runs SET target_url = ? WHERE run_id = ?;",
+                             (target_template(row["target_url"]), row["run_id"]))
+            rows = conn.execute(
+                "SELECT * FROM journey_steps WHERE runtime_fields_json IS NULL OR instr(path, '?') > 0;"
+            ).fetchall()
+            for row in rows:
+                safe = _stored_journey_inputs(row)
+                headers, body = safe.pop("headers"), safe.pop("body")
+                conn.execute(
+                    """UPDATE journey_steps SET headers_json = ?, body_json = ?, runtime_fields_json = ?, path = ?
+                    WHERE user_id = ? AND step_id = ?;""",
+                    (json.dumps(headers), json.dumps(body), json.dumps(safe),
+                     row["path"].partition("?")[0], row["user_id"], row["step_id"]),
+                )
+            for row in conn.execute("SELECT user_id, last_dry_run_json FROM journey_settings;").fetchall():
+                try:
+                    summary = _dry_run_history(json.loads(row["last_dry_run_json"] or "null"))
+                except (ValueError, TypeError, AttributeError):
+                    summary = None
+                conn.execute(
+                    "UPDATE journey_settings SET last_dry_run_json = ? WHERE user_id = ?;",
+                    (json.dumps(summary), row["user_id"]),
+                )
+            for row in conn.execute(
+                "SELECT run_id, step_metrics_json FROM test_runs WHERE instr(step_metrics_json, '?') > 0;"
+            ).fetchall():
+                try:
+                    metrics = journey_step_metadata(json.loads(row["step_metrics_json"]))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                conn.execute("UPDATE test_runs SET step_metrics_json = ? WHERE run_id = ?;",
+                             (json.dumps(metrics), row["run_id"]))
+        conn.execute("VACUUM;")
+        if conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()[0]:
+            raise RuntimeError("Close all backend SQLite connections before retrying the journey scrub.")
+    finally:
+        conn.close()
+
+
 def db_get_journey(user_id: str = "default_test_user") -> Dict[str, Any]:
     conn = get_db_connection()
     try:
@@ -692,7 +826,7 @@ def db_get_journey(user_id: str = "default_test_user") -> Dict[str, Any]:
         last_dry_run = None
         if settings_row and settings_row["last_dry_run_json"]:
             try:
-                last_dry_run = json.loads(settings_row["last_dry_run_json"])
+                last_dry_run = _dry_run_history(json.loads(settings_row["last_dry_run_json"]))
             except Exception:
                 last_dry_run = None
 
@@ -701,22 +835,13 @@ def db_get_journey(user_id: str = "default_test_user") -> Dict[str, Any]:
         ).fetchall()
         steps = []
         for r in step_rows:
-            try:
-                h_json = json.loads(r["headers_json"] or "{}")
-            except Exception:
-                h_json = {}
-            try:
-                b_json = json.loads(r["body_json"] or "{}")
-            except Exception:
-                b_json = r["body_json"] or {}
             steps.append({
                 "step_id": r["step_id"],
                 "step_order": r["step_order"],
                 "name": r["name"],
                 "method": r["method"],
-                "path": r["path"],
-                "headers": h_json,
-                "body": b_json,
+                "path": r["path"].partition("?")[0],
+                **_stored_journey_inputs(r),
                 "expected_status": r["expected_status"],
                 "extract_json_key": r["extract_json_key"],
             })
@@ -747,15 +872,14 @@ def db_save_journey(
             )
             conn.execute("DELETE FROM journey_steps WHERE user_id = ?;", (user_id,))
             for idx, s in enumerate(steps):
-                headers_json = json.dumps(s.get("headers", {}))
-                body = s.get("body", {})
-                body_json = json.dumps(body) if isinstance(body, (dict, list)) else str(body or "{}")
+                headers, runtime_fields = _journey_inputs(s)
                 step_id = s.get("step_id") or f"step_{idx+1}_{int(time.time()*1000)}"
                 conn.execute(
                     """
                     INSERT INTO journey_steps (
-                        user_id, step_id, step_order, name, method, path, headers_json, body_json, expected_status, extract_json_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        user_id, step_id, step_order, name, method, path, headers_json, body_json,
+                        expected_status, extract_json_key, runtime_fields_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'null', ?, ?, ?);
                     """,
                     (
                         user_id,
@@ -763,11 +887,11 @@ def db_save_journey(
                         idx + 1,
                         s.get("name", f"Step {idx+1}"),
                         s.get("method", "GET").upper(),
-                        s.get("path", "/"),
-                        headers_json,
-                        body_json,
+                        s.get("path", "/").partition("?")[0],
+                        json.dumps(headers),
                         int(s.get("expected_status", 200)),
                         s.get("extract_json_key", ""),
+                        json.dumps(runtime_fields),
                     ),
                 )
         return db_get_journey(user_id)
@@ -776,7 +900,7 @@ def db_save_journey(
 
 
 def db_save_journey_dry_run(
-    dry_run_data: Optional[Dict[str, Any]],
+    dry_run_data: Optional[List[Dict[str, Any]]],
     user_id: str = "default_test_user"
 ) -> None:
     conn = get_db_connection()
@@ -788,7 +912,7 @@ def db_save_journey_dry_run(
                 VALUES (?, 0, ?, 1)
                 ON CONFLICT(user_id) DO UPDATE SET last_dry_run_json = excluded.last_dry_run_json;
                 """,
-                (user_id, json.dumps(dry_run_data) if dry_run_data else "null"),
+                (user_id, json.dumps(_dry_run_history(dry_run_data))),
             )
     finally:
         conn.close()

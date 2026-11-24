@@ -1,5 +1,4 @@
 import React from 'react';
-import { Sliders, Database, AlertTriangle, Shield, CheckSquare, Square, Layers, Play } from 'lucide-react';
 
 export default function TrafficSetupView({
   trafficMode,
@@ -10,25 +9,36 @@ export default function TrafficSetupView({
   vus,
   setVus,
   maxAllowedVus,
+  trafficVuLimit,
+  maxWorkerVus,
+  phases = [],
   duration,
   setDuration,
   max5xxThreshold,
   setMax5xxThreshold,
-  wafAutoAbort,
-  setWafAutoAbort,
   p95Ceiling,
+  maxP95Ceiling,
   setP95Ceiling,
   cacheBusting,
   setCacheBusting,
   estimatedRam,
-  estimatedFdPercent,
-  isVerified,
+  trafficLaunchBlocker,
+  launchError,
+  runType,
   handleStartTest,
+  handleSaveTraffic,
+  trafficSaving,
+  trafficLoading,
+  trafficSaveError,
+  trafficCloneNotice,
   setActiveNav,
   themeMode = 'production',
 }) {
   const isProd = themeMode === 'production';
   const modeLabel = trafficMode === 'step_ramp' ? 'STEP-RAMP' : trafficMode === 'sudden_rush' ? 'SUDDEN RUSH' : 'STEADY CROWD';
+  const canSetVus = maxAllowedVus > 0;
+  const time = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
+  const effectiveP95 = Math.min(p95Ceiling, maxP95Ceiling ?? p95Ceiling);
 
   return (
     <div className="space-y-6">
@@ -51,7 +61,20 @@ export default function TrafficSetupView({
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-2 border-black p-3">
+        <span className="text-xs"><strong>Next run</strong> {runType}</span>
+        <button
+          type="button"
+          disabled={trafficSaving}
+          onClick={() => setActiveNav('api')}
+          className="text-xs font-bold underline disabled:opacity-50"
+        >
+          Open API Journey Builder
+        </button>
+      </div>
+      {trafficCloneNotice && <p role="status" className="text-xs font-bold">{trafficCloneNotice}</p>}
+
+      <fieldset disabled={trafficSaving || trafficLoading} aria-label="Traffic settings" className="min-w-0 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Mode, Concurrency & Visual Curve */}
         <div className={`lg:col-span-6 border-2 border-black p-5 bg-white space-y-4 ${
           isProd ? 'shadow-sm' : ''
@@ -87,35 +110,21 @@ export default function TrafficSetupView({
             </div>
           </div>
 
-          {/* ASCII Progression Curve Preview */}
           <div className="border-2 border-black p-3 bg-white">
             <div className="text-[10px] font-bold uppercase tracking-wider mb-2 flex justify-between">
-              <span>Traffic Curve Shape Preview:</span>
+              <span>Traffic schedule</span>
               <span>{modeLabel}</span>
             </div>
-            <pre className="text-[10px] font-mono leading-tight bg-white p-2 border border-black overflow-x-auto">
-              {trafficMode === 'step_ramp' ?
-                `VUs  |
-${String(vus).padStart(4)} |               +--- (Peak)
-     |          +----+
-     |     +----+
-  10 |+----+
-     +---------------------------> Time (${duration}s)` :
-                trafficMode === 'sudden_rush' ?
-                  `VUs  |
-${String(vus).padStart(4)} |+-----------------------
-     |
-     |
-  10 |
-     +---------------------------> Time (${duration}s)` :
-                  `VUs  |
-${String(vus).padStart(4)} |======================== (Steady Soak)
-     |
-     |
-  10 |
-     +---------------------------> Time (${duration}s)`
-              }
-            </pre>
+            {phases.length ? (
+              <ol className="space-y-1 text-xs font-mono">
+                {phases.map(phase => (
+                  <li key={phase.start} className="flex justify-between gap-3">
+                    <span>{time.format(phase.start)}–{time.format(phase.end)} s</span>
+                    <span>{phase.vus.toLocaleString()} VUs</span>
+                  </li>
+                ))}
+              </ol>
+            ) : <p className="text-xs">Schedule unavailable.</p>}
           </div>
 
           {/* Hardware RAM Scaling Selector */}
@@ -125,28 +134,26 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
               <span className={`text-xs font-black border border-black px-2 py-0.5 ${
                 isProd ? 'bg-teal-700 text-white' : 'bg-black text-white'
               }`}>
-                {ramLimitMb} MB ({maxAllowedVus.toLocaleString()} Max VUs)
+                {ramLimitMb} MB ({maxAllowedVus?.toLocaleString() ?? 'Unknown'} max VUs)
               </span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-              {[
-                { limit: 250, label: '250 MB', vus: '1,000 VUs' },
-                { limit: 500, label: '500 MB', vus: '2,250 VUs (Default)' },
-                { limit: 1024, label: '1,024 MB', vus: '4,870 VUs' },
-                { limit: 2048, label: '2,048 MB', vus: '9,990 VUs' },
-              ].map((preset) => (
+              {[250, 500, 1024, 2048].map((limit) => (
                 <button
-                  key={preset.limit}
+                  key={limit}
                   type="button"
-                  onClick={() => handleSetRamLimit(preset.limit)}
-                  className={`border-2 border-black py-1.5 px-1 text-[10px] font-bold uppercase transition-colors text-center cursor-pointer ${
-                    ramLimitMb === preset.limit
+                  disabled={!maxHardwareSafeRamMb || limit > maxHardwareSafeRamMb}
+                  onClick={() => handleSetRamLimit(limit)}
+                  className={`border-2 border-black py-1.5 px-1 text-[10px] font-bold uppercase transition-colors text-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                    ramLimitMb === limit
                       ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
                       : 'bg-white text-black hover:bg-black/5'
                   }`}
                 >
-                  <div>{preset.label}</div>
-                  <div className="text-[9px] opacity-80">{preset.vus}</div>
+                  <div>{limit.toLocaleString()} MB</div>
+                  <div className="text-[9px] opacity-80">
+                    {limit > maxHardwareSafeRamMb ? 'Above host limit' : `${trafficVuLimit(limit)?.toLocaleString() ?? 'Unknown'} max VUs`}
+                  </div>
                 </button>
               ))}
             </div>
@@ -155,16 +162,17 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
               <span className="text-[10px] font-bold uppercase shrink-0">Custom Limit:</span>
               <input
                 type="number"
-                min="100"
+                min="51"
                 max={maxHardwareSafeRamMb}
-                step="50"
+                step="1"
+                disabled={!maxHardwareSafeRamMb || maxHardwareSafeRamMb < 51}
                 value={ramLimitMb}
                 onChange={(e) => handleSetRamLimit(Number(e.target.value))}
                 className="w-24 border border-black px-2 py-1 text-xs font-mono font-bold bg-white text-black focus:outline-none focus:bg-black focus:text-white"
               />
               <span className="text-[10px] font-bold">MB</span>
               <span className="text-[9px] opacity-75 ml-auto">
-                Host Cap: {maxHardwareSafeRamMb.toLocaleString()} MB (75% Host RAM)
+                {maxHardwareSafeRamMb == null ? 'Host cap unavailable' : `Host cap ${maxHardwareSafeRamMb.toLocaleString()} MB (75% host RAM)`}
               </span>
             </div>
           </div>
@@ -176,40 +184,38 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
               <div className="flex items-center gap-1.5">
                 <input
                   type="number"
-                  min="10"
-                  max={maxAllowedVus}
-                  step="10"
+                  min="1"
+                  max={maxAllowedVus ?? undefined}
+                  step="1"
+                  disabled={!canSetVus}
                   value={vus}
-                  onChange={(e) => setVus(Math.max(10, Math.min(maxAllowedVus, Number(e.target.value) || 10)))}
+                  onChange={(e) => setVus(Math.max(1, Math.min(maxAllowedVus, Math.floor(Number(e.target.value)) || 1)))}
                   className="w-20 border-2 border-black px-1.5 py-0.5 text-xs font-mono font-black text-center bg-white text-black focus:outline-none focus:bg-black focus:text-white"
                 />
                 <span className="text-[10px] font-bold">VUs</span>
                 <span className="text-[10px] font-bold border border-black px-1.5 py-0.5 bg-black text-white">
-                  Cap: {maxAllowedVus.toLocaleString()}
+                  Cap: {maxAllowedVus?.toLocaleString() ?? 'Unknown'}
                 </span>
               </div>
             </div>
             <input
               type="range"
-              min="10"
-              max={maxAllowedVus}
-              step="10"
-              value={Math.min(vus, maxAllowedVus)}
+              min="1"
+              max={canSetVus ? maxAllowedVus : 1}
+              step="1"
+              disabled={!canSetVus}
+              value={canSetVus ? Math.min(vus, maxAllowedVus) : 1}
               onChange={(e) => setVus(Number(e.target.value))}
               className="w-full accent-black cursor-pointer"
             />
-            <div className="flex justify-between text-[10px] opacity-75">
-              <span>10 VUs</span>
-              <span>Default Cap: 2,250 VUs</span>
-              <span>Current Cap: {maxAllowedVus.toLocaleString()} VUs</span>
-            </div>
           </div>
 
           {/* Duration Selector */}
           <div className="space-y-1">
-            <label className="text-xs font-bold uppercase block">Duration:</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="text-xs font-bold uppercase">Duration · {duration} s</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[
+                { sec: 30, label: '30 s (Default)' },
                 { sec: 60, label: '60s (Quick)' },
                 { sec: 180, label: '180s (Standard)' },
                 { sec: 300, label: '300s (Soak)' },
@@ -217,6 +223,7 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
                 <button
                   key={d.sec}
                   type="button"
+                  aria-pressed={duration === d.sec}
                   onClick={() => setDuration(d.sec)}
                   className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
                     duration === d.sec
@@ -244,8 +251,9 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
           {/* Max Error Rate Selector */}
           <div className="space-y-1">
             <label className="text-xs font-bold uppercase block">
-              Max Error Rate (5xx / 429) Threshold:
+              Rolling server-error threshold (5xx)
             </label>
+            <p className="text-[10px] opacity-75">Applies when at least 20 responses were received in the last 5 seconds.</p>
             <div className="grid grid-cols-3 gap-2">
               {[
                 { val: 2, label: '2% (Strict)' },
@@ -268,36 +276,27 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
             </div>
           </div>
 
-          {/* WAF Auto-Abort Toggle */}
-          <div
-            onClick={() => setWafAutoAbort(!wafAutoAbort)}
-            className="border-2 border-black p-3 bg-white flex items-center justify-between cursor-pointer select-none"
-          >
-            <div>
-              <div className="text-xs font-bold uppercase">WAF Auto-Abort (Circuit Breaker)</div>
-              <div className="text-[10px] opacity-75">
-                Automatically halt load if edge rate limiter or 5xx spikes
-              </div>
-            </div>
-            <button type="button" className="text-black">
-              {wafAutoAbort ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
-            </button>
+          <div className="border-2 border-black p-3 bg-white space-y-1">
+            <div className="text-xs font-bold uppercase">Automatic stops are always on</div>
+            <p className="text-[10px] opacity-75">
+              Pusher stops on a detected firewall block, 3 rate-limit responses in 3 seconds, or 5 consecutive server errors.
+            </p>
           </div>
 
           {/* P95 Latency Ceiling */}
           <div className="space-y-1">
-            <label className="text-xs font-bold uppercase block">
-              P95 Latency Ceiling:
-            </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="text-xs font-bold uppercase">P95 latency ceiling · {effectiveP95.toLocaleString()} ms</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[
                 { ms: 1000, label: '1,000 ms' },
-                { ms: 2000, label: '2,000 ms (Std)' },
+                { ms: 1500, label: '1,500 ms (Default)' },
+                { ms: 2000, label: '2,000 ms' },
                 { ms: 5000, label: '5,000 ms' },
               ].map((p) => (
                 <button
                   key={p.ms}
                   type="button"
+                  aria-pressed={p95Ceiling === p.ms}
                   onClick={() => setP95Ceiling(p.ms)}
                   className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
                     p95Ceiling === p.ms
@@ -337,11 +336,11 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
             </div>
             <div className="flex justify-between">
               <span>Est. Engine RAM:</span>
-              <span className="font-bold">{estimatedRam} MB (Max Cap: {ramLimitMb} MB)</span>
+              <span className="font-bold">{estimatedRam == null ? 'Unavailable' : `${estimatedRam} MB of ${ramLimitMb} MB budget`}</span>
             </div>
             <div className="flex justify-between">
-              <span>Est. OS File Descriptors:</span>
-              <span className="font-bold">{estimatedFdPercent}% (Max Cap: 70%)</span>
+              <span>Engine worker limit</span>
+              <span className="font-bold">{maxWorkerVus?.toLocaleString() ?? 'Unavailable'}</span>
             </div>
             <div className="flex justify-between text-[10px] opacity-75">
               <span>Streaming Buffer Model:</span>
@@ -350,18 +349,22 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
             <div className="flex justify-between text-[10px] opacity-75">
               <span>Host Safety Ceiling:</span>
               <span className={isProd && ramLimitMb <= maxHardwareSafeRamMb ? 'text-emerald-700 font-bold' : ''}>
-                {ramLimitMb <= maxHardwareSafeRamMb ? 'SAFE (< 75% Host RAM)' : 'EXCEEDS SAFE HOST LIMIT'}
+                {maxHardwareSafeRamMb == null ? 'Unavailable' : ramLimitMb <= maxHardwareSafeRamMb ? 'Within host limit' : 'Above host limit'}
               </span>
             </div>
           </div>
         </div>
-      </div>
+      </fieldset>
 
       {/* Bottom Action Ribbon */}
+      {trafficSaveError && <p role="alert" className="text-xs font-bold text-rose-800">{trafficSaveError}</p>}
+      {launchError && <p role="alert" className="text-xs font-bold text-rose-800">{launchError}</p>}
+      {trafficLaunchBlocker && <p role="status" className="text-xs font-bold">{trafficLaunchBlocker}</p>}
       <div className="border-t-2 border-black pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
         <button
           type="button"
-          onClick={() => setActiveNav('dashboard')}
+          onClick={handleSaveTraffic}
+          disabled={trafficSaving || trafficLoading}
           className="border-2 border-black py-3 px-4 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer text-center"
         >
           SAVE PROFILE &amp; RETURN TO DASHBOARD
@@ -369,14 +372,14 @@ ${String(vus).padStart(4)} |======================== (Steady Soak)
         <button
           type="button"
           onClick={handleStartTest}
-          disabled={!isVerified}
+          disabled={Boolean(trafficLaunchBlocker)}
           className={`border-2 border-black py-3 px-4 text-xs font-black uppercase transition-colors text-center tracking-wider ${
-            isVerified
+            !trafficLaunchBlocker
               ? (isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
               : 'bg-white text-black opacity-40 cursor-not-allowed'
           }`}
         >
-          {isVerified ? 'SAVE & LAUNCH LOAD TEST NOW →' : 'DISABLED (VERIFY TARGET FIRST)'}
+          SAVE &amp; LAUNCH LOAD TEST
         </button>
       </div>
     </div>

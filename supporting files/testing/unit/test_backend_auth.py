@@ -52,7 +52,7 @@ def create_test_token(
     if email_confirmed:
         claims["email_confirmed_at"] = now - 100
 
-    secret = custom_secret or settings.supabase_secret_key
+    secret = custom_secret or settings.supabase_jwt_secret
     return jwt.encode(claims, secret, algorithm=alg)
 
 
@@ -191,3 +191,14 @@ class TestAPIEndpoints:
             resp = client.get(ep, headers=headers)
             body = resp.text
             assert settings.supabase_secret_key not in body, f"Secret key found in response of {ep}!"
+
+    def test_oauth_config_endpoint(self):
+        resp = client.get("/api/v1/auth/oauth/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "google_client_id" in data
+        assert data["google_client_id"] == settings.google_client_id
+
+    def test_google_oauth_endpoint(self):
+        for route in ("/api/v1/auth/oauth/google", "/api/auth/google"):
+            assert client.post(route, json={"email": "operator@example.invalid"}).status_code == 404

@@ -3,20 +3,26 @@ Target Verification & Abuse Prevention API Router
 Handles SSRF validation, sealed 48h guard generation, challenge-response handshake, and kill actions.
 """
 
-from fastapi import APIRouter, HTTPException, Header, status
+from fastapi import APIRouter, Depends, HTTPException, Header, status
+from backend.api.auth_deps import require_operator
+from backend.core.config import settings
+from backend.core.database import target_template
+from backend.core.load_engine import load_engine
+from backend.core.request_owner import request_owner
 from pydantic import BaseModel, Field
 from backend.core.target_service import (
     validate_target_url,
     generate_pusher_guard_file,
     verify_target_handshake,
-    probe_waf_bypass,
-    target_store,
+    probe_edge,
+    active_target,
     is_guard_burned,
     GuardRateLimitError,
     GuardActiveConflictError,
+    DestinationError,
 )
 
-router = APIRouter(prefix="/api/target", tags=["Target Verification"])
+router = APIRouter(prefix="/api/target", tags=["Target Verification"], dependencies=[Depends(require_operator)])
 
 class ValidateSsrfRequest(BaseModel):
     target_url: str = Field(..., description="The target website or API endpoint")
@@ -37,7 +43,7 @@ class KillTargetRequest(BaseModel):
     device_id: str | None = Field(default=None, description="Device identifier executing kill")
 
 class WafProbeRequest(BaseModel):
-    target_url: str = Field(..., description="Target domain to probe for WAF bypass")
+    target_url: str = Field(..., description="Verified origin endpoint to probe with HEAD")
     is_sandbox: bool = Field(default=False, description="Simulate sandbox response")
 
 
@@ -63,7 +69,7 @@ async def validate_ssrf_endpoint(payload: ValidateSsrfRequest):
             detail={
                 "valid": False,
                 "detail": result["message"],
-                "target_url": payload.target_url,
+                "target_url": target_template(payload.target_url),
                 "status": result["status"],
                 "suggestions": result.get("suggestions", []),
             },
@@ -72,7 +78,7 @@ async def validate_ssrf_endpoint(payload: ValidateSsrfRequest):
         "valid": True,
         "detail": result["message"],
         "resolved_ip": result.get("resolved_ip"),
-        "target_url": payload.target_url,
+        "target_url": target_template(payload.target_url),
         "status": result["status"],
         "suggestions": result.get("suggestions", []),
     }
@@ -86,7 +92,7 @@ async def generate_guard_endpoint(
     """
     Generates a sealed, 48-hour tamper-protected pusher_guard.py file with SHA-256 integrity checksum.
     Binds the Guard ID exclusively to the creator device hardware fingerprint.
-    Enforces URL reachability (HTTP 422 if dead/unreachable/nonexistent),
+    Requires a valid URL and safe DNS resolution,
     a strict 3-generation per rolling 24-hour limit, and Kill-First invariant.
     """
     if not payload.target_url or not payload.target_url.strip():
@@ -94,7 +100,7 @@ async def generate_guard_endpoint(
 
     # 1. Pre-validation: URL syntax, DNS existence & live reachability check
     validation = await validate_target_url(payload.target_url.strip(), is_sandbox=payload.is_sandbox)
-    if not validation["valid"] or not validation.get("reachable", False):
+    if not validation.get("ready", False):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=validation["message"],
@@ -130,6 +136,7 @@ async def verify_target_endpoint(
     Executes the live cryptographic challenge-response handshake on {target_url}/__pusher_verify?nonce=...
     Enforces device lock and permanently burns tokens on cross-device violations or 48h expiry.
     """
+    target_store = active_target()
     effective_device_id = payload.device_id or x_device_id
 
     verified, message, remaining_seconds = await verify_target_handshake(
@@ -155,10 +162,10 @@ async def verify_target_endpoint(
     return {
         "is_verified": True,
         "detail": message,
-        "guard_id": payload.guard_id,
-        "target_url": payload.target_url,
+        "guard_id": target_store.guard_id,
+        "target_url": target_store.target_url,
+        "requires_target_query": target_store.requires_target_query,
         "remaining_seconds": remaining_seconds,
-        "creator_device_id": target_store.creator_device_id,
     }
 
 
@@ -172,8 +179,12 @@ async def kill_target_endpoint(
     Permanently burns the Guard ID into the SQLite tombstone registry.
     If called from an unauthorized foreign device, trips Trigger 1 (DEVICE_MISMATCH_VIOLATION).
     """
+    target_store = active_target()
     effective_device_id = (payload.device_id if payload else None) or x_device_id
+    guard_id = target_store.guard_id
     success, msg = target_store.kill(device_id=effective_device_id)
+    if guard_id and load_engine.owner_id == request_owner.get() and load_engine.active_guard_id == guard_id:
+        await load_engine.stop(reason="GUARD_REVOKED")
 
     if not success:
         raise HTTPException(
@@ -201,18 +212,30 @@ async def get_target_status():
     Returns current active target verification status, ticking 48-hour remaining seconds,
     device binding metadata, and daily generation rate limiter quota telemetry.
     """
-    remaining = target_store.get_remaining_seconds()
+    target_store = active_target()
     burned_info = is_guard_burned(target_store.guard_id)
+    remaining = 0
+    if not burned_info:
+        remaining = target_store.get_remaining_seconds()
+        # Checking the clock can revoke a Guard that just expired.
+        burned_info = is_guard_burned(target_store.guard_id)
+    needs_guard_replacement = bool(not burned_info and target_store.guard_id and not target_store.is_sandbox
+                                   and not target_store.expected_file_sha256)
     return {
         "target_url": target_store.target_url,
+        "requires_target_query": target_store.requires_target_query,
         "is_sandbox": bool(target_store.is_sandbox),
+        "sandbox_url": (
+            f"http://127.0.0.1:{settings.port}/api/sandbox/target"
+            if settings.pusher_mode == "local_dev" else None
+        ),
         "guard_id": target_store.guard_id,
-        "is_verified": target_store.is_verified and remaining > 0,
-        "active_guard_active": target_store.active_guard_active,
-        "remaining_seconds": remaining,
-        "creator_device_id": target_store.creator_device_id,
-        "creator_device_hash": target_store.creator_device_hash,
-        "last_burn_reason": target_store.last_burn_reason or (burned_info.get("burn_reason") if burned_info else None),
+        "is_verified": target_store.is_verified and not burned_info and remaining > 0 and not needs_guard_replacement,
+        "needs_guard_replacement": needs_guard_replacement,
+        "checksum_sha256": target_store.expected_file_sha256,
+        "active_guard_active": target_store.active_guard_active and not burned_info,
+        "remaining_seconds": 0 if burned_info else remaining,
+        "last_burn_reason": burned_info["burn_reason"] if burned_info else target_store.last_burn_reason,
         "is_burned": bool(burned_info),
         "daily_generations_used": target_store.get_daily_generations_used(),
         "daily_generations_max": target_store.MAX_DAILY_GUARD_GENERATIONS,
@@ -224,22 +247,12 @@ async def get_target_status():
 
 @router.post("/waf-probe")
 async def waf_probe_endpoint(payload: WafProbeRequest):
-    """
-    Sends a diagnostic live probe request to target origin with X-Pusher-Guard-Token
-    and User-Agent: Pusher-LoadEngine/1.0, analyzing edge responses (Cloudflare/AWS/Vercel/NGINX).
-    Enforces SSRF boundary checks unless in sandbox mode.
-    """
+    """Report one HEAD response from the verified origin or a sandbox simulation."""
     if not payload.target_url or not payload.target_url.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target URL cannot be empty.")
 
-    # 1. SSRF Boundary Enforcement
-    valid, message, _ = await validate_target_url(payload.target_url, payload.is_sandbox)
-    if not valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"valid": False, "detail": message, "target_url": payload.target_url},
-        )
-
-    # 2. Probe execution
-    diagnosis = await probe_waf_bypass(payload.target_url.strip(), payload.is_sandbox)
+    try:
+        diagnosis = await probe_edge(payload.target_url.strip(), payload.is_sandbox)
+    except DestinationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return diagnosis

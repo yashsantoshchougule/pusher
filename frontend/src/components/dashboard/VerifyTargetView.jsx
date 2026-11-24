@@ -19,13 +19,18 @@ import {
 
 export default function VerifyTargetView({
   targetUrl,
+  requiresTargetQuery,
   setTargetUrl,
   sandboxMode,
-  setSandboxMode,
+  sandboxTargetUrl,
+  sandboxRequiresRevocation,
+  handleToggleSandbox,
   ssrfCheck,
-  urlValidation = { checking: false, valid: true, reachable: true, status: 'IDLE', message: '', suggestions: [] },
+  urlValidation = { checking: false, valid: true, ready: false, status: 'IDLE', message: '', suggestions: [] },
   guardToken,
   isVerified,
+  verifiedOrigin,
+  isGuardVerified,
   guardTimerSeconds,
   formatTimer,
   verificationError,
@@ -35,9 +40,9 @@ export default function VerifyTargetView({
   deviceId = 'DEV-LOCAL-CREATOR',
   lastBurnReason = null,
   handleDownloadGuard,
+  guardChecksum,
   handleVerifyTarget,
   handleKillGuard,
-  handleTestCrossDeviceBlock,
   setWafModalOpen,
   setActiveNav,
   themeMode = 'production',
@@ -54,10 +59,10 @@ export default function VerifyTargetView({
       <div className="border-b-2 border-black pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h1 className="text-lg font-black uppercase tracking-wider">
-            TARGET VERIFICATION &amp; WAF BYPASS CONFIGURATOR
+            TARGET VERIFICATION
           </h1>
           <p className="text-xs opacity-75">
-            Arm cryptographic domain ownership, hardware device lock, and bypass edge rate limits with pusher_guard.py.
+            {sandboxMode ? 'Verify the local sandbox before starting a test.' : 'Verify target ownership with pusher_guard.py before starting a test.'}
           </p>
         </div>
         <button
@@ -74,17 +79,17 @@ export default function VerifyTargetView({
         isProd ? 'shadow-sm border-l-4 border-l-teal-700' : ''
       }`}>
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
+          {!sandboxMode && <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
             <Clock className="w-4 h-4" />
             <span>DAILY GUARD QUOTA:</span>
-          </span>
-          <span className={`border-2 border-black px-2.5 py-0.5 text-xs font-black uppercase tracking-wider ${
+          </span>}
+          {!sandboxMode && <span className={`border-2 border-black px-2.5 py-0.5 text-xs font-black uppercase tracking-wider ${
             isQuotaDepleted
               ? (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
               : (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
           }`}>
             {quotaRemaining} / {guardQuota.max || 3} REMAINING (24H LIMIT)
-          </span>
+          </span>}
 
           {/* Hardware Device Lock Badge */}
           <div className="flex items-center gap-1.5 border-2 border-black px-2.5 py-0.5 text-xs font-mono font-bold bg-white">
@@ -146,7 +151,7 @@ export default function VerifyTargetView({
       )}
 
       {/* Quota Depleted Warning Banner */}
-      {isQuotaDepleted && (
+      {!sandboxMode && isQuotaDepleted && (
         <div className={`border-2 border-black p-3 text-xs font-bold flex items-center gap-2 ${
           isProd ? 'bg-rose-50 text-rose-900 border-rose-500' : 'bg-black text-white'
         }`}>
@@ -164,7 +169,7 @@ export default function VerifyTargetView({
         }`}>
           <div className="flex items-center justify-between border-b-2 border-black pb-2">
             <h2 className="text-sm font-black uppercase">
-              1. DOMAIN OWNERSHIP VERIFICATION WIZARD
+              {sandboxMode ? 'LOCAL SANDBOX' : 'DOMAIN OWNERSHIP VERIFICATION'}
             </h2>
             <span
               className={`border border-black px-2 py-0.5 text-xs font-bold uppercase ${
@@ -188,9 +193,14 @@ export default function VerifyTargetView({
                 setTargetUrl(e.target.value);
                 setVerificationError(null);
               }}
-              placeholder="https://your-deployed-app.com"
+              placeholder={sandboxMode ? sandboxTargetUrl : 'https://your-deployed-app.com'}
               className="w-full border-2 border-black p-2 text-xs font-mono bg-white text-black focus:outline-none focus:bg-black focus:text-white"
             />
+            {verifiedOrigin && !isVerified && (
+              <p className="text-[11px]">
+                The active Guard covers <code>{verifiedOrigin}</code> in its verified mode.
+              </p>
+            )}
           </div>
 
           {/* Real-time Dynamic URL Reachability, DNS & SSRF Diagnostic Ribbon */}
@@ -198,7 +208,7 @@ export default function VerifyTargetView({
             className={`border-2 p-3 text-xs font-mono transition-all ${
               urlValidation.checking
                 ? 'bg-slate-100 border-slate-400 text-slate-800'
-                : urlValidation.reachable || sandboxMode
+                : urlValidation.ready
                 ? (isProd ? 'bg-emerald-50 border-emerald-500 text-emerald-900 shadow-sm' : 'bg-white text-black border-black')
                 : (isProd ? 'bg-rose-50 border-rose-500 text-rose-950 shadow-sm' : 'bg-black text-white border-black')
             }`}
@@ -207,36 +217,36 @@ export default function VerifyTargetView({
               <div className="flex items-center gap-2">
                 {urlValidation.checking ? (
                   <Clock className="w-4 h-4 animate-spin text-teal-700 shrink-0" />
-                ) : urlValidation.reachable || sandboxMode ? (
+                ) : urlValidation.ready ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 ) : (
                   <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
                 )}
                 <span className="font-bold">
                   {urlValidation.checking
-                    ? 'CHECKING URL & DNS REACHABILITY...'
-                    : urlValidation.message || (urlValidation.valid ? 'URL VERIFIED & LIVE: Ready for Guard deployment.' : 'URL invalid or unreachable.')}
+                    ? (sandboxMode ? 'CHECKING SANDBOX ADDRESS...' : 'CHECKING URL & DNS...')
+                    : urlValidation.message}
                 </span>
               </div>
               <span
                 className={`text-[10px] font-black border px-1.5 py-0.5 uppercase tracking-wider shrink-0 ${
                   urlValidation.checking
                     ? 'border-slate-500 bg-white text-slate-700'
-                    : urlValidation.reachable || sandboxMode
+                    : urlValidation.ready
                     ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white border-black')
                     : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-black border-black')
                 }`}
               >
                 {urlValidation.checking
                   ? 'CHECKING...'
-                  : urlValidation.reachable || sandboxMode
+                  : urlValidation.ready
                   ? 'PASSED'
                   : urlValidation.status || 'FAILED'}
               </span>
             </div>
 
             {/* Smart Domain Typo Suggestions */}
-            {!urlValidation.checking && !urlValidation.reachable && !sandboxMode && urlValidation.suggestions && urlValidation.suggestions.length > 0 && (
+            {!urlValidation.checking && !urlValidation.ready && urlValidation.suggestions && urlValidation.suggestions.length > 0 && (
               <div className="mt-2.5 pt-2 border-t border-rose-200 flex flex-wrap items-center gap-2">
                 <span className="text-[11px] font-bold text-rose-950 uppercase tracking-wide">
                   Did you mean:
@@ -258,26 +268,26 @@ export default function VerifyTargetView({
             )}
           </div>
 
-          {/* Sandbox Toggle */}
-          <div
-            onClick={() => setSandboxMode(!sandboxMode)}
-            className="border-2 border-black p-3 bg-white flex items-center justify-between cursor-pointer select-none"
-          >
-            <div>
-              <div className="text-xs font-bold uppercase">Sandbox Simulation Target</div>
-              <div className="text-[10px] opacity-75">
-                Bypasses public DNS validation for local Docker / sandbox load testing
-              </div>
-            </div>
-            <button type="button" className="text-black">
+          {requiresTargetQuery && (
+            <p className="text-xs">Single-target tests require the target query. Re-enter it or verify the URL without it.</p>
+          )}
+
+          {sandboxTargetUrl && (
+            <button
+              type="button"
+              aria-pressed={sandboxMode}
+              onClick={handleToggleSandbox}
+              className="w-full border-2 border-black p-3 bg-white flex items-center justify-between text-left cursor-pointer"
+            >
+              <span className="text-xs font-bold uppercase">Sandbox Simulation Target</span>
               {sandboxMode ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
             </button>
-          </div>
+          )}
 
           {/* Step 2: Download Sealed pusher_guard.py */}
-          <div className="border-2 border-black p-3.5 bg-white space-y-3">
+          {!sandboxMode && <div className="border-2 border-black p-3.5 bg-white space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase">2. Deploy Guard Middleware</span>
+              <span className="text-xs font-bold uppercase">2. Install Ownership Guard</span>
               <span className="text-[10px] font-bold border border-black px-1.5 py-0.5">
                 ACTIVE ID: {guardToken || 'NONE'}
               </span>
@@ -288,9 +298,9 @@ export default function VerifyTargetView({
             <button
               type="button"
               onClick={handleDownloadGuard}
-              disabled={isQuotaDepleted || hasActiveGuard || (!sandboxMode && (urlValidation.checking || !urlValidation.reachable))}
+              disabled={isQuotaDepleted || hasActiveGuard || (urlValidation.checking || !urlValidation.ready)}
               className={`w-full border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors flex items-center justify-center gap-2 ${
-                isQuotaDepleted || hasActiveGuard || (!sandboxMode && (urlValidation.checking || !urlValidation.reachable))
+                isQuotaDepleted || hasActiveGuard || (urlValidation.checking || !urlValidation.ready)
                   ? 'bg-slate-100 text-black/60 opacity-60 cursor-not-allowed border-black/40'
                   : 'bg-white hover:bg-black hover:text-white cursor-pointer'
               }`}
@@ -301,19 +311,21 @@ export default function VerifyTargetView({
                   ? 'QUOTA DEPLETED (3/3 USED)'
                   : hasActiveGuard
                   ? `LOCKED — USE ACTIVE ID (${guardToken}) OR CLICK 'KILL ID' BELOW FIRST`
-                  : !sandboxMode && urlValidation.checking
-                  ? 'CHECKING TARGET URL REACHABILITY...'
-                  : !sandboxMode && !urlValidation.reachable
-                  ? 'ENTER A LIVE WORKING URL ABOVE TO UNLOCK'
+                  : urlValidation.checking
+                  ? 'CHECKING TARGET DNS...'
+                  : !urlValidation.ready
+                  ? 'ENTER A URL WITH VALID DNS TO UNLOCK'
                   : 'DOWNLOAD PUSHER_GUARD.PY'}
               </span>
             </button>
-          </div>
+          </div>}
 
           {/* Step 3: Run Challenge Handshake */}
           <div className="border-2 border-black p-3.5 bg-white space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase">3. Execute Live Cryptographic Handshake</span>
+              <span className="text-xs font-bold uppercase">
+                {sandboxMode ? 'Verify Local Sandbox' : '3. Execute Live Cryptographic Handshake'}
+              </span>
               <span className={`text-[10px] font-bold border border-black px-1.5 py-0.5 ${
                 isVerified
                   ? (isProd ? 'bg-emerald-600 text-white' : 'bg-black text-white')
@@ -323,8 +335,13 @@ export default function VerifyTargetView({
               </span>
             </div>
             <p className="text-[11px] opacity-80">
-              Pusher sends a cryptographic challenge nonce to your target at <code>/__pusher_verify?nonce=...</code> to confirm ownership.
+              {sandboxMode
+                ? 'The built-in sandbox verifies directly. No Guard file is required.'
+                : <>Pusher sends a cryptographic challenge to your target at <code>/__pusher_verify</code> to confirm ownership.</>}
             </p>
+            {sandboxRequiresRevocation && (
+              <p className="text-[11px] font-bold">Revoke the current live Guard before verifying the sandbox.</p>
+            )}
 
             {verificationError && (
               <div className={`border p-2.5 text-xs font-bold flex items-center gap-2 ${
@@ -339,38 +356,25 @@ export default function VerifyTargetView({
               <button
                 type="button"
                 onClick={handleVerifyTarget}
-                className={`flex-1 min-w-[160px] border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 ${
+                disabled={sandboxRequiresRevocation}
+                className={`flex-1 min-w-[160px] border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
                   isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-black text-white hover:bg-white hover:text-black'
                 }`}
               >
                 <Shield className="w-4 h-4" />
-                <span>VERIFY TARGET NOW</span>
+                <span>{sandboxMode ? 'VERIFY SANDBOX' : 'VERIFY TARGET NOW'}</span>
               </button>
               {hasActiveGuard && (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleKillGuard}
-                    className={`border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
-                      isProd ? 'bg-rose-100 text-rose-800 border-rose-400 hover:bg-rose-200' : 'bg-white text-black hover:bg-black hover:text-white'
-                    }`}
-                    title="Immediately revoke token and burn in registry"
-                  >
-                    <Flame className="w-3.5 h-3.5" />
-                    <span>KILL ID</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleTestCrossDeviceBlock}
-                    className={`border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
-                      isProd ? 'bg-amber-100 text-amber-900 border-amber-500 hover:bg-amber-200' : 'bg-white text-black hover:bg-black hover:text-white'
-                    }`}
-                    title="Test cross-device tripwire: Sends a foreign device ID (DEV-FOREIGN-9999) to verify endpoint, instantly triggering permanent burn, stopping the 48h timer, and writing to SQLite tombstone"
-                  >
-                    <AlertOctagon className="w-3.5 h-3.5" />
-                    <span>[ TEST CROSS-DEVICE BLOCK ]</span>
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={handleKillGuard}
+                  className={`border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                    isProd ? 'bg-rose-100 text-rose-800 border-rose-400 hover:bg-rose-200' : 'bg-white text-black hover:bg-black hover:text-white'
+                  }`}
+                >
+                  <Flame className="w-3.5 h-3.5" />
+                  <span>KILL ID (PERMANENT)</span>
+                </button>
               )}
             </div>
           </div>
@@ -385,98 +389,45 @@ export default function VerifyTargetView({
             <div className="text-xs font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
               <span>48-Hour Active Session Timer:</span>
               <span className={`text-[10px] font-bold border border-black px-1.5 py-0.5 ${
-                isVerified
+                isGuardVerified
                   ? (isProd ? 'bg-emerald-600 text-white' : 'bg-black text-white')
                   : 'bg-white'
               }`}>
-                {isVerified ? 'TICKING' : 'LOCKED'}
+                {isGuardVerified ? 'TICKING' : 'LOCKED'}
               </span>
             </div>
             <div className="text-3xl font-black tracking-widest my-2">
-              {isVerified ? formatTimer(guardTimerSeconds) : '00:00:00'}
+              {isGuardVerified ? formatTimer(guardTimerSeconds) : '00:00:00'}
             </div>
             <p className="text-[10px] opacity-75">
               Target verification is sealed for 48 hours. Pusher will automatically block tests after this window to prevent unauthorized long-term scanning.
             </p>
           </div>
 
-          {/* WAF Rate Limit Bypass Explainer */}
-          <div className={`border-2 border-black p-4 bg-white space-y-3 ${isProd ? 'shadow-sm' : ''}`}>
-            <div className="flex items-center justify-between border-b border-black pb-1.5">
-              <span className="text-xs font-bold uppercase">Cloudflare / AWS WAF &amp; In-App Auth Bypass</span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (onNavigate) {
-                    onNavigate('waf-setup');
-                  } else {
-                    window.location.hash = '#/waf-setup';
-                  }
-                }}
-                className="text-[10px] font-bold underline cursor-pointer hover:opacity-70"
-              >
-                [ VIEW GUIDE ]
-              </button>
-            </div>
-
-            <div className="space-y-2 text-[11px] leading-relaxed">
-              <div className="p-2 border border-black/30 bg-slate-50 space-y-1">
-                <span className="font-bold block uppercase text-[10px] text-teal-800">
-                  1. Automatic Backend Bypass (Zero Config):
-                </span>
-                <p className="opacity-85 text-[10px]">
-                  <code>pusher_guard.py</code> automatically bypasses Python in-app rate limiters (<code>slowapi</code>, Starlette throttles) and injects synthetic test auth credentials when it verifies Pusher's cryptographic <code>X-Pusher-Signature</code> HMAC header.
-                </p>
-              </div>
-
-              <div className="p-2 border border-black/30 bg-slate-50 space-y-1">
-                <span className="font-bold block uppercase text-[10px] text-teal-800">
-                  2. Edge CDN Skip Rule (Cloudflare / AWS WAF):
-                </span>
-                <p className="opacity-85 text-[10px]">
-                  Configure an Edge WAF Skip Rule to bypass Cloudflare / AWS edge rate limiting before requests reach your origin server:
-                </p>
-                <div className="bg-black text-white p-2 font-mono text-[9px] break-all select-all">
-                  http.request.headers["x-pusher-guard-id"][0] eq "{guardToken || 'PG-ACTIVE'}"
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                if (onNavigate) {
-                  onNavigate('waf-setup');
-                } else {
-                  window.location.hash = '#/waf-setup';
-                }
-              }}
-              className="w-full border-2 border-black py-2 px-3 text-xs font-black uppercase bg-teal-700 text-white hover:bg-teal-800 transition-colors flex items-center justify-center gap-1.5 cursor-pointer mt-1"
-            >
-              <span>OPEN FULL WAF SETUP PAGE →</span>
+          <div className="border-2 border-black p-4 bg-white space-y-2">
+            <h3 className="text-xs font-bold uppercase">Target verification</h3>
+            {!sandboxMode && (
+              <p className="text-[11px]">Install the current ownership Guard and verify it from Pusher. Target traffic keeps the app’s usual security checks.</p>
+            )}
+            {!sandboxMode && guardChecksum && <p className="text-[10px] break-all">File SHA-256 · {guardChecksum}</p>}
+            <button type="button" onClick={() => onNavigate?.('waf-setup')} className="text-[10px] font-bold underline">
+              View edge diagnostics
             </button>
-
-            <div className="border border-black p-2 bg-white font-mono text-[10px] space-y-1">
-              <div className="font-bold uppercase text-[9px] opacity-70">Handshake Curl Test:</div>
-              <div className="text-black break-all select-all text-[9px]">
-                curl -i -H "X-Pusher-Guard-ID: {guardToken || 'PG-ACTIVE'}" "{targetUrl}/__pusher_verify?nonce=waf_check"
-              </div>
-            </div>
           </div>
 
           {/* Locked Security Invariants */}
-          <div className="border-2 border-black p-3.5 bg-white text-xs font-mono space-y-1.5">
+          {!sandboxMode && <div className="border-2 border-black p-3.5 bg-white text-xs font-mono space-y-1.5">
             <div className="font-bold uppercase border-b border-black pb-1">
               Enforced Security Invariants:
             </div>
             <ul className="text-[10px] opacity-80 space-y-1 list-disc list-inside">
               <li>Rate Limit: Maximum 3 guard generations per 24 hours.</li>
-              <li>Single-Active: Generating a new token burns the previous ID.</li>
+              <li>Revoke the current Guard before generating a replacement.</li>
               <li>SSRF: Loopbacks, 10.x/192.168.x &amp; 169.254.x metadata blocked.</li>
               <li>Anti-Tamper: SHA-256 sealed lockbox with HMAC verification.</li>
               <li>Zero Data Leak: Target receives only stateless cryptographic nonces.</li>
             </ul>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

@@ -19,7 +19,6 @@ client = TestClient(app)
 
 def test_simulate_spike_rejects_when_idle():
     """Calling /api/load/simulate-spike when no test is active must return 400 Bad Request."""
-    load_engine.stop(reason="RESET")
     res = client.post("/api/load/simulate-spike")
     assert res.status_code == 400
     assert "no active load test" in res.json()["detail"].lower()
@@ -28,13 +27,14 @@ def test_simulate_spike_rejects_when_idle():
 def test_websocket_handshake_and_snapshot():
     """Client connecting to /api/load/ws must immediately receive an initial SNAPSHOT frame."""
     with client.websocket_connect("/api/load/ws") as ws:
+        ws.send_text("")
         data = ws.receive_json()
         assert data["event"] == "SNAPSHOT"
         assert "is_running" in data
         assert "active_vus" in data
         assert "live_rps" in data
         assert "circuit_status" in data
-        assert "run_history" in data
+        assert "run_history" not in data
 
 
 @pytest.mark.asyncio
@@ -48,7 +48,7 @@ async def test_websocket_broadcast_delivery():
             self.sent_frames.append(data)
 
     mock_ws = MockWebSocket()
-    load_engine.connection_manager.active_connections.append(mock_ws)
+    load_engine.connection_manager.register(mock_ws, load_engine.owner_id)
 
     try:
         await load_engine.broadcast_telemetry(event="TICK")
@@ -66,9 +66,13 @@ async def test_simulate_spike_circuit_trip_lifecycle():
     """Verify active test halts immediately and trips circuit breaker upon POST /api/load/simulate-spike."""
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        verification = await ac.post("/api/target/verify", json={
+            "is_sandbox": True, "target_url": "http://127.0.0.1:8000/api/sandbox/target",
+        })
+        assert verification.status_code == 200
         # 1. Start sandbox test
         start_payload = {
-            "target_url": "http://test/api/sandbox/target",
+            "target_url": "http://127.0.0.1:8000/api/sandbox/target",
             "traffic_mode": "steady_crowd",
             "target_vus": 20,
             "duration_sec": 15,
@@ -91,8 +95,6 @@ async def test_simulate_spike_circuit_trip_lifecycle():
         status_data = load_engine.get_status()
         assert "TRIPPED" in status_data["circuit_status"]
 
-        # 4. Verify run history entry
-        assert len(status_data["run_history"]) > 0
-        latest_run = status_data["run_history"][0]
-        assert latest_run["verdictCategory"] == "CIRCUIT_BREAKER"
-        assert "AUTO-ABORTED" in latest_run["status"]
+        history = (await ac.get("/api/history")).json()
+        assert history["runs"][0]["verdict"] == "CIRCUIT_BREAKER"
+        assert history["runs"][0]["run_id"] == spike_data["run_id"]

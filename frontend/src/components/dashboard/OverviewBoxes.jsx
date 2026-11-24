@@ -15,12 +15,18 @@ export default function OverviewBoxes({
   estimatedRam,
   ramLimitMb,
   testRunning,
+  canStart,
+  statusUnavailable,
+  stopping,
   elapsed,
   telemetry,
   stepMetrics,
   useJourney,
   handleStartTest,
   handleStopTest,
+  stopError,
+  launchError,
+  launching,
   handleSimulateSpike,
   setActiveNav,
   themeMode = 'production',
@@ -148,11 +154,10 @@ export default function OverviewBoxes({
                 <div className={`border-2 border-black p-2.5 bg-white ${
                   isProd ? 'border-t-4 border-t-teal-700' : ''
                 }`}>
-                  <div className="text-[10px] font-bold uppercase">KNEE OF CURVE</div>
+                  <div className="text-[10px] font-bold uppercase">RECOMMENDED LOAD</div>
                   <div className="text-lg sm:text-xl font-black mt-1">
-                    {latestScorecard.knee_vus} VUs
+                    {latestScorecard.knee_vus > 0 ? `${latestScorecard.knee_vus} VUs` : 'Capacity unavailable'}
                   </div>
-                  <div className="text-[9px] opacity-75">Optimal Capacity</div>
                 </div>
                 <div className={`border-2 border-black p-2.5 bg-white ${
                   isProd ? 'border-t-4 border-t-teal-700' : ''
@@ -168,7 +173,7 @@ export default function OverviewBoxes({
                 }`}>
                   <div className="text-[10px] font-bold uppercase">P95 LATENCY</div>
                   <div className="text-lg sm:text-xl font-black mt-1">
-                    {latestScorecard.p95_ms} ms
+                    {latestScorecard.p95_ms == null ? 'Unavailable' : `${latestScorecard.p95_ms} ms`}
                   </div>
                   <div className="text-[9px] opacity-75">Optimal Health</div>
                 </div>
@@ -285,7 +290,7 @@ export default function OverviewBoxes({
             }`}>
               {telemetry?.circuitBreaker || 'ARMED'}
             </div>
-            <div className="text-[9px] opacity-75 mt-1">WAF Auto-Abort</div>
+            <div className="text-[9px] opacity-75 mt-1">Automatic safety stops</div>
           </div>
           <div className="border-2 border-black p-3 bg-white text-center">
             <div className="text-[10px] font-bold uppercase">DISCARDED STREAM</div>
@@ -297,7 +302,11 @@ export default function OverviewBoxes({
         {/* Start / Stop & Fault Injection Controls */}
         <div className="border-t-2 border-black pt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            {!testRunning ? (
+            {!testRunning && !canStart ? (
+              <p role="status" className="text-xs">
+                {launching ? 'Starting load test…' : statusUnavailable ? 'Run status unavailable. Retrying…' : 'Checking run status…'}
+              </p>
+            ) : !testRunning ? (
               <button
                 type="button"
                 onClick={handleStartTest}
@@ -315,14 +324,17 @@ export default function OverviewBoxes({
               <button
                 type="button"
                 onClick={handleStopTest}
+                disabled={stopping}
                 className={`flex-1 sm:flex-none border-2 border-black px-6 py-2.5 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer ${
                   isProd ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-black text-white hover:bg-white hover:text-black'
                 }`}
               >
                 <StopSquare className="w-4 h-4" />
-                <span>ABORT LOAD TEST (USER STOP)</span>
+                <span>{stopping ? 'Stopping…' : 'ABORT LOAD TEST (USER STOP)'}</span>
               </button>
             )}
+            {stopError && <p role="alert" className="text-sm text-red-700">{stopError}</p>}
+            {launchError && <p role="alert" className="text-sm text-red-700">{launchError}</p>}
 
             <button
               type="button"
@@ -365,7 +377,7 @@ export default function OverviewBoxes({
                     <th className="py-1 px-1.5 text-right">REQS</th>
                     <th className="py-1 px-1.5 text-right">PASS</th>
                     <th className="py-1 px-1.5 text-right">FAIL</th>
-                    <th className="py-1 px-1.5 text-right">P95 (MS)</th>
+                    <th className="py-1 px-1.5 text-right">AVG (MS)</th>
                     <th className="py-1 px-1.5 text-center">LAST HTTP</th>
                   </tr>
                 </thead>
@@ -383,16 +395,18 @@ export default function OverviewBoxes({
                         </span>
                       </td>
                       <td className="py-1 px-1.5 font-mono text-[10px] truncate max-w-[200px]">{sm.path}</td>
-                      <td className="py-1 px-1.5 text-right font-bold">{sm.total_requests || 0}</td>
+                      <td className="py-1 px-1.5 text-right font-bold">{sm.requests ?? 'Unavailable'}</td>
                       <td className={`py-1 px-1.5 text-right font-bold ${isProd ? 'text-emerald-700' : ''}`}>
-                        {sm.passed_requests || 0}
+                        {sm.passed ?? 'Unavailable'}
                       </td>
                       <td className={`py-1 px-1.5 text-right font-bold ${
-                        (sm.failed_requests || 0) > 0 ? (isProd ? 'text-rose-600' : 'text-black') : ''
+                        sm.failed > 0 ? (isProd ? 'text-rose-600' : 'text-black') : ''
                       }`}>
-                        {sm.failed_requests || 0}
+                        {sm.failed ?? 'Unavailable'}
                       </td>
-                      <td className="py-1 px-1.5 text-right">{sm.p95_latency_ms || 0}</td>
+                      <td className="py-1 px-1.5 text-right">
+                        {sm.requests > 0 && Number.isFinite(sm.avg_latency_ms) ? sm.avg_latency_ms : 'Unavailable'}
+                      </td>
                       <td className="py-1 px-1.5 text-center">
                         <span className={`border border-current px-1.5 py-0.5 text-[9px] font-bold ${
                           sm.last_status && sm.last_status >= 200 && sm.last_status < 400

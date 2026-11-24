@@ -16,6 +16,7 @@ import {
 
 export default function ApiBuilderView({
   journeySteps,
+  maxJourneySteps,
   setJourneySteps,
   useJourney,
   setUseJourney,
@@ -28,13 +29,25 @@ export default function ApiBuilderView({
   handleDeleteStep,
   handleMoveStep,
   handleResetJourneyDefaults,
+  sandboxPresetAvailable,
+  resettingJourney,
   handleExecuteDryRun,
+  dryRunTarget,
+  handleStopDryRun,
+  dryRunStopping,
   handleSaveJourney,
+  journeySaving,
   handleSaveAndLaunchJourney,
+  journeyLaunchBlocker,
   setActiveNav,
   themeMode = 'production',
 }) {
   const isProd = themeMode === 'production';
+  const savedDryRun = Array.isArray(dryRunResults);
+  const dryRunSteps = savedDryRun ? dryRunResults : (dryRunResults?.results ?? dryRunResults?.steps ?? []);
+  const extractedNames = Object.keys(dryRunResults?.extracted_context ?? {});
+  const showDryRun = savedDryRun ? dryRunSteps.length > 0 : Boolean(dryRunResults);
+  const cancelledDryRun = dryRunResults?.status === 'cancelled';
 
   return (
     <div className="space-y-6">
@@ -95,18 +108,21 @@ export default function ApiBuilderView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleResetJourneyDefaults}
-              className="border border-black px-2.5 py-1 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>Reset Sandbox Defaults</span>
-            </button>
+            {sandboxPresetAvailable && (
+              <button
+                type="button"
+                onClick={handleResetJourneyDefaults}
+                disabled={resettingJourney}
+                className="border border-black px-2.5 py-1 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-50"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>{resettingJourney ? 'Loading sandbox preset…' : 'Reset Sandbox Defaults'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExecuteDryRun}
-              disabled={isDryRunning}
+              disabled={isDryRunning || !dryRunTarget || !journeySteps.length}
               className={`border-2 border-black px-3 py-1 text-xs font-black uppercase transition-colors flex items-center gap-1.5 cursor-pointer ${
                 isDryRunning
                   ? 'bg-white text-black opacity-50'
@@ -114,56 +130,73 @@ export default function ApiBuilderView({
               }`}
             >
               <Play className="w-3 h-3" />
-              <span>{isDryRunning ? 'VALIDATING...' : '1-VU Dry-Run Test'}</span>
+              <span>{isDryRunning ? 'Running steps…' : 'Dry run steps once'}</span>
             </button>
+            {isDryRunning && (
+              <button
+                type="button"
+                onClick={handleStopDryRun}
+                disabled={dryRunStopping}
+                className="border border-black px-3 py-1 text-xs font-bold disabled:opacity-50"
+              >
+                {dryRunStopping ? 'Stopping…' : 'Stop dry run'}
+              </button>
+            )}
           </div>
         </div>
+        <p className="text-xs">
+          {dryRunTarget
+            ? <>Dry runs send real requests to <code>{dryRunTarget}</code>. Write steps can change data.</>
+            : 'Verify the target to run these steps.'}
+        </p>
 
         {/* 1-VU Dry-Run Diagnostic Results Card */}
-        {dryRunResults && (
+        {showDryRun && (
           <div className={`border-2 border-black p-3 bg-white space-y-2 ${
-            isProd ? (dryRunResults.all_passed ? 'border-l-4 border-l-emerald-600' : 'border-l-4 border-l-rose-600') : ''
+            isProd && !savedDryRun ? (dryRunResults.all_passed ? 'border-l-4 border-l-emerald-600' : 'border-l-4 border-l-rose-600') : ''
           }`}>
             <div className="flex items-center justify-between border-b border-black pb-1">
               <span className="font-bold text-xs uppercase flex items-center gap-1.5">
-                {dryRunResults.all_passed ? (
+                {savedDryRun ? null : dryRunResults.all_passed ? (
                   <CheckCircle2 className={`w-4 h-4 ${isProd ? 'text-emerald-600' : ''}`} />
                 ) : (
                   <XCircle className={`w-4 h-4 ${isProd ? 'text-rose-600' : ''}`} />
                 )}
-                <span>1-VU Dry-Run Execution Log</span>
+                <span>{savedDryRun ? 'Last Saved Dry-Run Steps' : '1-VU Dry-Run Execution Log'}</span>
               </span>
-              <span className={`text-[10px] font-bold border border-black px-2 py-0.5 ${
-                dryRunResults.all_passed
-                  ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
-                  : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
-              }`}>
-                {dryRunResults.all_passed ? 'CHAIN VERIFIED' : 'CHAIN FAILED'}
-              </span>
+              {!savedDryRun && (
+                <span className={`text-[10px] font-bold border border-black px-2 py-0.5 ${
+                  dryRunResults.all_passed
+                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
+                    : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
+                }`}>
+                  {cancelledDryRun ? 'DRY RUN CANCELLED' : dryRunResults.all_passed ? 'CHAIN VERIFIED' : 'CHAIN FAILED'}
+                </span>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-              <div><span className="font-bold">Total Duration:</span> {dryRunResults.duration_ms} ms</div>
-              <div><span className="font-bold">Steps Passed:</span> {dryRunResults.steps.filter((s) => s.passed).length} / {dryRunResults.total_steps}</div>
-              <div>
-                <span className="font-bold">Chained Tokens:</span>{' '}
-                {dryRunResults.extracted_tokens && Object.keys(dryRunResults.extracted_tokens).length > 0
-                  ? Object.keys(dryRunResults.extracted_tokens).map((k) => `{{${k}}}`).join(', ')
-                  : 'None'}
+            {!savedDryRun && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                <div><span className="font-bold">Total Duration:</span> {dryRunResults.total_duration_ms == null ? 'Unavailable' : `${dryRunResults.total_duration_ms} ms`}</div>
+                <div><span className="font-bold">Steps Passed:</span> {dryRunSteps.filter((step) => step.passed).length} / {dryRunResults.total_steps}</div>
+                <div>
+                  <span className="font-bold">Extracted Variables:</span>{' '}
+                  {extractedNames.map((name) => `{{${name}}}`).join(', ') || 'None'}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Individual step log */}
             <div className="space-y-1 pt-1 font-mono text-[11px]">
-              {dryRunResults.steps.map((st, i) => (
-                <div key={st.step_id || i} className="border border-black p-1.5 flex items-center justify-between bg-white">
+              {dryRunSteps.map((st, i) => (
+                <div key={st.step_id || i} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 border border-black p-1.5 bg-white">
                   <div className="flex items-center gap-2 truncate">
                     <span className={`w-2 h-2 ${st.passed ? (isProd ? 'bg-emerald-600' : 'bg-black') : (isProd ? 'bg-rose-600' : 'bg-black')}`} />
                     <span className="font-bold">{st.name}</span>
                     <span className="opacity-70 truncate max-w-[200px]">({st.method} {st.path})</span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[10px]">HTTP {st.status_code}</span>
+                    <span className="text-[10px]">{st.status_code ? `HTTP ${st.status_code}` : 'No response'}</span>
                     <span className="text-[10px]">{st.latency_ms}ms</span>
                     <span className={`text-[9px] font-bold border border-black px-1 ${
                       st.passed
@@ -173,6 +206,7 @@ export default function ApiBuilderView({
                       {st.passed ? 'PASS' : 'FAIL'}
                     </span>
                   </div>
+                  {st.error && <p className="col-span-2 text-xs text-rose-800">{st.error}</p>}
                 </div>
               ))}
             </div>
@@ -258,6 +292,12 @@ export default function ApiBuilderView({
                   <span className="text-[10px] opacity-70 block mt-0.5">
                     E.g. /api/sandbox/items or https://api.myproject.dev/items
                   </span>
+                  {step.requires_query && (
+                    <p className="mt-1 text-xs">
+                      Re-enter the query string after reopening this journey.
+                      {' '}<button type="button" className="underline" onClick={() => handleUpdateStep(index, 'requires_query', false)}>Remove requirement</button>
+                    </p>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -288,14 +328,14 @@ export default function ApiBuilderView({
 
                 <div>
                   <label className="font-bold uppercase text-[10px] block mb-1">
-                    Headers (JSON or Key-Value):
+                    Headers (JSON object)
                   </label>
                   <input
                     type="text"
                     value={typeof step.headers === 'object' ? JSON.stringify(step.headers) : (step.headers || '')}
                     onChange={(e) => {
                       try {
-                        handleUpdateStep(index, 'headers', JSON.parse(e.target.value));
+                        handleUpdateStep(index, 'headers', JSON.parse(e.target.value || '{}'));
                       } catch {
                         handleUpdateStep(index, 'headers', e.target.value);
                       }
@@ -303,6 +343,12 @@ export default function ApiBuilderView({
                     placeholder='{"Authorization": "Bearer {{token}}"}'
                     className="w-full border-2 border-black p-1.5 text-xs bg-white focus:outline-none font-mono"
                   />
+                  {step.required_headers?.length > 0 && (
+                    <p className="mt-1 text-xs">
+                      Runtime headers needed after reopening this journey: {step.required_headers.join(', ')}.
+                      {' '}<button type="button" className="underline" onClick={() => handleUpdateStep(index, 'required_headers', [])}>Remove requirement</button>
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -311,21 +357,17 @@ export default function ApiBuilderView({
                   </label>
                   <input
                     type="text"
-                    value={step.body ? (typeof step.body === 'object' ? JSON.stringify(step.body) : step.body) : ''}
-                    onChange={(e) => {
-                      if (!e.target.value.trim()) {
-                        handleUpdateStep(index, 'body', null);
-                      } else {
-                        try {
-                          handleUpdateStep(index, 'body', JSON.parse(e.target.value));
-                        } catch {
-                          handleUpdateStep(index, 'body', e.target.value);
-                        }
-                      }
-                    }}
+                    value={step.body == null ? '' : (typeof step.body === 'string' ? step.body : JSON.stringify(step.body))}
+                    onChange={(e) => handleUpdateStep(index, 'body', e.target.value || null)}
                     placeholder='{"quantity": 1}'
                     className="w-full border-2 border-black p-1.5 text-xs bg-white focus:outline-none font-mono"
                   />
+                  {step.requires_body && (
+                    <p className="mt-1 text-xs">
+                      Re-enter the body after reopening this journey.
+                      {' '}<button type="button" className="underline" onClick={() => handleUpdateStep(index, 'requires_body', false)}>Remove requirement</button>
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -336,26 +378,34 @@ export default function ApiBuilderView({
         <button
           type="button"
           onClick={handleAddStep}
-          className="w-full border-2 border-dashed border-black py-2.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+          disabled={journeySteps.length >= maxJourneySteps}
+          className="w-full border-2 border-dashed border-black py-2.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Plus className="w-4 h-4" />
-          <span>Add Sequential Journey Step</span>
+          <span>Add Step ({journeySteps.length}/{maxJourneySteps})</span>
         </button>
       </div>
 
       {/* Save & Return Buttons */}
+      {(!journeySteps.length || journeyLaunchBlocker) && (
+        <p role="status" className="text-xs font-bold">
+          {journeySteps.length ? journeyLaunchBlocker : 'Add at least one step before saving.'}
+        </p>
+      )}
       <div className="border-t-2 border-black pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
         <button
           type="button"
           onClick={() => handleSaveJourney(null)}
-          className="border-2 border-black py-3 px-4 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer text-center"
+          disabled={journeySaving || !journeySteps.length}
+          className="border-2 border-black py-3 px-4 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer text-center disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Save Journey Configuration
+          {journeySaving ? 'Saving journey…' : 'Save Journey Configuration'}
         </button>
         <button
           type="button"
           onClick={handleSaveAndLaunchJourney}
-          className={`border-2 border-black py-3 px-4 text-xs font-black uppercase transition-colors text-center tracking-wider cursor-pointer ${
+          disabled={Boolean(journeyLaunchBlocker) || journeySaving}
+          className={`border-2 border-black py-3 px-4 text-xs font-black uppercase transition-colors text-center tracking-wider cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
             isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-black text-white hover:bg-white hover:text-black'
           }`}
         >

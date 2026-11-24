@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import AuthVisualPanel from '../components/auth/AuthVisualPanel';
 import AuthFormPanel from '../components/auth/AuthFormPanel';
+import { supabase, supabaseConfigError } from '../lib/supabaseClient';
+import { authenticateEmail, authenticateProvider } from '../lib/signIn';
 
 function getTimeBasedFrameData(date = new Date()) {
   const hours = date.getHours();
@@ -34,10 +36,44 @@ function getTimeBasedFrameData(date = new Date()) {
   };
 }
 
-export default function LoginPage({ onBackToWebsite, onLoginSuccess }) {
+export default function LoginPage({
+  onBackToWebsite, canContinueOffline, onContinueOffline, sessionError, onClearSessionError,
+}) {
   const [authMode, setAuthMode] = useState('signup'); // 'signup' | 'login'
-  const [notification, setNotification] = useState(null);
+  const [notification, setNotification] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    return params.get('error_description') || fragment.get('error_description')
+      || ((params.has('error') || fragment.has('error')) ? 'Provider sign-in was canceled or failed.' : null);
+  });
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [scale, setScale] = useState(0.72);
   const [currentFrameData, setCurrentFrameData] = useState(() => getTimeBasedFrameData());
+
+  // Proportional 2.06:1 Card Scaling (1320px × 640px Base Canvas)
+  useEffect(() => {
+    const CARD_W = 1320;
+    const CARD_H = 640; // Exact 2.0625:1 wide ratio
+
+    const computeScale = () => {
+      if (typeof window === 'undefined') return 1;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // Fill 70% of screen width on PC & Laptop (slightly smaller than 77%),
+      // and 88% on narrower Tablets so text stays crisp while keeping the exact same ratio.
+      const widthFill = vw < 1024 ? 0.88 : 0.70;
+      const heightFill = 0.76;
+      return Math.min((vw * widthFill) / CARD_W, (vh * heightFill) / CARD_H);
+    };
+
+    const updateScale = () => {
+      setScale(Math.max(0.35, computeScale()));
+    };
+
+    updateScale();
+    window.addEventListener('resize', updateScale);
+    return () => window.removeEventListener('resize', updateScale);
+  }, []);
 
   useEffect(() => {
     const updateFrame = () => {
@@ -56,47 +92,69 @@ export default function LoginPage({ onBackToWebsite, onLoginSuccess }) {
     }
   };
 
-  const handleFormSubmit = (formData) => {
-    const email = formData.email || 'operator@pusher.internal';
-    const fullName = [formData.firstName, formData.lastName].filter(Boolean).join(' ') || (authMode === 'signup' ? 'Test Operator' : 'Account Operator');
-    const userId = 'usr_' + (email.split('@')[0] || 'operator').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const redirectTo = window.location.origin + '/';
 
-    // Preserve authenticated session in storage for dashboard multi-account isolation
+  const handleProviderLogin = async (provider) => {
+    onClearSessionError();
+    setIsGoogleLoading(true);
     try {
-      localStorage.setItem('pusher_auth_session', JSON.stringify({
-        access_token: 'tok_' + Date.now(),
-        user: {
-          user_id: userId,
-          email: email,
-          full_name: fullName
-        }
-      }));
-    } catch (e) {}
+      await authenticateProvider(supabase?.auth, provider, redirectTo);
+    } catch (error) {
+      setNotification(error.message);
+      setIsGoogleLoading(false);
+    }
+  };
 
-    const action = authMode === 'signup' ? 'Account created' : 'Logged in';
-    setNotification(`${action} successfully! Welcome, ${formData.firstName || formData.email || 'User'}. Redirecting to dashboard...`);
-    setTimeout(() => {
-      setNotification(null);
-      if (onLoginSuccess) {
-        onLoginSuccess();
-      }
-    }, 600);
+  const handleFormSubmit = async (formData) => {
+    onClearSessionError();
+    setIsGoogleLoading(true);
+    try {
+      const session = await authenticateEmail(supabase?.auth, authMode, formData, redirectTo);
+      setNotification(session ? 'Checking your session…' : 'Confirm your email to finish signing up.');
+    } catch (error) {
+      setNotification(error.message);
+    } finally {
+      setIsGoogleLoading(false);
+    }
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#EBEBD8] flex flex-col items-center justify-center p-3 sm:p-5 md:p-6 lg:p-8 font-sans selection:bg-[#455230] selection:text-[#EBEBD8]">
+    <div className="h-screen min-h-screen w-full bg-[#EBEBD8] flex items-center justify-center overflow-hidden font-sans selection:bg-[#455230] selection:text-[#EBEBD8] relative p-0 m-0">
       {/* Toast Notification in Deep Army Olive & Cream - Borderless */}
-      {notification && (
-        <div className="fixed top-6 z-50 animate-bounce bg-[#455230] text-[#EBEBD8] px-5 py-2.5 rounded-full text-sm sm:text-base font-bold shadow-2xl">
-          {notification}
+      {(sessionError || notification) && (
+        <div role={sessionError ? 'alert' : 'status'} className="fixed top-6 z-50 animate-bounce bg-[#455230] text-[#EBEBD8] px-5 py-2.5 rounded-full text-sm font-bold shadow-2xl">
+          {sessionError || notification}
         </div>
       )}
 
-      {/* Main Split-Screen Card Container - Fluid Adaptive Scaling */}
-      <div className="w-full max-w-[1200px] xl:max-w-[1360px] 2xl:max-w-[1480px] bg-[#9BA685] rounded-[24px] sm:rounded-[32px] shadow-[0_20px_60px_-15px_rgba(69,82,48,0.35)] overflow-hidden grid grid-cols-1 lg:grid-cols-12 min-h-0 h-auto lg:h-[min(700px,90vh)] transition-all duration-300">
-        {/* Left Column: 10px Margin Inset Around Dynamic Background Image */}
-        <div className="lg:col-span-6 order-1 lg:order-1 p-2 sm:p-2.5 flex flex-col justify-center h-full min-h-[220px] sm:min-h-[280px] lg:min-h-0">
-          <div className="relative w-full h-full min-h-[220px] sm:min-h-[280px] lg:min-h-0 overflow-hidden rounded-[18px] sm:rounded-[22px]">
+      {canContinueOffline && (
+        <button type="button" className="absolute z-10 top-4 right-4 rounded bg-[#455230] px-3 py-2 text-white" onClick={onContinueOffline}>
+          Continue offline
+        </button>
+      )}
+
+      {/* Main Canonical Fixed Dimension Login Card (1320px × 640px, Proportional 2.06:1 Ratio) */}
+      <div
+        id="login-card-container"
+        style={{
+          width: '1320px',
+          minWidth: '1320px',
+          maxWidth: '1320px',
+          height: '640px',
+          minHeight: '640px',
+          maxHeight: '640px',
+          flexShrink: 0,
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          borderRadius: '24px',
+          transform: `scale(${scale})`,
+          transformOrigin: 'center center',
+        }}
+        className="bg-[#9BA685] rounded-[24px] shadow-[0_20px_60px_-15px_rgba(69,82,48,0.35)] overflow-hidden grid grid-cols-2 shrink-0 select-none transition-transform duration-100 ease-out"
+      >
+        {/* Left Column (50% Width = 660px): Dynamic 100-Frame Synchronized Landscape */}
+        <div className="w-[660px] h-[640px] p-4 flex flex-col justify-center overflow-hidden">
+          <div className="relative w-full h-full overflow-hidden rounded-2xl bg-black/20">
             <img
               src={currentFrameData.src}
               alt={currentFrameData.phase}
@@ -105,21 +163,26 @@ export default function LoginPage({ onBackToWebsite, onLoginSuccess }) {
                 imageRendering: 'auto',
               }}
             />
-            {/* Soft atmospheric smoothing layer to diffuse compression banding in the sky and mist */}
+            {/* Soft atmospheric smoothing layer */}
             <div className="absolute inset-0 bg-gradient-to-b from-amber-50/15 via-transparent to-black/20 pointer-events-none mix-blend-soft-light" />
-            {/* Subtle bottom-only vignette so the foreground remains grounded */}
+            {/* Subtle bottom-only vignette */}
             <div className="absolute inset-x-0 bottom-0 h-1/4 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
             <AuthVisualPanel />
           </div>
         </div>
 
-        {/* Right Column: Soft Sage Green for the "Create an account" form */}
-        <div className="lg:col-span-6 order-2 lg:order-2 flex flex-col justify-center bg-[#9BA685] h-full overflow-y-auto">
-          <AuthFormPanel
+        {/* Right Column (50% Width = 660px): Fixed Form Panel */}
+        <div className="w-[660px] h-[640px] flex flex-col justify-center bg-[#9BA685] overflow-hidden">
+          {supabaseConfigError ? (
+            <p role="alert" className="px-14 text-lg font-semibold text-[#455230]">{supabaseConfigError}</p>
+          ) : <AuthFormPanel
             mode={authMode}
             onToggleMode={toggleAuthMode}
             onSubmit={handleFormSubmit}
-          />
+            onGoogleClick={() => handleProviderLogin('google')}
+            onGitHubClick={() => handleProviderLogin('github')}
+            isGoogleLoading={isGoogleLoading}
+          />}
         </div>
       </div>
     </div>

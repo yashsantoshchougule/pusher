@@ -1,18 +1,73 @@
-import React from 'react';
-import {
-  Download,
-  ArrowRight,
-  Activity,
-  CheckCircle2,
-  AlertTriangle,
-  ArrowUp,
-  ArrowDown
-} from 'lucide-react';
+import React, { useState } from 'react';
+import { Download } from 'lucide-react';
+
+const measured = (value, unit) => Number.isFinite(value) ? `${value} ${unit}` : 'Unavailable';
+const capacity = (vus) => vus > 0 ? measured(vus, 'VUs') : 'Capacity unavailable';
+const timelinePageSize = 50;
+
+function RunTimeline({ timeseries }) {
+  const [page, setPage] = useState(0);
+  const samples = Array.isArray(timeseries) ? timeseries
+    .filter((sample) => Number.isFinite(sample?.elapsed_sec) && sample.elapsed_sec >= 0)
+    .sort((a, b) => a.elapsed_sec - b.elapsed_sec) : [];
+  const pageCount = Math.ceil(samples.length / timelinePageSize);
+  const currentPage = Math.max(0, Math.min(page, pageCount - 1));
+  const offset = currentPage * timelinePageSize;
+
+  return (
+    <section className="border-2 border-black p-4 bg-white space-y-2">
+      <h2 className="text-xs font-bold uppercase border-b border-black pb-1">Run timeline</h2>
+      {samples.length === 0 ? (
+        <p className="text-xs">No timeline was recorded for this run.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs font-mono">
+            <thead>
+              <tr className="border-b border-black">
+                <th scope="col" className="py-1">Elapsed</th>
+                <th scope="col">Virtual users</th>
+                <th scope="col">Throughput</th>
+                <th scope="col">P95 latency</th>
+                <th scope="col">Error rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {samples.slice(offset, offset + timelinePageSize).map((sample, index) => (
+                <tr key={offset + index} className="border-b border-black/20">
+                  <td className="py-1">{measured(sample.elapsed_sec, 's')}</td>
+                  <td>{measured(sample.vus, 'VUs')}</td>
+                  <td>{measured(sample.rps, 'RPS')}</td>
+                  <td>{measured(sample.p95_ms, 'ms')}</td>
+                  <td>{Number.isFinite(sample.error_pct) ? `${sample.error_pct}%` : 'Unavailable'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {pageCount > 1 && (
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <button type="button" className="border px-2 py-1 disabled:opacity-50" disabled={currentPage === 0}
+            onClick={() => setPage(currentPage - 1)}>Previous samples</button>
+          <span role="status">{`Page ${currentPage + 1} of ${pageCount}`}</span>
+          <button type="button" className="border px-2 py-1 disabled:opacity-50" disabled={currentPage === pageCount - 1}
+            onClick={() => setPage(currentPage + 1)}>Next samples</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const comparisonMetrics = [
+  ['Recommended Load', 'knee_vus', 'knee_vus_delta', 'VUs'],
+  ['Peak Throughput', 'peak_rps', 'peak_rps_delta', 'RPS'],
+  ['P95 Latency', 'p95_ms', 'p95_ms_delta', 'ms'],
+];
 
 export default function ReportsView({
   reportMode,
   setReportMode,
-  runHistory,
+  runHistory = [],
   selectedReportId,
   singleRunReport,
   compareBaseId,
@@ -60,7 +115,9 @@ export default function ReportsView({
     );
   }
 
-  const report = singleRunReport || (runHistory && runHistory[0]) || {};
+  const report = singleRunReport || (
+    selectedReportId ? runHistory.find((run) => run.run_id === selectedReportId) : runHistory[0]
+  ) || {};
 
   return (
     <div className="space-y-6">
@@ -160,70 +217,65 @@ export default function ReportsView({
             <div className={`border-2 border-black p-3.5 bg-white text-center ${
               isProd ? 'border-t-4 border-t-teal-700 shadow-sm' : ''
             }`}>
-              <div className="text-[10px] font-bold uppercase">KNEE OF CURVE</div>
+              <div className="text-[10px] font-bold uppercase">RECOMMENDED LOAD</div>
               <div className="text-2xl font-black mt-1">
-                {report.knee_vus || report.knee_point_vus || 390} VUs
+                {capacity(report.knee_vus)}
               </div>
-              <div className="text-[10px] opacity-75">Optimal Capacity Saturation</div>
             </div>
             <div className={`border-2 border-black p-3.5 bg-white text-center ${
               isProd ? 'border-t-4 border-t-teal-700 shadow-sm' : ''
             }`}>
               <div className="text-[10px] font-bold uppercase">PEAK THROUGHPUT</div>
               <div className="text-2xl font-black mt-1">
-                {Number(report.peak_rps || report.rps || 1180).toLocaleString()} RPS
+                {Number(report.peak_rps ?? 0).toLocaleString()} RPS
               </div>
-              <div className="text-[10px] opacity-75">Total: {Number(report.total_requests || 68420).toLocaleString()} Reqs</div>
+              <div className="text-[10px] opacity-75">Total: {Number(report.total_requests ?? 0).toLocaleString()} Reqs</div>
             </div>
             <div className={`border-2 border-black p-3.5 bg-white text-center ${
               isProd ? 'border-t-4 border-t-teal-700 shadow-sm' : ''
             }`}>
               <div className="text-[10px] font-bold uppercase">P95 LATENCY</div>
               <div className="text-2xl font-black mt-1">
-                {report.p95_ms || report.p95 || 164} ms
+                {measured(report.p95_ms, 'ms')}
               </div>
-              <div className="text-[10px] opacity-75">Ceiling: 2,000 ms</div>
             </div>
             <div className={`border-2 border-black p-3.5 bg-white text-center ${
               isProd ? 'border-t-4 border-t-teal-700 shadow-sm' : ''
             }`}>
               <div className="text-[10px] font-bold uppercase">VERDICT STATUS</div>
               <div className="text-sm font-black mt-2 uppercase border border-black px-1 py-0.5 inline-block">
-                {report.status || 'PASSED'}
+                {report.status ?? report.verdict ?? '—'}
               </div>
-              <div className="text-[10px] opacity-75 mt-1">Errors: {report.error_count || 0} (0.0%)</div>
+              <div className="text-[10px] opacity-75 mt-1">
+                Error rate: {report.error_pct == null ? 'Unavailable' : `${report.error_pct}%`}
+              </div>
             </div>
           </div>
+
+          {report.metrics_scope === 'legacy_window' && (
+            <p className="text-xs">This older report measured latency and errors in its final telemetry window.</p>
+          )}
+
+          {singleRunReport && (
+            <RunTimeline key={report.run_id ?? selectedReportId} timeseries={report.timeseries} />
+          )}
 
           {/* Mathematical Knee-of-the-Curve Analysis Card */}
           <div className={`border-2 border-black p-4 bg-white space-y-3 ${isProd ? 'shadow-sm' : ''}`}>
             <div className="flex items-center justify-between border-b-2 border-black pb-2">
               <h2 className="text-xs font-black uppercase tracking-wider">
-                MATHEMATICAL KNEE DETECTION (SECOND DERIVATIVE LATENCY CURVATURE)
+                CAPACITY ANALYSIS
               </h2>
               <span className={`text-[10px] font-bold border border-black px-2 py-0.5 uppercase ${
                 isProd ? 'bg-teal-50 border-teal-600 text-teal-900' : 'bg-white'
               }`}>
-                KNEE POINT: {report.knee_vus || 390} VUs
+                PEAK CONCURRENT VUs · {report.peak_vus ?? report.peakVus ?? '—'}
               </span>
             </div>
 
-            <pre className="text-[11px] font-mono leading-tight bg-white p-3 border border-black overflow-x-auto">
-{`Latency (ms)
- 180ms |                                  +--- P95 Peak (${report.p95_ms || 164}ms)
- 160ms |                           +------+
- 140ms |                   +-------+  <-- KNEE POINT (${report.knee_vus || 390} VUs): Curve Inflection
- 120ms |          +--------+
- 100ms | +--------+ (Baseline)
-       +--------------------------------------------> Concurrency (VUs)
-         100      200      300     ${report.knee_vus || 390}    ${report.peak_vus || 460} VUs`}
-            </pre>
-
-            <div className="text-xs font-mono text-[11px] opacity-80 leading-relaxed border-t border-black pt-2">
-              <p>
-                <strong>Analysis:</strong> Concurrency scaled linearly up to <strong>{report.knee_vus || 390} VUs</strong> with stable sub-150ms latency. Past this inflection point, thread contention and backend database queueing caused the second derivative of latency to exceed the 2.5x threshold.
-              </p>
-            </div>
+            <p className="text-xs font-mono opacity-80 leading-relaxed">
+              {report.bottleneck_summary ?? 'Open the full report to view the knee analysis.'}
+            </p>
           </div>
 
           {/* Latency Percentile Breakdown & VU Progression Table */}
@@ -236,23 +288,23 @@ export default function ReportsView({
                 <tbody>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P50 (Median):</td>
-                    <td className="py-1 font-bold text-right">{report.latency_breakdown?.p50 || 92} ms</td>
+                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.p50, 'ms')}</td>
                   </tr>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P90:</td>
-                    <td className="py-1 font-bold text-right">{report.latency_breakdown?.p90 || 148} ms</td>
+                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.p90, 'ms')}</td>
                   </tr>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P95:</td>
-                    <td className="py-1 font-bold text-right">{report.latency_breakdown?.p95 || 164} ms</td>
+                    <td className="py-1 font-bold text-right">{measured(report.p95_ms, 'ms')}</td>
                   </tr>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P99:</td>
-                    <td className="py-1 font-bold text-right">{report.latency_breakdown?.p99 || 210} ms</td>
+                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.p99, 'ms')}</td>
                   </tr>
                   <tr>
                     <td className="py-1">Max Recorded:</td>
-                    <td className="py-1 font-bold text-right">{report.latency_breakdown?.max || 340} ms</td>
+                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.max, 'ms')}</td>
                   </tr>
                 </tbody>
               </table>
@@ -273,13 +325,16 @@ export default function ReportsView({
                   </tr>
                 </thead>
                 <tbody>
+                  {!report.steps?.length && (
+                    <tr><td colSpan={5} className="py-2">No step summaries available.</td></tr>
+                  )}
                   {(report.steps || []).map((s, idx) => (
                     <tr key={s.step || idx} className="border-b border-black/20">
                       <td className="py-1">Step {s.step || idx + 1}</td>
                       <td className="py-1 text-right font-bold">{s.vus}</td>
                       <td className="py-1 text-right">{s.rps}</td>
-                      <td className="py-1 text-right">{s.p95_ms}ms</td>
-                      <td className="py-1 text-right">0.0%</td>
+                      <td className="py-1 text-right">{measured(s.p95_ms, 'ms')}</td>
+                      <td className="py-1 text-right">{measured(s.error_pct, '%')}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -339,134 +394,36 @@ export default function ReportsView({
             </div>
           </div>
 
-          {/* Comparison Delta KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className={`border-2 border-black p-3.5 bg-white text-center ${isProd ? 'shadow-sm' : ''}`}>
-              <div className="text-[10px] font-bold uppercase">CAPACITY KNEE SHIFT</div>
-              <div className="text-xl font-black mt-1 flex items-center justify-center gap-1">
-                <span>{compareData?.deltas?.knee_shift_vus >= 0 ? '+' : ''}{compareData?.deltas?.knee_shift_vus ?? '+50'} VUs</span>
-                {(compareData?.deltas?.knee_shift_vus ?? 50) >= 0 ? (
-                  <ArrowUp className={`w-4 h-4 ${isProd ? 'text-emerald-600' : 'text-black'}`} />
-                ) : (
-                  <ArrowDown className={`w-4 h-4 ${isProd ? 'text-rose-600' : 'text-black'}`} />
-                )}
-              </div>
-              <div className="text-[10px] opacity-75">
-                {compareData?.base?.knee_vus ?? 340} → {compareData?.candidate?.knee_vus ?? 390} VUs
-              </div>
-            </div>
-
-            <div className={`border-2 border-black p-3.5 bg-white text-center ${isProd ? 'shadow-sm' : ''}`}>
-              <div className="text-[10px] font-bold uppercase">PEAK RPS DELTA</div>
-              <div className="text-xl font-black mt-1 flex items-center justify-center gap-1">
-                <span>{compareData?.deltas?.peak_rps_delta >= 0 ? '+' : ''}{compareData?.deltas?.peak_rps_delta ?? '+140'} RPS</span>
-                {(compareData?.deltas?.peak_rps_delta ?? 140) >= 0 ? (
-                  <ArrowUp className={`w-4 h-4 ${isProd ? 'text-emerald-600' : 'text-black'}`} />
-                ) : (
-                  <ArrowDown className={`w-4 h-4 ${isProd ? 'text-rose-600' : 'text-black'}`} />
-                )}
-              </div>
-              <div className="text-[10px] opacity-75">
-                {compareData?.base?.peak_rps ?? 1040} → {compareData?.candidate?.peak_rps ?? 1180} RPS
+          {compareData ? (
+            <div className="border-2 border-black p-4 bg-white space-y-3">
+              <h2 className="text-xs font-black uppercase">{compareData.overall_verdict}</h2>
+              <p className="text-xs">{compareData.summary}</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs font-mono">
+                  <thead>
+                    <tr className="border-b-2 border-black">
+                      <th className="py-2 px-3">Metric</th>
+                      <th className="py-2 px-3">Baseline ({compareData.base_run.run_id})</th>
+                      <th className="py-2 px-3">Candidate ({compareData.candidate_run.run_id})</th>
+                      <th className="py-2 px-3 text-right">Change</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comparisonMetrics.map(([label, field, deltaField, unit]) => (
+                      <tr key={field} className="border-b border-black/20">
+                        <th scope="row" className="py-2 px-3">{label}</th>
+                        <td className="py-2 px-3">{field === 'knee_vus' ? capacity(compareData.base_run[field]) : measured(compareData.base_run[field], unit)}</td>
+                        <td className="py-2 px-3">{field === 'knee_vus' ? capacity(compareData.candidate_run[field]) : measured(compareData.candidate_run[field], unit)}</td>
+                        <td className="py-2 px-3 text-right">{measured(compareData.deltas[deltaField], unit)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-
-            <div className={`border-2 border-black p-3.5 bg-white text-center ${isProd ? 'shadow-sm' : ''}`}>
-              <div className="text-[10px] font-bold uppercase">P95 LATENCY DELTA</div>
-              <div className="text-xl font-black mt-1 flex items-center justify-center gap-1">
-                <span>{compareData?.deltas?.p95_delta_ms >= 0 ? '+' : ''}{compareData?.deltas?.p95_delta_ms ?? '-46'} ms</span>
-                {(compareData?.deltas?.p95_delta_ms ?? -46) <= 0 ? (
-                  <ArrowDown className={`w-4 h-4 ${isProd ? 'text-emerald-600' : 'text-black'}`} />
-                ) : (
-                  <ArrowUp className={`w-4 h-4 ${isProd ? 'text-rose-600' : 'text-black'}`} />
-                )}
-              </div>
-              <div className="text-[10px] opacity-75">
-                {compareData?.base?.p95_ms ?? 210}ms → {compareData?.candidate?.p95_ms ?? 164}ms
-              </div>
-            </div>
-
-            <div className={`border-2 border-black p-3.5 bg-white text-center ${isProd ? 'shadow-sm' : ''}`}>
-              <div className="text-[10px] font-bold uppercase">OVERALL REGRESSION VERDICT</div>
-              <div className={`text-sm font-black mt-2 uppercase border border-black px-1.5 py-0.5 inline-block ${
-                compareData?.verdict === 'IMPROVED' || !compareData?.verdict
-                  ? (isProd ? 'bg-emerald-50 text-emerald-800 border-emerald-400' : 'bg-black text-white')
-                  : (isProd ? 'bg-rose-50 text-rose-800 border-rose-400' : 'bg-black text-white')
-              }`}>
-                {compareData?.verdict || 'CAPACITY IMPROVED'}
-              </div>
-              <div className="text-[10px] opacity-75 mt-1">
-                {compareData?.verdict_description || 'Higher throughput with lower latency'}
-              </div>
-            </div>
-          </div>
-
-          {/* Full Side-by-Side Comparison Matrix */}
-          <div className={`border-2 border-black p-4 bg-white space-y-3 ${isProd ? 'shadow-sm' : ''}`}>
-            <h2 className="text-xs font-black uppercase tracking-wider border-b-2 border-black pb-2">
-              SIDE-BY-SIDE METRIC DELTA MATRIX
-            </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs font-mono">
-                <thead>
-                  <tr className="border-b-2 border-black">
-                    <th className="py-2 px-3">METRIC</th>
-                    <th className="py-2 px-3">BASE ({compareData?.base?.run_id || compareBaseId})</th>
-                    <th className="py-2 px-3">CANDIDATE ({compareData?.candidate?.run_id || compareCandidateId})</th>
-                    <th className="py-2 px-3 text-right">NET DELTA</th>
-                    <th className="py-2 px-3 text-center">STATUS</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="border-b border-black/20">
-                    <td className="py-2 px-3 font-bold">Knee of Curve (VUs)</td>
-                    <td className="py-2 px-3">{compareData?.base?.knee_vus || 340} VUs</td>
-                    <td className="py-2 px-3 font-bold">{compareData?.candidate?.knee_vus || 390} VUs</td>
-                    <td className="py-2 px-3 text-right font-bold">{compareData?.deltas?.knee_shift_vus >= 0 ? '+' : ''}{compareData?.deltas?.knee_shift_vus ?? '+50'} VUs</td>
-                    <td className="py-2 px-3 text-center">
-                      <span className={`border border-black px-1.5 py-0.5 text-[10px] font-bold ${
-                        (compareData?.deltas?.knee_shift_vus ?? 50) >= 0
-                          ? (isProd ? 'bg-emerald-50 text-emerald-800' : 'bg-black text-white')
-                          : (isProd ? 'bg-rose-50 text-rose-800' : 'bg-black text-white')
-                      }`}>
-                        {(compareData?.deltas?.knee_shift_vus ?? 50) >= 0 ? 'EXPANDED' : 'REGRESSED'}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr className="border-b border-black/20">
-                    <td className="py-2 px-3 font-bold">Peak Throughput</td>
-                    <td className="py-2 px-3">{Number(compareData?.base?.peak_rps || 1040).toLocaleString()} RPS</td>
-                    <td className="py-2 px-3 font-bold">{Number(compareData?.candidate?.peak_rps || 1180).toLocaleString()} RPS</td>
-                    <td className="py-2 px-3 text-right font-bold">{compareData?.deltas?.peak_rps_delta >= 0 ? '+' : ''}{compareData?.deltas?.peak_rps_delta ?? '+140'} RPS</td>
-                    <td className="py-2 px-3 text-center">
-                      <span className={`border border-black px-1.5 py-0.5 text-[10px] font-bold ${
-                        (compareData?.deltas?.peak_rps_delta ?? 140) >= 0
-                          ? (isProd ? 'bg-emerald-50 text-emerald-800' : 'bg-black text-white')
-                          : (isProd ? 'bg-rose-50 text-rose-800' : 'bg-black text-white')
-                      }`}>
-                        {(compareData?.deltas?.peak_rps_delta ?? 140) >= 0 ? 'HIGHER' : 'LOWER'}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr className="border-b border-black/20">
-                    <td className="py-2 px-3 font-bold">P95 Latency</td>
-                    <td className="py-2 px-3">{compareData?.base?.p95_ms || 210} ms</td>
-                    <td className="py-2 px-3 font-bold">{compareData?.candidate?.p95_ms || 164} ms</td>
-                    <td className="py-2 px-3 text-right font-bold">{compareData?.deltas?.p95_delta_ms >= 0 ? '+' : ''}{compareData?.deltas?.p95_delta_ms ?? '-46'} ms</td>
-                    <td className="py-2 px-3 text-center">
-                      <span className={`border border-black px-1.5 py-0.5 text-[10px] font-bold ${
-                        (compareData?.deltas?.p95_delta_ms ?? -46) <= 0
-                          ? (isProd ? 'bg-emerald-50 text-emerald-800' : 'bg-black text-white')
-                          : (isProd ? 'bg-rose-50 text-rose-800' : 'bg-black text-white')
-                      }`}>
-                        {(compareData?.deltas?.p95_delta_ms ?? -46) <= 0 ? 'FASTER' : 'SLOWER'}
-                      </span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
+          ) : (
+            <p className="text-xs" role="status">Select two reports and run a comparison to see measured values.</p>
+          )}
         </div>
       )}
     </div>

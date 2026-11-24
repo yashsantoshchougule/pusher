@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, Check } from 'lucide-react';
 
-export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit }) {
+export default function AuthFormPanel({
+  mode = 'signup',
+  onToggleMode,
+  onSubmit,
+  onGoogleClick,
+  onGitHubClick,
+  isGoogleLoading = false,
+}) {
   const [showPassword, setShowPassword] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(true);
   const [formData, setFormData] = useState({
@@ -24,15 +31,15 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (onSubmit) {
+    if (!isGoogleLoading && onSubmit) {
       onSubmit(formData);
     }
   };
 
   return (
-    <div className="w-full h-full flex flex-col justify-center px-6 sm:px-8 lg:px-12 py-5 sm:py-6 max-w-[680px] w-full mx-auto bg-[#9BA685] text-[#455230]">
+    <div className="w-full h-full flex flex-col justify-center px-14 py-8 bg-[#9BA685] text-[#455230] select-none overflow-hidden">
       {/* 2-Option Segmented Control: Log In / Sign Up with 1px Margin */}
-      <div className="relative flex p-[1px] rounded-xl bg-[#EBEBD8]/60 backdrop-blur-sm mb-4 sm:mb-5 border-0 shadow-inner">
+      <div className="relative flex p-[1px] rounded-xl bg-[#EBEBD8]/60 backdrop-blur-sm mb-3 border-0 shadow-inner shrink-0">
         {/* Sliding active indicator pill with 1px margin */}
         <div
           className={`absolute top-[1px] bottom-[1px] w-[calc(50%-1px)] rounded-[11px] bg-[#455230] shadow-md transition-all duration-300 ease-in-out ${
@@ -44,7 +51,7 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
         <button
           type="button"
           onClick={() => onToggleMode && onToggleMode('login')}
-          className={`relative z-10 flex-1 py-2 sm:py-2.5 text-center text-sm sm:text-base font-bold transition-colors duration-200 cursor-pointer select-none ${
+          className={`relative z-10 flex-1 py-2 text-center text-sm font-bold transition-colors duration-200 cursor-pointer select-none ${
             !isSignUp ? 'text-[#EBEBD8]' : 'text-[#455230] hover:text-black'
           }`}
         >
@@ -55,7 +62,7 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
         <button
           type="button"
           onClick={() => onToggleMode && onToggleMode('signup')}
-          className={`relative z-10 flex-1 py-2 sm:py-2.5 text-center text-sm sm:text-base font-bold transition-colors duration-200 cursor-pointer select-none ${
+          className={`relative z-10 flex-1 py-2 text-center text-sm font-bold transition-colors duration-200 cursor-pointer select-none ${
             isSignUp ? 'text-[#EBEBD8]' : 'text-[#455230] hover:text-black'
           }`}
         >
@@ -63,19 +70,19 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
         </button>
       </div>
 
-      {/* Header Section with comfortable spacing */}
-      <div className="mb-3 sm:mb-4">
-        <h1 className="text-2xl sm:text-3xl lg:text-[32px] font-black tracking-tight text-[#455230] transition-all duration-300">
+      {/* Header Section */}
+      <div className="mb-2.5 shrink-0">
+        <h1 className="text-2xl sm:text-[28px] font-black tracking-tight text-[#455230] transition-all duration-300">
           {isSignUp ? 'Create an account' : 'Welcome back'}
         </h1>
       </div>
 
       {/* Main Authentication Form */}
-      <form onSubmit={handleSubmit} autoComplete="off" className="space-y-3 sm:space-y-3.5">
+      <form onSubmit={handleSubmit} autoComplete="off" className="space-y-2.5 shrink-0">
         {/* Name Fields (Shown smoothly in Sign Up mode) */}
         <div
-          className={`grid grid-cols-2 gap-3.5 sm:gap-4 transition-all duration-300 overflow-hidden ${
-            isSignUp ? 'max-h-24 opacity-100' : 'max-h-0 opacity-0 pointer-events-none'
+          className={`grid grid-cols-2 gap-3 transition-all duration-300 overflow-hidden ${
+            isSignUp ? 'max-h-20 opacity-100' : 'max-h-0 opacity-0 pointer-events-none'
           }`}
         >
           <div>
@@ -88,7 +95,7 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
               value={formData.firstName}
               onChange={handleChange}
               placeholder="First name"
-              className="w-full bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 py-2.5 sm:py-3 text-sm sm:text-base text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+              className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
             />
           </div>
           <div>
@@ -100,7 +107,7 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
               value={formData.lastName}
               onChange={handleChange}
               placeholder="Last name"
-              className="w-full bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 py-2.5 sm:py-3 text-sm sm:text-base text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+              className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
             />
           </div>
         </div>
@@ -116,7 +123,7 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
             value={formData.email}
             onChange={handleChange}
             placeholder="Email"
-            className="w-full bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 py-2.5 sm:py-3 text-sm sm:text-base text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+            className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
           />
         </div>
 
@@ -131,35 +138,35 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
             value={formData.password}
             onChange={handleChange}
             placeholder="Enter your password"
-            className="w-full bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl pl-4 pr-12 py-2.5 sm:py-3 text-sm sm:text-base text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+            className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl pl-4 pr-11 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
           />
           <button
             type="button"
             onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#455230]/70 hover:text-[#455230] transition-colors cursor-pointer p-1"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#455230]/70 hover:text-[#455230] transition-colors cursor-pointer p-1"
             aria-label={showPassword ? 'Hide password' : 'Show password'}
           >
             {showPassword ? (
-              <EyeOff className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.5]" />
+              <EyeOff className="w-4 h-4 stroke-[2.5]" />
             ) : (
-              <Eye className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.5]" />
+              <Eye className="w-4 h-4 stroke-[2.5]" />
             )}
           </button>
         </div>
 
         {/* Terms or Remember Me Checkbox */}
-        <div className="flex items-center justify-between pt-1">
+        <div className="flex items-center justify-between pt-0.5">
           {isSignUp ? (
-            <label className="flex items-center gap-2 text-xs sm:text-sm text-[#455230] cursor-pointer select-none font-medium">
+            <label className="flex items-center gap-2 text-xs text-[#455230] cursor-pointer select-none font-medium">
               <div
                 onClick={() => setAgreedToTerms(!agreedToTerms)}
-                className={`w-4 h-4 sm:w-5 sm:h-5 rounded-md flex items-center justify-center transition-all ${
+                className={`w-4 h-4 rounded-md flex items-center justify-center transition-all ${
                   agreedToTerms
                     ? 'bg-[#455230] text-[#EBEBD8] shadow-sm'
                     : 'bg-[#EBEBD8] border-2 border-[#455230]/60'
                 }`}
               >
-                {agreedToTerms && <Check className="w-3 h-3 sm:w-3.5 sm:h-3.5 stroke-[3]" />}
+                {agreedToTerms && <Check className="w-3 h-3 stroke-[3]" />}
               </div>
               <span>
                 I agree to the{' '}
@@ -174,20 +181,20 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
                 onClick={() =>
                   setFormData((prev) => ({ ...prev, rememberMe: !prev.rememberMe }))
                 }
-                className="flex items-center gap-2 text-xs sm:text-sm text-[#455230] cursor-pointer select-none font-medium"
+                className="flex items-center gap-2 text-xs text-[#455230] cursor-pointer select-none font-medium"
               >
                 <div
-                  className={`w-4 h-4 sm:w-5 sm:h-5 rounded-md flex items-center justify-center transition-all ${
+                  className={`w-4 h-4 rounded-md flex items-center justify-center transition-all ${
                     formData.rememberMe
                       ? 'bg-[#455230] text-[#EBEBD8] shadow-sm'
                       : 'bg-[#EBEBD8] border-2 border-[#455230]/60'
                   }`}
                 >
-                  {formData.rememberMe && <Check className="w-3 h-3 sm:w-3.5 sm:h-3.5 stroke-[3]" />}
+                  {formData.rememberMe && <Check className="w-3 h-3 stroke-[3]" />}
                 </div>
                 <span>Remember me</span>
               </label>
-              <a href="#forgot" className="text-xs sm:text-sm text-[#455230] underline font-bold hover:text-black">
+              <a href="#forgot" className="text-xs text-[#455230] underline font-bold hover:text-black">
                 Forgot password?
               </a>
             </>
@@ -197,13 +204,13 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
         {/* Primary CTA Action Button */}
         <button
           type="submit"
-          className="w-full mt-3 sm:mt-4 py-2.5 sm:py-3 px-4 rounded-xl bg-[#455230] hover:bg-[#343e24] active:scale-[0.99] text-[#EBEBD8] font-bold text-sm sm:text-base shadow-[0_10px_25px_-5px_rgba(69,82,48,0.4)] transition-all duration-200 cursor-pointer flex items-center justify-center tracking-wide border-0"
+          className="w-full h-11 mt-2.5 px-4 rounded-xl bg-[#455230] hover:bg-[#343e24] active:scale-[0.99] text-[#EBEBD8] font-bold text-sm shadow-[0_10px_25px_-5px_rgba(69,82,48,0.4)] transition-all duration-200 cursor-pointer flex items-center justify-center tracking-wide border-0"
         >
           {isSignUp ? 'Create account' : 'Log in'}
         </button>
 
         {/* Toggle Mode Link Below CTA */}
-        <p className="text-center text-xs sm:text-sm text-[#455230]/80 font-medium pt-1">
+        <p className="text-center text-xs text-[#455230]/80 font-medium pt-0.5">
           {isSignUp ? 'Already have an account? ' : "Don't have an account? "}
           <button
             type="button"
@@ -216,7 +223,7 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
       </form>
 
       {/* Divider */}
-      <div className="relative my-3 sm:my-3.5">
+      <div className="relative my-2.5 shrink-0">
         <div className="absolute inset-0 flex items-center">
           <div className="w-full h-[1px] bg-[#455230]/20" />
         </div>
@@ -228,13 +235,15 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
       </div>
 
       {/* Social SSO Buttons */}
-      <div className="space-y-2.5">
+      <div className="space-y-2 shrink-0">
         {/* Row 1: Google and Apple side-by-side */}
-        <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
+        <div className="grid grid-cols-2 gap-2.5">
           {/* Google SSO Button */}
           <button
             type="button"
-            className="flex items-center justify-center gap-2 px-3 py-2 sm:py-2.5 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs sm:text-sm font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0"
+            onClick={onGoogleClick}
+            disabled={isGoogleLoading}
+            className="h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
               <path
@@ -254,25 +263,17 @@ export default function AuthFormPanel({ mode = 'signup', onToggleMode, onSubmit 
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
               />
             </svg>
-            <span>Google</span>
+            <span>{isGoogleLoading ? 'Connecting...' : 'Google'}</span>
           </button>
 
-          {/* Apple SSO Button */}
-          <button
-            type="button"
-            className="flex items-center justify-center gap-2 px-3 py-2 sm:py-2.5 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs sm:text-sm font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0"
-          >
-            <svg className="w-4 h-4 fill-[#455230] shrink-0" viewBox="0 0 170 170">
-              <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.04-7.69-7.85-11.97-14.42-6.19-9.59-11.05-20.91-14.58-33.97-3.53-13.06-5.3-25.04-5.3-35.94 0-16.14 4.17-29.23 12.51-39.26 8.34-10.03 18.77-15.11 31.29-15.24 4.8 0 10.15 1.25 16.06 3.75 5.91 2.5 9.77 3.86 11.59 4.08 1.95-.22 5.99-1.63 12.13-4.24 6.13-2.61 11.45-3.8 15.96-3.59 12.24.87 22.37 5.76 30.39 14.67-10.88 6.54-16.21 15.68-15.99 27.42.22 9.36 3.86 17.15 10.92 23.37 7.07 6.21 15.35 9.73 24.84 10.54-2.17 6.53-4.73 12.83-7.68 18.9zM119.22 31.78c-.22-5.44 1.74-10.87 5.87-16.3 4.13-5.43 9.35-9.35 15.65-11.74.43 5.43-1.41 10.87-5.54 16.3-4.13 5.43-9.46 9.35-15.98 11.74z" />
-            </svg>
-            <span>Apple</span>
-          </button>
+
         </div>
 
         {/* Row 2: GitHub on its own separate line */}
         <button
           type="button"
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 sm:py-2.5 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs sm:text-sm font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0"
+          onClick={onGitHubClick}
+          className="h-11 w-full flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0"
         >
           <svg className="w-4 h-4 fill-[#455230] shrink-0" viewBox="0 0 24 24">
             <path

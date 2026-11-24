@@ -3,19 +3,19 @@ Pusher Backend Application Entry Point
 FastAPI application with strict CORS, security headers, exception masking, and Supabase auth.
 """
 
-from fastapi import FastAPI, Request, status, HTTPException
+from fastapi import FastAPI, Request, status, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from backend.core.config import settings
 from backend.core.jwks_verifier import AuthError
 from backend.api.auth_router import router as auth_router
+from backend.api.auth_deps import require_operator
 from backend.api.system_router import router as system_router
 from backend.api.target_router import router as target_router
 from backend.api.load_router import router as load_router
 from backend.api.journey_router import router as journey_router
 from backend.api.report_router import router as report_router
 from backend.api.profile_router import router as profile_router
-from backend.core.report_service import init_db
 
 app = FastAPI(
     title="Pusher Load Testing API",
@@ -29,7 +29,7 @@ app.add_middleware(
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "apikey", "X-Requested-With", "X-Pusher-Bypass"],
+    allow_headers=["Authorization", "Content-Type", "apikey", "X-Requested-With"],
 )
 
 # 2. Security Headers Middleware
@@ -77,11 +77,11 @@ app.include_router(journey_router)
 app.include_router(report_router)
 app.include_router(profile_router)
 
-init_db()
 
-@app.post("/api/auth/logout")
-async def api_auth_logout():
-    return {"status": "ok", "message": "Session invalidated successfully."}
+@app.get("/api/session")
+async def operator_session(actor=Depends(require_operator)):
+    return {"offline": actor.user_id == "offline:operator", "email": actor.email, "user_id": actor.user_id}
+
 
 @app.get("/")
 async def root():

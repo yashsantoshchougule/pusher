@@ -21,7 +21,7 @@ class TestUserProfilePersistence:
         res = client.get("/api/profile")
         assert res.status_code == 200
         data = res.json()
-        assert data["user_key"] == "default_user"
+        assert data["user_key"] == "default_test_user"
         assert "email" in data
         assert "full_name" in data
         assert "username" in data
@@ -52,6 +52,9 @@ class TestUserProfilePersistence:
 
     def test_subsequent_get_reflects_updated_profile(self, client):
         """Confirm subsequent GET /api/profile retrieves the newly persisted attributes from SQLite."""
+        assert client.put("/api/profile", json={
+            "full_name": "Test Benchmark Lead", "username": "benchmark_pro", "default_ram_ceiling_mb": 750,
+        }).status_code == 200
         res = client.get("/api/profile")
         assert res.status_code == 200
         data = res.json()
@@ -59,27 +62,31 @@ class TestUserProfilePersistence:
         assert data["username"] == "benchmark_pro"
         assert data["default_ram_ceiling_mb"] == 750
 
-    def test_custom_user_key_isolation(self, client):
-        """Confirm requests with distinct X-User-Key get independent profile state."""
-        headers = {"X-User-Key": "usr_isolated_99"}
-        # Initial GET creates or returns profile for usr_isolated_99
-        res = client.get("/api/profile", headers=headers)
-        assert res.status_code == 200
-        assert res.json()["user_key"] == "usr_isolated_99"
+    def test_explicit_account_key_cannot_override_the_session(self, client):
+        response = client.put("/api/profile?user_key=other", headers={"X-User-Key": "other"},
+                              json={"full_name": "Current operator"})
+        assert response.status_code == 200
+        assert response.json()["user_key"] == "default_test_user"
+        assert db_get_profile("other") is None
+        assert client.get("/api/profile").json()["full_name"] == "Current operator"
 
-        # Update profile for usr_isolated_99
-        res_put = client.put(
-            "/api/profile",
-            headers=headers,
-            json={"full_name": "Isolated Architect", "username": "isolated_99"}
-        )
-        assert res_put.status_code == 200
-        assert res_put.json()["full_name"] == "Isolated Architect"
+    def test_partial_update_preserves_omitted_fields_and_clears_explicit_text(self, client):
+        initial = client.put("/api/profile", json={
+            "full_name": "Before",
+            "organization": "Fixture team",
+            "bio_notes": "Remove this",
+            "default_ram_ceiling_mb": 750,
+        })
+        assert initial.status_code == 200
 
-        # Ensure default_user profile remains untouched
-        default_res = client.get("/api/profile")
-        assert default_res.json()["user_key"] == "default_user"
-        assert default_res.json()["full_name"] == "Test Benchmark Lead"
+        updated = client.put("/api/profile", json={"full_name": "After", "bio_notes": ""})
+        assert updated.status_code == 200
+        for profile in (updated.json(), client.get("/api/profile").json()):
+            assert profile["full_name"] == "After"
+            assert profile["organization"] == "Fixture team"
+            assert profile["default_ram_ceiling_mb"] == 750
+            assert profile["bio_notes"] == ""
+            assert profile["email"] == initial.json()["email"]
 
     def test_ram_ceiling_bounds_validation(self, client):
         """Confirm RAM ceiling below 50 MB is rejected with 422 validation error."""

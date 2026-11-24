@@ -55,10 +55,12 @@ def get_or_create_profile(
 def update_user_profile(user_key: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitizes and persists profile updates to SQLite."""
     existing = get_or_create_profile(user_key)
-    sanitized = sanitize_profile_data(data)
+    sanitized = {
+        field: value for field, value in sanitize_profile_data(data).items() if field in data
+    }
 
     # Preserve email if not explicitly provided or empty
-    if not sanitized["email"] and existing.get("email"):
+    if "email" in sanitized and not sanitized["email"] and existing.get("email"):
         sanitized["email"] = existing["email"]
 
     merged = {**existing, **sanitized}

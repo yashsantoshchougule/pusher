@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     supabase_url: str = Field(default="", alias="SUPABASE_URL")
     supabase_publishable_key: str = Field(default="", alias="SUPABASE_PUBLISHABLE_KEY")
     supabase_secret_key: str = Field(default="", alias="SUPABASE_SECRET_KEY")
+    supabase_jwt_secret: str = Field(default="", alias="SUPABASE_JWT_SECRET")
     supabase_jwks_url: str = Field(
         default="",
         alias="SUPABASE_JWKS_URL"
@@ -45,7 +46,13 @@ class Settings(BaseSettings):
     # Application Mode
     pusher_mode: str = Field(default="local_dev", alias="PUSHER_MODE")  # 'local_dev' | 'production'
     port: int = Field(default=8000, alias="PORT")
-    host: str = Field(default="0.0.0.0", alias="HOST")
+    host: str = Field(default="127.0.0.1", alias="HOST")
+    database_path: Path = Field(default=ROOT_DIR / "backend" / "pusher_runs.db", alias="PUSHER_DB_PATH")
+    offline_dev: bool = Field(default=False, alias="PUSHER_OFFLINE_DEV")
+    sandbox_origins: list[str] = Field(
+        default_factory=lambda: ["http://127.0.0.1:8080", "http://localhost:8080"],
+        alias="PUSHER_SANDBOX_ORIGINS",
+    )
 
     # Allowed CORS Origins for Frontend
     allowed_origins: list[str] = [

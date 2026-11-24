@@ -13,6 +13,34 @@ from backend.main import app
 client = TestClient(app)
 
 class TestSystemLimitsEndpoint:
+    def test_traffic_preview_uses_the_engine_schedule_parameters(self):
+        from backend.core.load_engine import calculate_active_vus
+
+        data = client.get("/api/system/limits").json()
+        schedule = data["traffic_schedule"]
+        step = 30 / len(schedule["step_ratios"])
+        assert [
+            calculate_active_vus("step_ramp", 100, 30, step * index)
+            for index in range(len(schedule["step_ratios"]))
+        ] == [round(100 * ratio) for ratio in schedule["step_ratios"]]
+        cutoff = schedule["rush_warmup_seconds"]
+        assert calculate_active_vus("sudden_rush", 105, 30, cutoff - 0.01) == max(
+            schedule["rush_warmup_min_vus"], round(105 * schedule["rush_warmup_ratio"]),
+        )
+        assert calculate_active_vus("sudden_rush", 105, 30, cutoff) == 105
+        assert data["max_p95_ceiling_ms"] == 8000
+
+    def test_limits_expose_the_effective_engine_worker_cap(self, monkeypatch):
+        from backend.api import system_router
+
+        monkeypatch.setattr(system_router, "get_os_fd_cap", lambda: 123)
+        response = client.get("/api/system/limits")
+        assert response.status_code == 200
+        assert response.json()["max_worker_vus"] == 123
+
+        monkeypatch.setattr(system_router, "get_os_fd_cap", lambda: 250_000)
+        assert client.get("/api/system/limits").json()["max_worker_vus"] == 100_000
+
     def test_get_system_limits_contract(self):
         response = client.get("/api/system/limits")
         assert response.status_code == 200
@@ -37,7 +65,7 @@ class TestSsrfValidationEndpoint:
         response = client.post("/api/target/validate-ssrf", json={"target_url": "http://127.0.0.1:8080/api"})
         assert response.status_code == 400
         assert response.json()["valid"] is False
-        assert "loopback" in response.json()["detail"].lower() or "private" in response.json()["detail"].lower()
+        assert "prohibited" in response.json()["detail"].lower()
 
     def test_reject_localhost(self):
         response = client.post("/api/target/validate-ssrf", json={"target_url": "http://localhost:3000"})
@@ -80,16 +108,65 @@ class TestPusherGuardGenerator:
 
 
 class TestTargetVerificationLifecycle:
+    def test_sandbox_status_and_direct_verification(self, monkeypatch):
+        from backend.core.config import settings
+
+        monkeypatch.setattr(settings, "port", 8123)
+        initial = client.get("/api/target/status").json()
+        assert initial["sandbox_url"] == "http://127.0.0.1:8123/api/sandbox/target"
+        assert initial["guard_id"] is None
+
+        verified = client.post("/api/target/verify", json={
+            "target_url": initial["sandbox_url"],
+            "is_sandbox": True,
+        })
+        assert verified.status_code == 200
+        assert verified.json()["is_verified"] is True
+        status = client.get("/api/target/status").json()
+        assert status["is_sandbox"] is True
+        assert status["daily_generations_used"] == initial["daily_generations_used"] == 0
+
+        monkeypatch.setattr(settings, "pusher_mode", "production")
+        assert client.get("/api/target/status").json()["sandbox_url"] is None
+
+    def test_status_reports_persisted_revocation_with_stale_target(self, monkeypatch):
+        from backend.core import database, target_service
+
+        verify = client.post("/api/target/verify", json={
+            "target_url": "https://sandbox.pusher.local",
+            "is_sandbox": True,
+        })
+        assert verify.status_code == 200
+        guard_id = verify.json()["guard_id"]
+        assert client.get("/api/target/status").json()["is_verified"] is True
+
+        database.db_burn_guard(guard_id, "DEVICE_MISMATCH_VIOLATION")
+
+        def assert_revoked_status():
+            response = client.get("/api/target/status")
+            assert response.status_code == 200
+            status = response.json()
+            assert status["guard_id"] == guard_id
+            assert status["is_burned"] is True
+            assert status["is_verified"] is False
+            assert status["active_guard_active"] is False
+            assert status["remaining_seconds"] == 0
+            assert status["last_burn_reason"] == "DEVICE_MISMATCH_VIOLATION"
+
+        assert_revoked_status()
+        monkeypatch.setattr(target_service.target_store, "expires_at", 1)
+        assert_revoked_status()
+
     def test_sandbox_verification_and_kill_lifecycle(self):
         # 1. Kill any prior guard, then generate Guard
         client.post("/api/target/kill")
-        gen_res = client.post("/api/target/generate-guard", json={"target_url": "https://api.sandbox.dev"})
+        gen_res = client.post("/api/target/generate-guard", json={"target_url": "https://sandbox.pusher.local", "is_sandbox": True})
         assert gen_res.status_code == 200
         guard_id = gen_res.json()["guard_id"]
 
         # 2. Verify in Sandbox mode
         verify_res = client.post("/api/target/verify", json={
-            "target_url": "https://api.sandbox.dev",
+            "target_url": "https://sandbox.pusher.local",
             "guard_id": guard_id,
             "is_sandbox": True
         })
@@ -152,12 +229,12 @@ class TestGuardRateLimiterAndBurnRegistry:
         target_store.guard_id = None
 
         # 1. Generate Token 1
-        res1 = client.post("/api/target/generate-guard", json={"target_url": "https://api.test1.dev", "is_sandbox": True})
+        res1 = client.post("/api/target/generate-guard", json={"target_url": "https://sandbox.pusher.local", "is_sandbox": True})
         assert res1.status_code == 200
         token1 = res1.json()["guard_id"]
 
         # 2. Attempt to generate Token 2 without killing Token 1 -> MUST RETURN 409 CONFLICT!
-        res_conflict = client.post("/api/target/generate-guard", json={"target_url": "https://api.test2.dev", "is_sandbox": True})
+        res_conflict = client.post("/api/target/generate-guard", json={"target_url": "https://sandbox.pusher.local", "is_sandbox": True})
         assert res_conflict.status_code == 409
         assert "kill" in res_conflict.json()["detail"].lower() or "active guard" in res_conflict.json()["detail"].lower()
 
@@ -166,19 +243,19 @@ class TestGuardRateLimiterAndBurnRegistry:
         assert kill_res.status_code == 200
 
         # 4. Now generate Token 2 succeeds
-        res2 = client.post("/api/target/generate-guard", json={"target_url": "https://api.test2.dev", "is_sandbox": True})
+        res2 = client.post("/api/target/generate-guard", json={"target_url": "https://sandbox.pusher.local", "is_sandbox": True})
         assert res2.status_code == 200
         token2 = res2.json()["guard_id"]
         assert token2 != token1
 
         # 5. Token 1 is burned in revocation registry -> verification returns 403 Forbidden
         verify_t1 = client.post("/api/target/verify", json={
-            "target_url": "https://api.test1.dev",
+            "target_url": "https://sandbox.pusher.local",
             "guard_id": token1,
             "is_sandbox": True
         })
         assert verify_t1.status_code == 403
-        assert "revoked" in verify_t1.json()["detail"].lower() or "burned" in verify_t1.json()["detail"].lower()
+        assert "revoked" in str(verify_t1.json()["detail"]).lower() or "burned" in str(verify_t1.json()["detail"]).lower()
 
     def test_guard_daily_rate_limiter_max_3(self):
         from backend.core.target_service import target_store
@@ -221,7 +298,7 @@ class TestGuardRateLimiterAndBurnRegistry:
         from backend.core.target_service import target_store
         target_store.generation_timestamps.clear()
         target_store.guard_id = None
-        r = client.post("/api/target/generate-guard", json={"target_url": "https://tampertest.dev", "is_sandbox": True})
+        r = client.post("/api/target/generate-guard", json={"target_url": "https://sandbox.pusher.local", "is_sandbox": True})
         assert r.status_code == 200
         content = r.json()["content"]
 
@@ -239,56 +316,61 @@ class TestGuardRateLimiterAndBurnRegistry:
         with pytest.raises(RuntimeError, match="PUSHER GUARD LOCKED"):
             runpy.run_path(str(tampered_path))
 
-    def test_signed_request_activates_pusher_bypass(self, tmp_path):
-        import runpy, hmac, hashlib, time
-        from fastapi import FastAPI, Request
-        from fastapi.testclient import TestClient as SubClient
-        from backend.core.target_service import target_store
-        target_store.generation_timestamps.clear()
-        target_store.guard_id = None
-        r = client.post("/api/target/generate-guard", json={"target_url": "https://bypasstest.dev", "is_sandbox": True})
-        assert r.status_code == 200
-        guard_id = r.json()["guard_id"]
-        secret = target_store.bypass_secret
+    def test_guard_mounts_and_preserves_protected_routes(self, tmp_path, monkeypatch):
+        import hashlib
+        import runpy
+        import time
+        from types import SimpleNamespace
 
-        guard_path = tmp_path / "pusher_guard.py"
-        guard_path.write_text(r.json()["content"], encoding="utf-8")
-        mod = runpy.run_path(str(guard_path))
+        from fastapi import Depends, FastAPI, Request
+        from jose import jwt
+        from starlette.applications import Starlette
 
-        test_app = FastAPI()
-        mod["setup_pusher_guard"](test_app)
+        from backend.api import auth_deps
+        from backend.core.config import settings
+        from backend.core.security import SlidingWindowRateLimiter
 
-        @test_app.get("/api/protected-data")
-        def sample_protected(request: Request):
-            return {
-                "pusher_bypass": getattr(request.state, "pusher_bypass", False),
-                "auth": request.headers.get("authorization"),
-                "user": request.scope.get("user"),
-                "client": request.scope.get("client"),
-            }
-
-        tc = SubClient(test_app)
-
-        # 1. Unsigned request -> pusher_bypass is False, no synthetic auth injected
-        un_res = tc.get("/api/protected-data")
-        assert un_res.status_code == 200
-        assert un_res.json()["pusher_bypass"] is False
-        assert un_res.json()["auth"] is None
-
-        # 2. Cryptographically signed request -> pusher_bypass is True, synthetic auth injected
-        curr_min = str(int(time.time() // 60))
-        sig = hmac.new(secret.encode("utf-8"), f"{guard_id}:{curr_min}".encode("utf-8"), hashlib.sha256).hexdigest()
-        sig_res = tc.get("/api/protected-data", headers={
-            "X-Pusher-Guard-ID": guard_id,
-            "X-Pusher-Timestamp": curr_min,
-            "X-Pusher-Signature": sig,
+        response = client.post("/api/target/generate-guard", json={
+            "target_url": "https://sandbox.pusher.local", "is_sandbox": True,
         })
-        assert sig_res.status_code == 200
-        data = sig_res.json()
-        assert data["pusher_bypass"] is True
-        assert f"Bearer pusher_bypass_{guard_id}" in data["auth"]
-        assert data["user"]["role"] == "load_tester"
-        assert data["client"][0].startswith("198.51.100.")
+        assert response.status_code == 200
+        artifact = response.json()
+        raw = artifact["content"].encode("utf-8")
+        path = tmp_path / "pusher_guard.py"
+        path.write_bytes(raw)
+        assert hashlib.sha256(raw).hexdigest() == artifact["checksum_sha256"]
+        compile(raw, str(path), "exec")
+        guard = runpy.run_path(str(path))
+        guard["setup_pusher_guard"].__globals__["time"] = SimpleNamespace(time=lambda: artifact["expires_at"])
+        application = FastAPI()
+
+        @application.get("/protected")
+        async def protected(request: Request, actor=Depends(auth_deps.get_current_user)):
+            return {"user": actor.user_id, "address": request.client.host}
+
+        @application.get("/admin")
+        async def admin(actor=Depends(auth_deps.get_admin_user)):
+            return {"user": actor.user_id}
+
+        guard["setup_pusher_guard"](application)
+        starlette = Starlette()
+        guard["setup_pusher_guard"](starlette)
+        assert TestClient(starlette).get("/__pusher_verify").status_code == 403
+        test = TestClient(application)
+        assert not application.user_middleware
+        assert test.get("/__pusher_verify").status_code == 403
+        assert test.get("/protected", headers={"X-Pusher-Guard-ID": "invalid"}).status_code == 401
+        token = jwt.encode({
+            "sub": "ordinary-test-user", "email": "fixture@example.invalid",
+            "aud": "authenticated", "iss": f"{settings.supabase_url}/auth/v1",
+            "exp": int(time.time()) + 60,
+        }, settings.supabase_jwt_secret, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {token}"}
+        monkeypatch.setattr(auth_deps, "auth_rate_limiter", SlidingWindowRateLimiter(max_requests=2))
+        assert test.get("/admin", headers=headers).status_code == 403
+        res_data = test.get("/protected", headers=headers).json()
+        assert res_data["user"] == "ordinary-test-user"
+        assert test.get("/protected", headers=headers).status_code == 429
 
     def test_kill_permanently_burns_id(self):
         from backend.core.target_service import target_store
@@ -299,7 +381,7 @@ class TestGuardRateLimiterAndBurnRegistry:
         target_store.guard_id = None
 
         # Generate guard
-        r = client.post("/api/target/generate-guard", json={"target_url": "https://killtest.dev", "is_sandbox": True})
+        r = client.post("/api/target/generate-guard", json={"target_url": "https://sandbox.pusher.local", "is_sandbox": True})
         assert r.status_code == 200
         guard_id = r.json()["guard_id"]
 
@@ -311,12 +393,12 @@ class TestGuardRateLimiterAndBurnRegistry:
 
         # Attempt verify killed guard -> 403 Forbidden
         v_res = client.post("/api/target/verify", json={
-            "target_url": "https://killtest.dev",
+            "target_url": "https://sandbox.pusher.local",
             "guard_id": guard_id,
             "is_sandbox": True
         })
         assert v_res.status_code == 403
-        assert "revoked" in v_res.json()["detail"].lower() or "burned" in v_res.json()["detail"].lower()
+        assert "revoked" in str(v_res.json()["detail"]).lower() or "burned" in str(v_res.json()["detail"]).lower()
 
 
 class TestSandboxModeBypassAndKillReset:
@@ -353,27 +435,24 @@ class TestSandboxModeBypassAndKillReset:
 
 class TestWafProbeEndpoint:
     def test_waf_probe_sandbox_simulation_success(self):
+        assert client.post("/api/target/verify", json={
+            "target_url": "https://api.myproject.dev", "is_sandbox": True,
+        }).status_code == 200
         res = client.post("/api/target/waf-probe", json={
             "target_url": "https://api.myproject.dev",
             "is_sandbox": True
         })
         assert res.status_code == 200
         data = res.json()
-        assert data["bypass_passed"] is True
-        assert data["status_code"] == 200
-        assert "WAF BYPASS VERIFIED" in data["recommendation"]
-        assert "X-Pusher-Guard-Token" in data["injected_headers"]
-        assert data["injected_headers"]["User-Agent"] == "Pusher-LoadEngine/1.0"
-        assert data["latency_ms"] >= 0
+        assert data["simulated"] is True
+        assert data["status_code"] is None
+        assert data["edge_hint"] is None
+        assert data["latency_ms"] is None
 
-    def test_waf_probe_ssrf_rejects_private_ip(self):
-        res = client.post("/api/target/waf-probe", json={
-            "target_url": "http://192.168.1.1",
-            "is_sandbox": False
-        })
-        assert res.status_code == 400
-        data = res.json()
-        assert "loopback" in str(data).lower() or "private" in str(data).lower()
+    def test_waf_probe_rejects_unverified_destination(self):
+        response = client.post("/api/target/waf-probe", json={"target_url": "https://example.invalid"})
+        assert response.status_code == 403
+        assert "Verify the target" in response.json()["detail"]
 
     def test_waf_probe_rejects_empty_target(self):
         res = client.post("/api/target/waf-probe", json={
@@ -463,10 +542,12 @@ class TestDeviceBoundLockAndTombstoneRegistry:
         # Generate on DEV-ALPHA-001
         res_gen = client.post(
             "/api/target/generate-guard",
-            json={"target_url": "https://api.prodtest.dev", "is_sandbox": True},
+            json={"target_url": "https://api.prodtest.dev"},
             headers={"X-Pusher-Device-ID": "DEV-ALPHA-001"}
         )
         guard_id = res_gen.json()["guard_id"]
+
+        target_store.mark_verified()
 
         # Attempt to start load test from foreign device DEV-GAMMA-003
         res_load = client.post(
@@ -562,8 +643,8 @@ class TestLiveUrlReachabilityAndDnsValidator:
         data = res.json()
         assert data["valid"] is False
         assert data["reachable"] is False
-        assert data["status"] == "DNS_NOT_FOUND"
-        assert "gitb-nonexistent-domain-9999.com" in data["message"]
+        assert data["status"] == "DNS_REJECTED"
+        assert "could not be resolved" in data["message"]
 
     def test_close_domain_typo_suggests_github(self):
         res = client.post("/api/target/validate-url", json={
@@ -574,7 +655,7 @@ class TestLiveUrlReachabilityAndDnsValidator:
         data = res.json()
         assert data["valid"] is False
         assert data["reachable"] is False
-        assert data["status"] in ("DNS_NOT_FOUND", "UNREACHABLE")
+        assert data["status"] == "DNS_REJECTED"
         assert any("github.com" in s for s in data["suggestions"])
 
     def test_ssrf_private_ip_returns_ssrf_blocked(self):
@@ -586,8 +667,8 @@ class TestLiveUrlReachabilityAndDnsValidator:
         data = res.json()
         assert data["valid"] is False
         assert data["reachable"] is False
-        assert data["status"] == "SSRF_BLOCKED"
-        assert "loopback" in data["message"].lower() or "127.0.0.1" in data["message"]
+        assert data["status"] == "DNS_REJECTED"
+        assert "prohibited" in data["message"]
 
     def test_generate_guard_rejects_nonexistent_domain_with_422(self):
         client.post("/api/target/kill")
@@ -597,7 +678,7 @@ class TestLiveUrlReachabilityAndDnsValidator:
         })
         assert res.status_code == 422
         detail = str(res.json()["detail"])
-        assert "INCORRECT URL" in detail or "does not exist" in detail or "cannot be resolved" in detail
+        assert "INCORRECT URL" in detail or "does not exist" in detail or "could not be resolved" in detail
 
 
 

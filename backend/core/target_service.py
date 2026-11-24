@@ -5,22 +5,22 @@ Target Service:
 - Live challenge-response verification (/__pusher_verify?nonce=...) and Kill revocation
 """
 
-import asyncio
+from contextvars import ContextVar
 import base64
 import difflib
 import hashlib
 import hmac
-import ipaddress
 import json
-import os
+import re
 import secrets
-import socket
-import sqlite3
 import time
-import urllib.parse
 import zlib
 import httpx
-from backend.core.config import settings
+from backend.core.request_owner import request_owner
+from backend.core.dry_run_control import cancel_guard_dry_runs
+from backend.core.target_policy import (
+    DestinationError, bound_target, origin, parse_target, resolve_addresses, sandbox_target, target_client,
+)
 
 from backend.core.database import (
     db_get_active_target,
@@ -32,16 +32,6 @@ from backend.core.database import (
     db_get_burned_guards_count,
     get_db_connection,
 )
-
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pusher_runs.db")
-
-def init_tombstone_db():
-    """Initializes persistent SQLite tombstone registry for permanently burned guards."""
-    from backend.core.database import init_all_tables
-    init_all_tables()
-
-# Auto-initialize table on module import
-init_tombstone_db()
 
 def hash_device_id(device_id: str | None) -> str:
     """Returns a deterministic SHA-256 fingerprint prefix of the incoming device ID."""
@@ -67,6 +57,8 @@ def burn_guard_id(
         creator_device_hash=creator_device_hash,
         offending_device_hash=offending_device_hash,
     )
+    cancel_guard_dry_runs(guard_id, expired=reason == "EXPIRED_48H")
+    target_store = active_target()
     target_store.revoked_guard_ids.add(guard_id)
     target_store.last_revoked_guard_id = guard_id
     target_store.last_burn_reason = reason
@@ -194,13 +186,16 @@ class ActiveTargetStore:
     MAX_DAILY_GUARD_GENERATIONS = 3
     RATE_LIMIT_WINDOW_SECONDS = 86400.0  # 24 Hours rolling window
 
-    def __init__(self):
+    def __init__(self, owner_id="default_test_user"):
+        self.owner_id = owner_id
         self.creator_device_id: str = "DEV-LOCAL-CREATOR"
         self.creator_device_hash: str = hash_device_id("DEV-LOCAL-CREATOR")
         self._guard_id: str | None = None
         self.target_url: str | None = None
+        self.requires_target_query = False
         self.is_sandbox: bool = False
         self.bypass_secret: str | None = None
+        self.expected_file_sha256: str | None = None
         self.bound_host_hash: str | None = None
         self.issued_at: int = 0
         self.expires_at: int = 0
@@ -225,11 +220,13 @@ class ActiveTargetStore:
         self._save_to_db()
 
     def _load_from_db(self):
-        state = db_get_active_target()
+        state = db_get_active_target(self.owner_id)
         self.target_url = state.get("target_url") or None
+        self.requires_target_query = state["requires_target_query"]
         self.is_sandbox = bool(state.get("is_sandbox", False))
         self._guard_id = state.get("guard_id")
         self.bypass_secret = state.get("handshake_secret")
+        self.expected_file_sha256 = state.get("expected_file_sha256")
         if state.get("creator_device_hash"):
             self.creator_device_hash = state["creator_device_hash"]
         self.bound_host_hash = state.get("bound_host_hash")
@@ -243,10 +240,11 @@ class ActiveTargetStore:
     def _save_to_db(self):
         db_save_active_target({
             "target_url": self.target_url or "",
+            "requires_target_query": self.requires_target_query,
             "is_sandbox": getattr(self, "is_sandbox", False),
             "guard_id": self._guard_id,
             "handshake_secret": self.bypass_secret,
-            "expected_file_sha256": None,
+            "expected_file_sha256": self.expected_file_sha256,
             "creator_device_hash": self.creator_device_hash,
             "bound_host_hash": self.bound_host_hash,
             "issued_at": self.issued_at,
@@ -254,11 +252,11 @@ class ActiveTargetStore:
             "active_guard_active": self.active_guard_active,
             "is_verified": self.is_verified,
             "last_burn_reason": self.last_burn_reason,
-        })
+        }, self.owner_id)
 
     def get_daily_generations_used(self) -> int:
         cutoff = time.time() - self.RATE_LIMIT_WINDOW_SECONDS
-        return db_get_daily_generations_count(self.creator_device_hash, cutoff)
+        return db_get_daily_generations_count(self.creator_device_hash, cutoff, self.owner_id)
 
     def get_daily_generations_remaining(self) -> int:
         return max(0, self.MAX_DAILY_GUARD_GENERATIONS - self.get_daily_generations_used())
@@ -274,23 +272,25 @@ class ActiveTargetStore:
 
     def record_generation(self, guard_id: str):
         now = time.time()
-        db_record_guard_generation(guard_id, self.creator_device_hash, now)
+        db_record_guard_generation(guard_id, self.creator_device_hash, now, self.owner_id)
         self.issued_guard_ids.add(guard_id)
 
     def set_target(
         self,
         target_url: str,
         guard_id: str,
-        bypass_secret: str,
+        bypass_secret: str | None,
         issued_at: int,
         expires_at: int,
         creator_device_id: str | None = None,
         is_sandbox: bool = False,
+        expected_file_sha256: str | None = None,
     ):
-        self.target_url = target_url
+        self.set_target_template(parse_target(target_url))
         self.is_sandbox = is_sandbox
-        self.guard_id = guard_id
+        self._guard_id = guard_id
         self.bypass_secret = bypass_secret
+        self.expected_file_sha256 = expected_file_sha256
         self.creator_device_id = creator_device_id or "DEV-LOCAL-CREATOR"
         self.creator_device_hash = hash_device_id(self.creator_device_id)
         self.bound_host_hash = None
@@ -301,6 +301,10 @@ class ActiveTargetStore:
         self.verified_at = 0
         self.last_burn_reason = None
         self._save_to_db()
+
+    def set_target_template(self, url: httpx.URL):
+        self.target_url = str(url.copy_with(query=None))
+        self.requires_target_query = bool(url.query)
 
     def mark_verified(self):
         self.is_verified = True
@@ -323,7 +327,9 @@ class ActiveTargetStore:
         # Trigger 1: Cross-Device Kill Attempt Violation
         if device_id and incoming_hash != self.creator_device_hash:
             burn_guard_id(current_guard, "DEVICE_MISMATCH_VIOLATION", self.creator_device_hash, incoming_hash)
-            self.guard_id = None
+            self._guard_id = None
+            self.bypass_secret = None
+            self.expected_file_sha256 = None
             self.is_verified = False
             self.is_sandbox = False
             self.active_guard_active = False
@@ -334,7 +340,9 @@ class ActiveTargetStore:
 
         # Trigger 3: Manual User Revocation from Creator
         burn_guard_id(current_guard, "MANUAL_USER_KILL", self.creator_device_hash)
-        self.guard_id = None
+        self._guard_id = None
+        self.bypass_secret = None
+        self.expected_file_sha256 = None
         self.is_verified = False
         self.is_sandbox = False
         self.active_guard_active = False
@@ -360,6 +368,18 @@ class ActiveTargetStore:
         return rem
 
 target_store = ActiveTargetStore()
+target_scope: ContextVar[ActiveTargetStore | None] = ContextVar("target_scope", default=None)
+
+
+def active_target() -> ActiveTargetStore:
+    owner = request_owner.get()
+    if owner == "default_test_user":
+        return target_store
+    current = target_scope.get()
+    if current is None:
+        current = ActiveTargetStore(owner)
+        target_scope.set(current)
+    return current
 
 COMMON_DOMAINS = [
     "github.com",
@@ -400,237 +420,44 @@ class ValidationResult(dict):
         return self.get("message", "")
 
 
-# SSRF & Real-time Live URL / DNS Reachability Validation Function
 async def validate_target_url(target_url: str, is_sandbox: bool = False) -> ValidationResult:
-    """
-    3-Step Live Target Validation:
-    - If is_sandbox == True: bypass external DNS/HTTP checks immediately.
-    - Step 1: Syntax & SSRF guard (scheme, hostname dot, loopbacks, private networks, cloud metadata).
-    - Step 2: Real-time async DNS lookup with 3.0s timeout and domain typo suggestion generator.
-    - Step 3: Live HTTP/HTTPS reachability probe (HEAD / GET fallback, 4.0s timeout).
-    """
-    if is_sandbox:
-        return ValidationResult({
-            "valid": True,
-            "reachable": True,
-            "status": "SANDBOX_ALLOWED",
-            "message": "SANDBOX DEV MODE: Local simulation target allowed",
-            "suggestions": [],
-            "resolved_ip": "127.0.0.1",
-        })
-
-    if not target_url or not target_url.strip():
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "INVALID_URL",
-            "message": "INCORRECT URL: Enter a valid website address starting with http:// or https:// (e.g., https://myapp.com).",
-            "suggestions": [],
-            "resolved_ip": None,
-        })
-
-    url = target_url.strip()
-    parsed = urllib.parse.urlparse(url)
-
-    if parsed.scheme.lower() not in ("http", "https"):
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "INVALID_URL",
-            "message": "INCORRECT URL: Enter a valid website address starting with http:// or https:// (e.g., https://myapp.com).",
-            "suggestions": [],
-            "resolved_ip": None,
-        })
-
-    hostname = (parsed.hostname or "").strip().lower()
-    if not hostname or "." not in hostname:
-        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.5) if hostname else []
-        suggestions = [f"https://{m}" for m in close_matches]
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "INVALID_URL",
-            "message": "INCORRECT URL: Enter a valid website address starting with http:// or https:// (e.g., https://myapp.com).",
-            "suggestions": suggestions,
-            "resolved_ip": None,
-        })
-
-    sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local"}
-    if hostname in sandbox_hosts or "sandbox" in hostname:
-        return ValidationResult({
-            "valid": True,
-            "reachable": True,
-            "status": "SANDBOX_ALLOWED",
-            "message": "SANDBOX DEV MODE: Local simulation target allowed",
-            "suggestions": [],
-            "resolved_ip": "127.0.0.1",
-        })
-
-    # Explicit loopback string names
-    if hostname in ("localhost", "0.0.0.0", "127.0.0.1", "::1"):
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "SSRF_BLOCKED",
-            "message": "Loopback addresses (localhost/127.0.0.1) are forbidden for production tests.",
-            "suggestions": [],
-            "resolved_ip": "127.0.0.1",
-        })
-
-    # Step 2: Real-time Async DNS Resolution
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    loop = asyncio.get_running_loop()
+    """Check syntax and DNS readiness without contacting an unverified web server."""
     try:
-        addr_info = await asyncio.wait_for(
-            loop.getaddrinfo(hostname, port),
-            timeout=3.0,
-        )
-    except socket.gaierror:
-        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
-        suggestions = [f"https://{m}" for m in close_matches]
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "DNS_NOT_FOUND",
-            "message": f"INCORRECT URL: '{hostname}' does not exist or cannot be resolved in DNS.",
-            "suggestions": suggestions,
-            "resolved_ip": None,
-        })
-    except (asyncio.TimeoutError, TimeoutError):
-        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
-        suggestions = [f"https://{m}" for m in close_matches]
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "DNS_NOT_FOUND",
-            "message": f"DNS TIMEOUT: Resolution timed out for '{hostname}'.",
-            "suggestions": suggestions,
-            "resolved_ip": None,
-        })
-
-    resolved_ips = {item[4][0] for item in addr_info}
-    for ip_str in resolved_ips:
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return ValidationResult({
-                "valid": False,
-                "reachable": False,
-                "status": "INVALID_URL",
-                "message": f"Resolved invalid IP address: '{ip_str}'",
-                "suggestions": [],
-                "resolved_ip": None,
-            })
-
-        if ip.is_loopback:
-            return ValidationResult({
-                "valid": False,
-                "reachable": False,
-                "status": "SSRF_BLOCKED",
-                "message": f"SSRF Blocked: Target resolves to loopback IP '{ip_str}'.",
-                "suggestions": [],
-                "resolved_ip": ip_str,
-            })
-        if ip.is_private:
-            return ValidationResult({
-                "valid": False,
-                "reachable": False,
-                "status": "SSRF_BLOCKED",
-                "message": f"SSRF Blocked: Target resolves to private network IP '{ip_str}'.",
-                "suggestions": [],
-                "resolved_ip": ip_str,
-            })
-        if ip.is_link_local:
-            return ValidationResult({
-                "valid": False,
-                "reachable": False,
-                "status": "SSRF_BLOCKED",
-                "message": f"SSRF Blocked: Target resolves to link-local/cloud metadata IP '{ip_str}'.",
-                "suggestions": [],
-                "resolved_ip": ip_str,
-            })
-        if ip.is_multicast or ip.is_reserved:
-            return ValidationResult({
-                "valid": False,
-                "reachable": False,
-                "status": "SSRF_BLOCKED",
-                "message": f"SSRF Blocked: Target resolves to reserved/multicast IP '{ip_str}'.",
-                "suggestions": [],
-                "resolved_ip": ip_str,
-            })
-
-        if ip_str == "169.254.169.254":
-            return ValidationResult({
-                "valid": False,
-                "reachable": False,
-                "status": "SSRF_BLOCKED",
-                "message": "SSRF Blocked: Link-local cloud instance metadata is strictly forbidden.",
-                "suggestions": [],
-                "resolved_ip": ip_str,
-            })
-
-    first_ip = next(iter(resolved_ips), None)
-
-    # Step 3: Live HTTP/HTTPS Reachability Probe
+        url = sandbox_target(target_url.strip()) if is_sandbox else parse_target(target_url.strip())
+    except DestinationError as exc:
+        return ValidationResult(valid=False, ready=False, reachable=False, status="INVALID_URL",
+                                message=str(exc), suggestions=[])
     try:
-        async with httpx.AsyncClient(timeout=4.0, verify=False, follow_redirects=True) as client:
-            try:
-                resp = await client.head(url)
-                if resp.status_code == 405:  # Method Not Allowed for HEAD
-                    resp = await client.get(url)
-            except (httpx.UnsupportedProtocol, httpx.DecodingError):
-                resp = await client.get(url)
-
-            if resp.status_code < 500:
-                return ValidationResult({
-                    "valid": True,
-                    "reachable": True,
-                    "status": "REACHABLE",
-                    "http_status": resp.status_code,
-                    "resolved_ip": first_ip,
-                    "message": f"URL VERIFIED & LIVE: '{hostname}' responded (HTTP {resp.status_code}) — Ready for Guard deployment.",
-                    "suggestions": [],
-                })
-            else:
-                close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
-                suggestions = [f"https://{m}" for m in close_matches]
-                return ValidationResult({
-                    "valid": False,
-                    "reachable": False,
-                    "status": "UNREACHABLE",
-                    "http_status": resp.status_code,
-                    "message": f"SERVER ERROR: '{hostname}' returned HTTP {resp.status_code}.",
-                    "suggestions": suggestions,
-                    "resolved_ip": first_ip,
-                })
-    except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError, httpx.RequestError, httpx.HTTPError):
-        close_matches = difflib.get_close_matches(hostname, COMMON_DOMAINS, n=2, cutoff=0.6)
-        suggestions = [f"https://{m}" for m in close_matches]
-        return ValidationResult({
-            "valid": False,
-            "reachable": False,
-            "status": "UNREACHABLE",
-            "message": f"UNREACHABLE URL: '{hostname}' exists in DNS, but the web server is offline or refused connection.",
-            "suggestions": suggestions,
-            "resolved_ip": first_ip,
-        })
+        addresses = await resolve_addresses(*origin(url)[1:], is_sandbox)
+    except DestinationError as exc:
+        matches = difflib.get_close_matches(url.host, COMMON_DOMAINS, n=2, cutoff=0.5)
+        return ValidationResult(valid=False, ready=False, reachable=False, status="DNS_REJECTED",
+                                message=str(exc), suggestions=[f"https://{item}" for item in matches])
+    return ValidationResult(
+        valid=True, ready=True, reachable=False, status="SANDBOX_READY" if is_sandbox else "DNS_READY",
+        message="Sandbox destination is configured." if is_sandbox else "DNS checked. Verify ownership with your Guard.",
+        resolved_ip=addresses[0], suggestions=[],
+    )
 
 
-def validate_target_url_sync(target_url: str, is_sandbox: bool = False) -> ValidationResult:
-    """Synchronous bridge for validate_target_url."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, validate_target_url(target_url, is_sandbox)).result()
-        return loop.run_until_complete(validate_target_url(target_url, is_sandbox))
-    except RuntimeError:
-        return asyncio.run(validate_target_url(target_url, is_sandbox))
+def verified_destination(value: str, is_sandbox: bool) -> httpx.URL:
+    target_store = active_target()
+    if (
+        not target_store.target_url
+        or not target_store.guard_id
+        or bool(target_store.is_sandbox) != is_sandbox
+        or target_store.get_remaining_seconds() <= 0
+        or is_guard_burned(target_store.guard_id)
+    ):
+        raise DestinationError("Verify the target before using it.")
+    if not is_sandbox and not target_store.expected_file_sha256:
+        raise DestinationError("Replace the old Guard and verify the target before using it.")
+    base = sandbox_target(target_store.target_url) if is_sandbox else parse_target(target_store.target_url)
+    return bound_target(value, base, is_sandbox)
 
 
-# Generate Sealed 48h pusher_guard.py
 def generate_pusher_guard_file(target_url: str, is_sandbox: bool = False, device_id: str | None = None) -> dict:
+    target_store = active_target()
     # 1. Kill-First Rule: If an active unrevoked guard already exists, require killing it first
     if target_store.guard_id is not None:
         raise GuardActiveConflictError(
@@ -658,22 +485,12 @@ def generate_pusher_guard_file(target_url: str, is_sandbox: bool = False, device
     creator_device_id = device_id or "DEV-LOCAL-CREATOR"
     creator_device_hash = hash_device_id(creator_device_id)
 
-    # Set as active target in store (Enforces 1-project active limit)
-    target_store.set_target(
-        target_url=target_url,
-        guard_id=guard_id,
-        bypass_secret=bypass_secret,
-        issued_at=issued_at,
-        expires_at=expires_at,
-        creator_device_id=creator_device_id,
-        is_sandbox=is_sandbox,
-    )
-    target_store.record_generation(guard_id)
+    authority = str(parse_target(target_url).copy_with(path="/", query=None)).rstrip("/")
 
     # Vault payload
     vault_payload = {
         "guard_id": guard_id,
-        "target_url": target_url,
+        "authority": authority,
         "issued_at": issued_at,
         "expires_at": expires_at,
         "bypass_secret": bypass_secret,
@@ -683,222 +500,79 @@ def generate_pusher_guard_file(target_url: str, is_sandbox: bool = False, device
     compressed = zlib.compress(raw_json, level=9)
     sealed_b85 = base64.b85encode(compressed).decode("ascii")
 
-    # Generate Python middleware template body
-    body_template = f'''# pusher_guard.py — Sealed 48-Hour Verification & Rate Limit Bypass Middleware
-# Generated by Pusher Load Testing Engine
-# Guard ID: {guard_id}
-# Target: {target_url}
-# Expiry: {expires_at} (48 Hours from generation)
-
+    body_template = f'''# pusher_guard.py — Pusher target ownership verification
 import base64
 import hashlib
 import hmac
 import json
-import os
+from pathlib import Path
 import platform
-import sys
+import re
 import time
 import uuid
 import zlib
-from typing import Any
 
-# SEALED LOCKBOX VAULT
-_GUARD_ID = "{guard_id}"
 _SEALED_VAULT = "{sealed_b85}"
-
-def _load_vault() -> dict:
-    try:
-        decompressed = zlib.decompress(base64.b85decode(_SEALED_VAULT.encode("ascii")))
-        data = json.loads(decompressed.decode("utf-8"))
-        if data.get("guard_id") != _GUARD_ID:
-            raise RuntimeError("PUSHER GUARD LOCKED: Unauthorized modification to pusher_guard.py detected.")
-        return data
-    except Exception as exc:
-        raise RuntimeError("PUSHER GUARD LOCKED: Unauthorized modification to pusher_guard.py detected.") from exc
-
-_VAULT = _load_vault()
+_VAULT = json.loads(zlib.decompress(base64.b85decode(_SEALED_VAULT)).decode("utf-8"))
 GUARD_ID = _VAULT["guard_id"]
 EXPIRES_AT = _VAULT["expires_at"]
-BYPASS_SECRET = _VAULT["bypass_secret"]
-CREATOR_DEVICE_HASH = _VAULT.get("creator_device_hash", "")
 
-_BOUND_HOST = None
-
-def _get_host_fingerprint() -> str:
-    global _BOUND_HOST
-    if _BOUND_HOST is None:
-        try:
-            node = str(uuid.getnode())
-            pnode = str(platform.node())
-            _BOUND_HOST = hashlib.sha256(f"{{node}}:{{pnode}}".encode("utf-8")).hexdigest()[:16]
-        except Exception:
-            _BOUND_HOST = "host_fallback_hw"
-    return _BOUND_HOST
 
 def _verify_self_integrity():
-    """Verifies byte-level integrity against unauthorized tamper modifications."""
-    mod_file = getattr(sys.modules.get(__name__), "__file__", None) or globals().get("__file__")
-    if mod_file and os.path.isfile(mod_file):
-        try:
-            with open(mod_file, "r", encoding="utf-8") as f:
-                content = f.read().replace("\\r\\n", "\\n")
-            lines = content.split("\\n")
-            body_lines = [l for l in lines if not l.startswith("_SEAL = ") and not l.startswith("# SHA-256 Checksum:")]
-            body_text = "\\n".join(body_lines)
-            calc_sha = hashlib.sha256(body_text.encode("utf-8")).hexdigest()
-            if calc_sha != _SEAL:
-                raise RuntimeError("PUSHER GUARD LOCKED: Unauthorized modification to pusher_guard.py detected.")
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            raise RuntimeError("PUSHER GUARD LOCKED: Unauthorized modification to pusher_guard.py detected.") from exc
+    raw = Path(__file__).read_bytes()
+    lines = raw.decode("utf-8").replace("\\r\\n", "\\n").split("\\n")
+    body = "\\n".join(line for line in lines if not line.startswith(("_SEAL = ", "# SHA-256 Checksum:")))
+    if hashlib.sha256(body.encode("utf-8")).hexdigest() != _SEAL:
+        raise RuntimeError("PUSHER GUARD LOCKED: Unauthorized modification to pusher_guard.py detected.")
+    return hashlib.sha256(raw).hexdigest()
 
-_verify_self_integrity()
 
-def is_active() -> bool:
-    """Returns True if within the 48-hour valid lifetime."""
+_FILE_SHA256 = _verify_self_integrity()
+
+
+def is_active():
     return time.time() < EXPIRES_AT
 
-def calculate_challenge_proof(nonce: str) -> str:
-    """Calculates cryptographic HMAC challenge response for Pusher verifier."""
-    return hmac.new(BYPASS_SECRET.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).hexdigest()
 
-def pusher_guard_bypass_dep(request: Any = None) -> bool:
-    """FastAPI/Starlette dependency helper to check if request was verified and signed by Pusher."""
-    if request is None:
-        return False
-    state = getattr(request, "state", None)
-    return bool(getattr(state, "pusher_bypass", False))
+def _verify(nonce):
+    if not is_active():
+        return {{"status": "EXPIRED"}}, 403
+    if not re.fullmatch(r"[0-9a-f]{{32}}", nonce):
+        return {{"status": "INVALID_CHALLENGE"}}, 400
+    key = _VAULT["bypass_secret"].encode("utf-8")
+    machine = f"{{uuid.getnode()}}:{{platform.node()}}".encode("utf-8")
+    host_tag = hmac.new(key, b"pusher-host-v2:" + machine, hashlib.sha256).hexdigest()
+    message = json.dumps(
+        ["pusher-ownership-v2", _VAULT["authority"], GUARD_ID, nonce, _FILE_SHA256, host_tag],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    proof = hmac.new(key, message, hashlib.sha256).hexdigest()
+    return {{
+        "status": "ACTIVE", "guard_id": GUARD_ID, "proof": proof,
+        "file_sha256": _FILE_SHA256, "host_fingerprint": host_tag,
+    }}, 200
 
-def setup_pusher_guard(app: Any):
-    """
-    Mounts /__pusher_verify endpoint and signed rate-limit & auth bypass middleware for FastAPI / Starlette / Flask.
-    """
+
+def setup_pusher_guard(app):
     _verify_self_integrity()
+    if hasattr(app, "add_route"):
+        from starlette.responses import JSONResponse
 
-    # 1. FastAPI / Starlette Integration
-    if hasattr(app, "add_api_route") and hasattr(app, "middleware"):
-        from fastapi import Request
-        from fastapi.responses import JSONResponse
+        async def verify_target(request):
+            body, status = _verify(request.query_params.get("nonce", ""))
+            return JSONResponse(body, status_code=status)
 
-        @app.get("/__pusher_verify")
-        async def pusher_verify_handler(nonce: str = ""):
-            if not is_active():
-                return JSONResponse(status_code=403, content={{"status": "EXPIRED", "detail": "Pusher Guard token expired"}})
-            proof = calculate_challenge_proof(nonce)
-            file_hash = _SEAL
-            try:
-                mod_file = getattr(sys.modules.get(__name__), "__file__", None) or globals().get("__file__")
-                if mod_file and os.path.isfile(mod_file):
-                    with open(mod_file, "rb") as f:
-                        file_hash = hashlib.sha256(f.read()).hexdigest()
-            except Exception:
-                pass
-            return JSONResponse(content={{
-                "status": "ACTIVE",
-                "guard_id": GUARD_ID,
-                "proof": proof,
-                "expires_at": EXPIRES_AT,
-                "file_sha256": file_hash,
-                "host_fingerprint": _get_host_fingerprint(),
-                "auth_bypass_ready": True
-            }})
+        app.add_route("/__pusher_verify", verify_target, methods=["GET"], include_in_schema=False)
+    elif hasattr(app, "add_url_rule"):
+        from flask import jsonify, request
 
-        @app.middleware("http")
-        async def pusher_bypass_middleware(request: Request, call_next):
-            x_guard_id = request.headers.get("X-Pusher-Guard-ID", "")
-            x_ts = request.headers.get("X-Pusher-Timestamp", "")
-            x_sig = request.headers.get("X-Pusher-Signature", "")
+        def verify_target():
+            body, status = _verify(request.args.get("nonce", ""))
+            return jsonify(body), status
 
-            is_signed = False
-            if is_active() and x_guard_id == GUARD_ID and x_ts and x_sig:
-                try:
-                    curr_min = int(time.time() // 60)
-                    req_min = int(x_ts)
-                    # Clock skew tolerance: current_unix_minute ± 1
-                    if abs(curr_min - req_min) <= 1:
-                        expected_sig = hmac.new(
-                            BYPASS_SECRET.encode("utf-8"),
-                            f"{{GUARD_ID}}:{{x_ts}}".encode("utf-8"),
-                            hashlib.sha256
-                        ).hexdigest()
-                        if hmac.compare_digest(x_sig, expected_sig):
-                            is_signed = True
-                except Exception:
-                    is_signed = False
-
-            if is_signed:
-                # 1. Bypass App Rate Limiters & IP Throttling
-                request.scope["pusher_verified"] = True
-                request.state.pusher_bypass = True
-                rand_ip_suffix = (int(time.time() * 1000) % 250) + 1
-                request.scope["client"] = (f"198.51.100.{{rand_ip_suffix}}", 12345)
-
-                # 2. Bypass App Authentication / CSRF Checks
-                raw_headers = list(request.scope.get("headers", []))
-                header_names = [h[0].lower() for h in raw_headers]
-                if b"authorization" not in header_names:
-                    synth_auth = f"Bearer pusher_bypass_{{GUARD_ID}}".encode("latin-1")
-                    raw_headers.append((b"authorization", synth_auth))
-                    request.scope["headers"] = raw_headers
-
-                request.scope["user"] = {{
-                    "id": "pusher_load_test_vu",
-                    "role": "load_tester",
-                    "bypass_auth": True
-                }}
-            else:
-                request.state.pusher_bypass = False
-
-            return await call_next(request)
-
-    # 2. Flask Integration
-    elif hasattr(app, "route") and hasattr(app, "before_request"):
-        from flask import request, jsonify, g
-
-        @app.route("/__pusher_verify", methods=["GET"])
-        def pusher_verify_flask():
-            if not is_active():
-                return jsonify({{"status": "EXPIRED", "detail": "Pusher Guard token expired"}}), 403
-            nonce = request.args.get("nonce", "")
-            proof = calculate_challenge_proof(nonce)
-            return jsonify({{
-                "status": "ACTIVE",
-                "guard_id": GUARD_ID,
-                "proof": proof,
-                "expires_at": EXPIRES_AT,
-                "file_sha256": _SEAL,
-                "host_fingerprint": _get_host_fingerprint(),
-                "auth_bypass_ready": True
-            }})
-
-        @app.before_request
-        def pusher_bypass_flask():
-            x_guard_id = request.headers.get("X-Pusher-Guard-ID", "")
-            x_ts = request.headers.get("X-Pusher-Timestamp", "")
-            x_sig = request.headers.get("X-Pusher-Signature", "")
-
-            is_signed = False
-            if is_active() and x_guard_id == GUARD_ID and x_ts and x_sig:
-                try:
-                    curr_min = int(time.time() // 60)
-                    if abs(curr_min - int(x_ts)) <= 1:
-                        expected_sig = hmac.new(
-                            BYPASS_SECRET.encode("utf-8"),
-                            f"{{GUARD_ID}}:{{x_ts}}".encode("utf-8"),
-                            hashlib.sha256
-                        ).hexdigest()
-                        if hmac.compare_digest(x_sig, expected_sig):
-                            is_signed = True
-                except Exception:
-                    is_signed = False
-
-            if is_signed:
-                g.pusher_bypass = True
-                setattr(request, "is_pusher_test", True)
-            else:
-                g.pusher_bypass = False
-                setattr(request, "is_pusher_test", False)
+        app.add_url_rule("/__pusher_verify", "pusher_verify", verify_target, methods=["GET"])
+    else:
+        raise TypeError("Pusher Guard supports FastAPI, Starlette, and Flask applications.")
 '''
 
     # SHA-256 Anti-Tamper Checksum
@@ -906,15 +580,24 @@ def setup_pusher_guard(app: Any):
     checksum = hashlib.sha256(body_normalized.encode("utf-8")).hexdigest()
     final_code = f'_SEAL = "{checksum}"\n# SHA-256 Checksum: {checksum}\n' + body_normalized
 
+    file_sha256 = hashlib.sha256(final_code.encode("utf-8")).hexdigest()
+    target_store.set_target(
+        target_url=target_url, guard_id=guard_id, bypass_secret=bypass_secret,
+        issued_at=issued_at, expires_at=expires_at, creator_device_id=creator_device_id,
+        is_sandbox=is_sandbox, expected_file_sha256=file_sha256,
+    )
+    target_store.record_generation(guard_id)
+
     return {
         "guard_id": guard_id,
-        "target_url": target_url,
+        "target_url": target_store.target_url,
+        "requires_target_query": target_store.requires_target_query,
         "creator_device_id": creator_device_id,
         "creator_device_hash": creator_device_hash,
         "issued_at": issued_at,
         "expires_at": expires_at,
         "remaining_seconds": 172800,
-        "checksum_sha256": checksum,
+        "checksum_sha256": file_sha256,
         "filename": "pusher_guard.py",
         "content": final_code,
         "daily_generations_used": target_store.get_daily_generations_used(),
@@ -933,6 +616,7 @@ async def verify_target_handshake(
     is_sandbox: bool = False,
     device_id: str | None = None
 ) -> tuple[bool, str, int]:
+    target_store = active_target()
     # Permanent Burn Check: Check SQLite burned_guards table
     burned_record = is_guard_burned(guard_id)
     if burned_record:
@@ -953,9 +637,8 @@ async def verify_target_handshake(
             target_store.last_burn_reason = "DEVICE_MISMATCH_VIOLATION"
             try:
                 from backend.core.load_engine import load_engine
-                if load_engine.is_running:
-                    import asyncio
-                    asyncio.create_task(load_engine.stop())
+                if load_engine.is_running and load_engine.owner_id == request_owner.get():
+                    load_engine.request_stop("STOPPED (GUARD_REVOKED)")
             except Exception:
                 pass
             return False, f"HTTP 403 Forbidden: DEVICE SECURITY VIOLATION: Guard ID {guard_id} is locked to its creator device. Cross-device access detected — Guard ID has been permanently killed, the 48h timer stopped, and this ID can never be used again.", 0
@@ -969,61 +652,81 @@ async def verify_target_handshake(
         target_store.last_burn_reason = "EXPIRED_48H"
         return False, f"HTTP 403 Forbidden: 48-Hour verification window expired. Guard ID {guard_id} has been permanently killed for all users.", 0
 
-    parsed = urllib.parse.urlparse(target_url)
-    hostname = (parsed.hostname or "").lower()
-    sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local", "localhost", "127.0.0.1", "0.0.0.0"}
+    try:
+        if is_sandbox:
+            target = sandbox_target(target_url)
+            if target_store.active_guard_active and not target_store.is_sandbox:
+                return False, "Revoke the active Guard before verifying a sandbox target.", 0
+            active_id = guard_id or f"PG-SNDB-{secrets.token_hex(8).upper()}-48H"
+            target_store.set_target(
+                target_url=str(target), guard_id=active_id, bypass_secret=None,
+                issued_at=int(time.time()), expires_at=int(time.time()) + 172800,
+                creator_device_id=device_id, is_sandbox=True,
+            )
+            target_store.mark_verified()
+            return True, "Sandbox demo target verified successfully.", 172800
 
-    # Sandbox demo verification passes immediately in memory without external DNS / HTTP calls
-    is_sandbox_mode = (
-        is_sandbox
-        or getattr(target_store, "is_sandbox", False)
-        or "sandbox" in target_url.lower()
-        or hostname in sandbox_hosts
-    )
-
-    if is_sandbox_mode:
-        active_id = guard_id or target_store.guard_id or f"PG-SNDB-{secrets.token_hex(2).upper()}-48H"
-        target_store.set_target(
-            target_url=target_url,
-            guard_id=active_id,
-            bypass_secret=target_store.bypass_secret or "sandbox_secret",
-            issued_at=int(time.time()),
-            expires_at=int(time.time()) + 172800,
-            creator_device_id=device_id or target_store.creator_device_id,
-            is_sandbox=True,
-        )
-        target_store.mark_verified()
-        return True, "Sandbox demo target verified successfully.", 172800
-
-    if not target_store.guard_id or target_store.guard_id != guard_id:
-        return False, "Guard ID mismatch or guard file not generated for this session.", 0
+        if not target_store.guard_id or target_store.guard_id != guard_id or target_store.is_sandbox:
+            return False, "Guard ID mismatch or guard file not generated for this session.", 0
+        if not target_store.bypass_secret or not target_store.target_url:
+            return False, "Generate a Guard for the target before verification.", 0
+        if not target_store.expected_file_sha256:
+            return False, "Replace the old Guard before verification.", 0
+        target = bound_target(target_url, parse_target(target_store.target_url), False)
+    except DestinationError as exc:
+        return False, str(exc), 0
 
     # Cryptographic challenge-response handshake
+    secret = target_store.bypass_secret
+    expected_digest = target_store.expected_file_sha256
     nonce = secrets.token_hex(16)
-    expected_proof = hmac.new(
-        target_store.bypass_secret.encode("utf-8"),
-        nonce.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
+    authority = str(target.copy_with(path="/", query=None)).rstrip("/")
 
-    endpoint = f"{parsed.scheme}://{parsed.netloc}/__pusher_verify?nonce={nonce}"
+    endpoint = target.copy_with(path="/__pusher_verify", params={"nonce": nonce})
 
     try:
-        async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
-            resp = await client.get(endpoint)
-            if resp.status_code != 200:
-                return False, f"Target server returned HTTP {resp.status_code} at {endpoint}. Ensure setup_pusher_guard(app) is mounted.", 0
-
-            data = resp.json()
+        async with target_client(target) as client, client.stream("GET", endpoint) as response:
+            if response.status_code != 200:
+                return False, f"Target returned HTTP {response.status_code}. Check that Pusher Guard is mounted.", 0
+            body = bytearray()
+            async for chunk in response.aiter_bytes(chunk_size=4096):
+                body.extend(chunk)
+                if len(body) > 8192:
+                    return False, "Guard verification response exceeded 8 KiB.", 0
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                return False, "Invalid Guard verification response.", 0
             returned_proof = data.get("proof")
             returned_guard = data.get("guard_id")
             returned_host = data.get("host_fingerprint")
 
             if returned_guard != guard_id:
-                return False, f"Guard ID mismatch: expected {guard_id}, received {returned_guard}", 0
+                return False, "Guard ID mismatch.", 0
+            if data.get("status") != "ACTIVE" or data.get("file_sha256") != expected_digest:
+                return False, "The installed Guard does not match the issued artifact.", 0
+            if not isinstance(returned_host, str) or not re.fullmatch(r"[0-9a-f]{64}", returned_host):
+                return False, "Invalid Guard host tag.", 0
+            message = json.dumps(
+                ["pusher-ownership-v2", authority, guard_id, nonce, expected_digest, returned_host],
+                separators=(",", ":"),
+            ).encode("utf-8")
+            expected_proof = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
-            if not hmac.compare_digest(returned_proof or "", expected_proof):
+            if (not isinstance(returned_proof, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", returned_proof)
+                or not hmac.compare_digest(returned_proof, expected_proof)):
                 return False, "Cryptographic challenge proof verification failed.", 0
+
+            if (
+                (request_owner.get() != "default_test_user"
+                 and db_get_active_target(request_owner.get()).get("guard_id") != guard_id)
+                or target_store.guard_id != guard_id
+                or target_store.bypass_secret != secret
+                or target_store.expected_file_sha256 != expected_digest
+                or not target_store.active_guard_active or target_store.expires_at <= time.time()
+                or is_guard_burned(guard_id)
+            ):
+                return False, "The Guard expired or changed during verification.", 0
 
             # Host machine lock verification
             if returned_host:
@@ -1039,96 +742,71 @@ async def verify_target_handshake(
                     return False, f"HTTP 403 Forbidden: HOST MACHINE SECURITY VIOLATION: Guard ID {guard_id} was deployed on an unauthorized host machine ({returned_host} != {target_store.bound_host_hash}). Guard ID permanently killed.", 0
 
             # Verified successfully
+            target_store.set_target_template(target)
             target_store.mark_verified()
             remaining = target_store.get_remaining_seconds()
             return True, "Target verified successfully. 48-Hour load-testing window unlocked.", remaining
 
-    except httpx.RequestError as exc:
-        return False, f"Connection failed to '{endpoint}': {str(exc)}", 0
+    except (httpx.RequestError, ValueError) as exc:
+        return False, f"Verification failed: {exc}", 0
 
 
-# Live WAF Header Pass-Through Diagnostic Probe
-async def probe_waf_bypass(target_url: str, is_sandbox: bool = False) -> dict:
-    active_id = target_store.guard_id or "PG-DEMO-48H"
-
-    parsed = urllib.parse.urlparse(target_url)
-    hostname = (parsed.hostname or "").lower()
-    sandbox_hosts = {"api.myproject.dev", "sandbox.pusher.local", "localhost", "127.0.0.1", "0.0.0.0"}
-
-    # Sandbox simulation mode
-    if is_sandbox or "sandbox" in target_url.lower() or hostname in sandbox_hosts:
+async def probe_edge(target_url: str, is_sandbox: bool = False) -> dict:
+    target = verified_destination(target_url, is_sandbox)
+    endpoint = target.copy_with(query=None)
+    if is_sandbox:
         return {
-            "status_code": 200,
-            "detected_waf": "None (Sandbox Simulated)",
-            "bypass_passed": True,
-            "latency_ms": 14,
-            "recommendation": "WAF BYPASS VERIFIED: X-Pusher-Guard-Token accepted by origin without 403/429 challenge.",
-            "target_url": target_url,
-            "probe_endpoint": f"{target_url.rstrip('/')}/__pusher_verify?nonce=waf_probe",
-            "injected_headers": {
-                "X-Pusher-Guard-Token": active_id,
-                "User-Agent": "Pusher-LoadEngine/1.0"
-            }
+            "simulated": True,
+            "status_code": None,
+            "edge_hint": None,
+            "latency_ms": None,
+            "recommendation": "Sandbox simulation. No HTTP request was sent.",
+            "probe_endpoint": str(endpoint),
         }
 
-    endpoint = f"{parsed.scheme}://{parsed.netloc}/__pusher_verify?nonce=waf_probe"
-    headers = {
-        "X-Pusher-Guard-Token": active_id,
-        "User-Agent": "Pusher-LoadEngine/1.0"
-    }
+    headers = {"User-Agent": "Pusher-LoadEngine/1.0"}
 
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=8.0, verify=False) as client:
-            resp = await client.get(endpoint, headers=headers)
+        async with target_client(target, timeout=8.0) as client, client.stream("HEAD", endpoint, headers=headers) as resp:
             latency_ms = int((time.perf_counter() - t0) * 1000)
 
             server = resp.headers.get("server", "").lower()
-            detected_waf = "Unknown / Direct Origin"
+            edge_hint = None
             if "cloudflare" in server or "cf-ray" in resp.headers or "cf-mitigated" in resp.headers:
-                detected_waf = "Cloudflare WAF"
+                edge_hint = "Cloudflare"
             elif "awselb" in server or "x-amzn-requestid" in resp.headers or "x-amz-cf-id" in resp.headers:
-                detected_waf = "AWS WAF / CloudFront"
+                edge_hint = "AWS"
             elif "vercel" in server or "x-vercel-id" in resp.headers:
-                detected_waf = "Vercel Firewall / Edge"
+                edge_hint = "Vercel"
             elif "nginx" in server:
-                detected_waf = "NGINX Reverse Proxy"
+                edge_hint = "NGINX"
 
             code = resp.status_code
-            if code == 200:
-                bypass_passed = True
-                recommendation = f"WAF BYPASS VERIFIED: Origin responded with HTTP 200 OK. Bypass header '{active_id}' is honored."
-            elif code == 403:
-                bypass_passed = False
-                recommendation = f"HTTP 403 Forbidden: WAF blocked request. Verify your custom rule skips/allows 'x-pusher-guard-token' == '{active_id}'."
-            elif code == 429:
-                bypass_passed = False
-                recommendation = "HTTP 429 Rate Limited: Edge rate limiting tripped. Ensure your WAF rate limiting rule has 'Skip rate limiting' checked for this token."
-            else:
-                bypass_passed = False
-                recommendation = f"Received HTTP {code}. Verify your origin server has mounted pusher_guard.py and WAF allows the bypass header."
+            recommendation = {
+                403: "The request was refused. Check the app and edge logs for the reason.",
+                429: "The request was rate limited. Check the app and edge logs to identify the limiter.",
+                405: "This endpoint does not support HEAD. Choose an endpoint that supports it.",
+                501: "HEAD is not implemented for this route. Choose an endpoint that supports it.",
+            }.get(code, f"The endpoint returned HTTP {code} to one HEAD request.")
 
             return {
                 "status_code": code,
-                "detected_waf": detected_waf,
-                "bypass_passed": bypass_passed,
+                "edge_hint": edge_hint,
+                "simulated": False,
                 "latency_ms": latency_ms,
                 "recommendation": recommendation,
-                "target_url": target_url,
-                "probe_endpoint": endpoint,
-                "injected_headers": headers,
+                "probe_endpoint": str(endpoint),
             }
 
-    except httpx.RequestError as exc:
+    except httpx.RequestError:
         latency_ms = int((time.perf_counter() - t0) * 1000)
         return {
-            "status_code": 0,
-            "detected_waf": "Connection Error",
-            "bypass_passed": False,
+            "status_code": None,
+            "edge_hint": None,
+            "simulated": False,
             "latency_ms": latency_ms,
-            "recommendation": f"Connection failed to '{endpoint}': {str(exc)}. Ensure the target domain is reachable.",
-            "target_url": target_url,
-            "probe_endpoint": endpoint,
-            "injected_headers": headers,
+            "recommendation": "The probe failed before receiving an HTTP response. Check reachability and TLS.",
+            "probe_endpoint": str(endpoint),
         }
 

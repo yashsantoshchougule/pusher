@@ -31,37 +31,27 @@ supporting files/testing/
 │   ├── compare_exact.ps1      # Exact color consistency validator
 │   └── analyze_images.py      # Pixel luminance & RGB analyzer
 │
-├── prototypes/     # Experimental load engine prototypes (async IO benchmarks)
-└── benchmarks/     # Memory usage profiling scripts (verifying <500MB for 2,250 VUs, scalable to 75% Host RAM)
+└── conftest.py      # Isolated SQLite and provider fixtures
 ```
 
 ---
 
 ## 3. How to Run Tests Locally (`PUSHER_MODE=local_dev`)
 
-Developers can test Pusher locally without a live public domain or cloud hosting by using the standalone mock target server:
+Developers can use the built-in sandbox without a public domain or provider account. For the normal startup commands and the built-in target URL, see the [project README](../../README.md). The standalone mock server is an optional second target.
 
-### Step A: Start the Mock Target Server
-Run the standalone mock target server:
+### Optional standalone mock target
+Start Pusher as shown in the project README. To use the standalone mock with its normal sandbox origin, bind it to loopback:
 
-```bash
-python "supporting files/testing/mocks/mock_target_server.py"
-# Binds to 0.0.0.0:8080 (Accessible via localhost:8080 or LAN IP, e.g., http://192.168.1.50:8080)
+```powershell
+uv run --locked python -c 'import runpy; from http.server import HTTPServer; m = runpy.run_path("supporting files/testing/mocks/mock_target_server.py"); HTTPServer(("127.0.0.1", 8080), m["MockTargetHandler"]).serve_forever()'
 ```
 
-### Step B: Run Pusher in Local Dev Mode
-Configure and start the Pusher application:
-
-```bash
-# 1. Ensure PUSHER_MODE=local_dev in your .env file
-# 2. Start Pusher backend & frontend
-# 3. Enter target URL: http://localhost:8080 (or http://<LAN-IP>:8080)
-# 4. Click "Start Test"
-```
+Choose `http://127.0.0.1:8080` with Sandbox Simulation enabled.
 
 ---
 
 ## 4. Testing Protocols & Verification Standards
-1. **Safety Circuit Breaker Validation**: Confirm that when the mock server simulates 5 consecutive 5xx errors or HTTP 429 responses, Pusher's engine halts within < 200ms.
-2. **RAM Profiling Protocol**: Run memory benchmarks to confirm that memory usage stays strictly within the `500MB` default budget for 2,250 virtual users ($\text{RAM} = 50 + \text{VUs} \times 0.20$ MB), scaling dynamically up to 75% of physical host hardware RAM and 70% OS file descriptors.
-3. **SSRF Unit Tests**: Run unit tests (`pytest "supporting files/testing/unit/"`) to verify that all private IP ranges and cloud metadata endpoints are blocked in production mode.
+1. **Safety circuit breakers**: Run `test_automatic_brakes.py` for threshold boundaries and `test_emergency_stop.py` for cancellation, resource cleanup, and restart. Five consecutive 5xx responses or three 429 responses within three seconds trigger their respective brakes. Benchmark stop latency separately.
+2. **RAM profiling**: Record actual peak process memory, concurrency, throughput, and stop times on a representative host. The default 500 MB budget uses the model $\text{RAM} = 50 + \text{VUs} \times 0.20$ MB. This model is an admission limit. Use measured results for host claims.
+3. **Target Policy Tests** run with `uv run --locked python -m pytest`. The suite selects a temporary SQLite path before loading the backend. Use the loopback smoke check in the project README for an end-to-end verification.

@@ -13,6 +13,10 @@ import {
 export default function TestHistoryView({
   runHistory,
   filteredRuns,
+  historyLoading,
+  historyError,
+  hasMoreHistory,
+  onLoadMore,
   historySearch,
   setHistorySearch,
   historyModeFilter,
@@ -92,6 +96,7 @@ export default function TestHistoryView({
             >
               <option value="ALL">ALL VERDICTS</option>
               <option value="PASSED">PASSED</option>
+              <option value="FAILED">FAILED</option>
               <option value="CIRCUIT_TRIPPED">CIRCUIT TRIPPED (429/5XX)</option>
               <option value="MANUAL_ABORT">MANUAL ABORT</option>
             </select>
@@ -150,7 +155,7 @@ export default function TestHistoryView({
               <th className="py-2.5 px-3">TIMESTAMP</th>
               <th className="py-2.5 px-3">TARGET</th>
               <th className="py-2.5 px-3">MODE</th>
-              <th className="py-2.5 px-3 text-right">VUs</th>
+              <th className="py-2.5 px-3 text-right">PEAK VUs</th>
               <th className="py-2.5 px-3 text-right">DUR</th>
               <th className="py-2.5 px-3 text-right">PEAK RPS</th>
               <th className="py-2.5 px-3 text-right">P95</th>
@@ -200,7 +205,7 @@ export default function TestHistoryView({
                     <td className="py-2 px-3 text-[11px] opacity-80">{run.timestamp}</td>
                     <td className="py-2 px-3 font-mono text-[11px] truncate max-w-[160px]">{run.target}</td>
                     <td className="py-2 px-3 font-bold uppercase text-[11px]">{run.mode}</td>
-                    <td className="py-2 px-3 text-right font-bold">{run.peakVus || run.vus}</td>
+                    <td className="py-2 px-3 text-right font-bold">{run.peakVus ?? run.peak_vus ?? '—'}</td>
                     <td className="py-2 px-3 text-right">{run.duration}s</td>
                     <td className="py-2 px-3 text-right font-bold">{run.peakRps || run.rps}</td>
                     <td className="py-2 px-3 text-right">{run.p95}</td>
@@ -242,6 +247,13 @@ export default function TestHistoryView({
           </tbody>
         </table>
       </div>
+      {historyError && <p role="alert" className="text-sm text-red-700">{historyError}</p>}
+      {hasMoreHistory && (
+        <button type="button" disabled={historyLoading} onClick={onLoadMore}
+          className="border border-black px-3 py-2 text-sm font-bold disabled:opacity-50">
+          {historyLoading ? 'Loading…' : 'Load more runs'}
+        </button>
+      )}
     </div>
   );
 }

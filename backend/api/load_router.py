@@ -10,24 +10,31 @@ import asyncio
 import os
 import time
 import psutil
-from fastapi import APIRouter, HTTPException, Header, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Header, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from backend.api.auth_deps import require_operator, resolve_operator
+from backend.core.config import settings
+from backend.core.dry_run_control import active_dry_runs
+from backend.core.request_owner import request_owner
 from pydantic import BaseModel, Field
 
 from backend.core.load_engine import (
     load_engine,
     calculate_max_allowed_vus,
     DEFAULT_RAM_CEILING_MB,
+    MAX_REQUESTED_VUS,
     CHUNK_SIZE_BYTES,
 )
 from backend.core.target_service import (
-    target_store,
-    validate_target_url,
+    active_target,
+    verified_destination,
+    DestinationError,
     hash_device_id,
     burn_guard_id,
     is_guard_burned,
 )
 from backend.core.database import db_get_traffic_config, db_save_traffic_config
+from backend.core.journey_service import journey_store, validate_journey_steps
 
 router = APIRouter(prefix="/api", tags=["Load Engine"])
 
@@ -35,20 +42,20 @@ router = APIRouter(prefix="/api", tags=["Load Engine"])
 class TrafficConfigRequest(BaseModel):
     mode: str = Field("step_ramp", description="Traffic generation shape")
     ram_limit_mb: int = Field(500, ge=51, description="RAM ceiling in MB")
-    virtual_users: int = Field(100, ge=1, le=100000, description="Virtual Users target")
+    virtual_users: int = Field(100, ge=1, le=MAX_REQUESTED_VUS, description="Virtual Users target")
     duration_sec: int = Field(30, ge=1, le=86400, description="Test duration in seconds")
     max_error_pct: float = Field(5.0, ge=1.0, le=100.0, description="Max error threshold %")
     p95_ceiling_ms: float = Field(1500.0, ge=10.0, le=60000.0, description="p95 latency ceiling in ms")
     cache_bust: bool = Field(True, description="Append unique query nonce")
 
 
-@router.get("/traffic/config")
+@router.get("/traffic/config", dependencies=[Depends(require_operator)])
 async def get_traffic_config_endpoint():
     """Retrieve persisted traffic and guardrail configuration from SQLite."""
-    return db_get_traffic_config()
+    return db_get_traffic_config(request_owner.get())
 
 
-@router.post("/traffic/config")
+@router.post("/traffic/config", dependencies=[Depends(require_operator)])
 async def save_traffic_config_endpoint(cfg: TrafficConfigRequest):
     """Save traffic and guardrail configuration to SQLite."""
     saved = db_save_traffic_config({
@@ -59,23 +66,28 @@ async def save_traffic_config_endpoint(cfg: TrafficConfigRequest):
         "max_error_pct": cfg.max_error_pct,
         "p95_ceiling_ms": cfg.p95_ceiling_ms,
         "cache_bust": 1 if cfg.cache_bust else 0,
-    })
+    }, request_owner.get())
     return saved
 
 
 class LoadStartRequest(BaseModel):
     target_url: str = Field(..., description="Target HTTP/HTTPS URL")
     traffic_mode: str = Field("step_ramp", description="step_ramp | sudden_rush | steady_crowd")
-    target_vus: int = Field(50, ge=1, le=100000, description="Virtual Users concurrency target")
+    target_vus: int = Field(50, ge=1, le=MAX_REQUESTED_VUS, description="Virtual Users concurrency target")
     duration_sec: int = Field(15, ge=1, le=86400, description="Test duration in seconds")
     cache_bust: bool = Field(True, description="Append unique query nonce to defeat CDN cache")
     ram_limit_mb: int = Field(DEFAULT_RAM_CEILING_MB, ge=51, description="RAM ceiling in MB")
     max_error_pct: float = Field(15.0, ge=1.0, le=100.0, description="Circuit breaker error threshold %")
     p95_ceiling_ms: float = Field(1500.0, ge=10.0, le=60000.0, description="Circuit breaker p95 latency ceiling in ms")
+    request_timeout_sec: float = Field(5.0, ge=2.0, le=10.0)
     is_sandbox: bool = Field(False, description="Sandbox testing flag")
     use_journey: bool = Field(False, description="Run sequential multi-step API journey")
     journey_steps: list[dict] | None = Field(None, description="Optional steps override")
     device_id: str | None = Field(None, description="Hardware bound device identifier")
+
+
+class LoadStopRequest(BaseModel):
+    run_id: str = Field(min_length=1)
 
 
 @router.get("/sandbox/target")
@@ -100,12 +112,12 @@ async def sandbox_target_endpoint():
     )
 
 
-@router.post("/load/start")
+@router.post("/load/start", dependencies=[Depends(require_operator)])
 async def start_load_test(
     req: LoadStartRequest,
     x_device_id: str | None = Header(None, alias="X-Pusher-Device-ID"),
 ):
-    if load_engine.is_running:
+    if load_engine.is_running or (load_engine._master_task and not load_engine._master_task.done()):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A load test is already running. Stop the current run before starting a new one.",
@@ -128,15 +140,14 @@ async def start_load_test(
             detail=f"Target VUs ({req.target_vus}) exceeds maximum allowed ({max_allowed_vus} VUs) under {req.ram_limit_mb} MB RAM ceiling.",
         )
 
-    # 3. Target Verification, Device Lock & SSRF Enforcement
-    is_sandbox_target = (
-        req.is_sandbox
-        or (getattr(target_store, "is_sandbox", False) and target_store.is_verified)
-        or "sandbox.pusher.local" in req.target_url.lower()
-        or "/api/sandbox/target" in req.target_url.lower()
-        or "api.myproject.dev" in req.target_url.lower()
-    )
+    # Authorize the destination before inspecting or mutating the active Guard.
+    is_sandbox_target = req.is_sandbox
+    try:
+        destination = verified_destination(req.target_url, is_sandbox_target)
+    except DestinationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
+    target_store = active_target()
     effective_device_id = req.device_id or x_device_id
 
     if not is_sandbox_target:
@@ -168,45 +179,33 @@ async def start_load_test(
                     detail=f"DEVICE SECURITY VIOLATION: Guard ID {target_store.guard_id} is locked to its creator device. Cross-device access detected — Guard ID has been permanently killed, the 48h timer stopped, and this ID can never be used again.",
                 )
 
-        # Check 48h guard verification
-        if not target_store.is_verified or target_store.get_remaining_seconds() <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Target URL is unverified or expired. Deploy pusher_guard.py and verify before starting load test.",
-            )
-        active_guard_id = target_store.guard_id or "PG-ACTIVE"
-
-        # Validate SSRF (Demo target api.myproject.dev routes safely to local sandbox endpoint)
-        if "api.myproject.dev" in req.target_url:
-            req.target_url = "http://127.0.0.1:8000/api/sandbox/target"
-        else:
-            is_valid, msg, _ = await validate_target_url(req.target_url, is_sandbox=False)
-            if not is_valid:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
-    else:
-        active_guard_id = target_store.guard_id or "SANDBOX-DEV"
-        if (
-            "sandbox.pusher.local" in req.target_url
-            or "api.myproject.dev" in req.target_url
-            or not req.target_url.startswith("http")
-        ):
-            req.target_url = "http://127.0.0.1:8000/api/sandbox/target"
+    steps = req.journey_steps
+    if req.use_journey:
+        destination = destination.copy_with(query=None)
+        steps = journey_store.steps if steps is None else steps
+        valid, message = validate_journey_steps(steps, str(destination), is_sandbox_target, require_runtime=True)
+        if not valid:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=message)
+    elif target_store.requires_target_query and not destination.query:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Enter the target query again or verify the URL without it.")
 
     # 4. Launch Async Load Engine
     run_id = await load_engine.start(
-        target_url=req.target_url,
+        target_url=str(destination),
         traffic_mode=req.traffic_mode,
         target_vus=req.target_vus,
         duration_sec=req.duration_sec,
         cache_bust=req.cache_bust,
-        active_guard_id=active_guard_id,
-        handshake_secret=target_store.bypass_secret,
+        active_guard_id=target_store.guard_id,
+        guard_expires_at=target_store.expires_at,
         ram_limit_mb=req.ram_limit_mb,
         max_error_pct=req.max_error_pct,
         p95_ceiling_ms=req.p95_ceiling_ms,
         use_journey=req.use_journey,
-        journey_steps=req.journey_steps,
+        journey_steps=steps,
         is_sandbox=is_sandbox_target,
+        request_timeout_sec=req.request_timeout_sec,
     )
 
     return {
@@ -215,51 +214,82 @@ async def start_load_test(
         "target_vus": req.target_vus,
         "traffic_mode": req.traffic_mode,
         "duration_sec": req.duration_sec,
+        "snapshot": load_engine.get_status(request_owner.get()),
     }
 
 
-@router.post("/load/stop")
-async def stop_load_test():
-    load_engine.stop(reason="MANUAL_ABORT")
-    return {"status": "stopped", "message": "Load engine worker pool aborted successfully."}
+@router.post("/load/stop", dependencies=[Depends(require_operator)])
+async def stop_load_test(req: LoadStopRequest | None = None):
+    owner = request_owner.get()
+    dry_runs = [run for run in active_dry_runs if run.owner_id == owner] if req is None else []
+    stop_engine = not dry_runs or load_engine.owner_id == owner
+    if stop_engine:
+        check_run_owner()
+    if req is not None:
+        if req.run_id != load_engine.run_id:
+            raise HTTPException(status_code=409, detail="That run is no longer current. Refresh run status and try again.")
+        if load_engine.owner_id != owner:
+            raise HTTPException(status_code=403, detail="This run belongs to another operator.")
+    for run in dry_runs:
+        run.cancel("stopped")
+    if stop_engine:
+        await load_engine.stop(reason="MANUAL_ABORT")
+    if dry_runs:
+        await asyncio.gather(*(run.done.wait() for run in dry_runs))
+    return {"status": "stopped", "message": ("Journey dry run stopped." if dry_runs
+            else "Load engine worker pool aborted successfully."), "snapshot": load_engine.get_status(owner)}
 
 
-@router.get("/load/status")
+@router.get("/load/status", dependencies=[Depends(require_operator)])
 async def get_load_status():
-    return load_engine.get_status()
+    return load_engine.get_status(request_owner.get())
 
 
-@router.post("/load/simulate-spike")
+@router.post("/load/simulate-spike", dependencies=[Depends(require_operator)])
 async def simulate_spike_endpoint():
     """
     Live Backend WAF/5xx Fault Injector:
     Injects 429 WAF blocks and 503 service failures into the active engine,
     tripping the safety circuit breaker and halting workers immediately.
     """
+    check_run_owner()
     if not load_engine.is_running:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No active load test is running to inject fault spike.",
         )
-    return load_engine.simulate_spike()
+    return await load_engine.simulate_spike()
+
+
+def check_run_owner():
+    if load_engine.is_running and load_engine.owner_id != request_owner.get():
+        raise HTTPException(status_code=403, detail="This run belongs to another operator.")
 
 
 @router.websocket("/load/ws")
 async def load_telemetry_websocket(websocket: WebSocket):
-    """
-    Real-Time WebSocket Telemetry Stream:
-    Broadcasts live 1-second rolling telemetry and instant circuit-breaker trip events.
-    """
-    await load_engine.connection_manager.connect(websocket)
-    # Send immediate snapshot frame upon handshake
-    snapshot = load_engine.get_status()
-    snapshot["event"] = "SNAPSHOT"
-    await websocket.send_json(snapshot)
+    origin = websocket.headers.get("origin")
+    expected_host = websocket.url.netloc
+    if origin and origin not in settings.allowed_origins and origin not in (
+        f"http://{expected_host}", f"https://{expected_host}"
+    ):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
     try:
+        token = await asyncio.wait_for(websocket.receive_text(), timeout=5)
+        actor = await resolve_operator(websocket, token or None)
+        expiry = actor.claims.get("exp")
+        load_engine.connection_manager.register(websocket, actor.user_id)
+        snapshot = load_engine.get_status(actor.user_id)
+        snapshot["event"] = "SNAPSHOT"
+        await websocket.send_json(snapshot)
         while True:
-            # Keep socket alive and receive client pings/messages
-            await websocket.receive_text()
+            timeout = max(0, expiry - time.time()) if expiry is not None else None
+            await asyncio.wait_for(websocket.receive_text(), timeout=timeout)
+    except (HTTPException, TimeoutError):
+        await websocket.close(code=1008)
     except WebSocketDisconnect:
-        load_engine.connection_manager.disconnect(websocket)
-    except Exception:
+        pass
+    finally:
         load_engine.connection_manager.disconnect(websocket)

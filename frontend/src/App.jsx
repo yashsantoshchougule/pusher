@@ -2,7 +2,11 @@ import React, { useState, useEffect } from 'react';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import WafSetupPage from './pages/WafSetupPage';
+import { supabase } from './lib/supabaseClient';
+import { endSession, verifyOperatorSession } from './lib/signIn';
 import { Shield } from 'lucide-react';
+
+const appearanceStorageKey = 'pusher_appearance';
 
 export default function App() {
   const getInitialView = () => {
@@ -23,6 +27,59 @@ export default function App() {
   };
 
   const [currentView, setCurrentView] = useState(getInitialView);
+  const [appearance, setAppearance] = useState(() => {
+    try {
+      return window.localStorage.getItem(appearanceStorageKey) === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
+
+  const updateAppearance = (nextAppearance) => {
+    setAppearance(nextAppearance);
+    try {
+      window.localStorage.setItem(appearanceStorageKey, nextAppearance);
+    } catch {}
+  };
+
+  const [operator, setOperator] = useState(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [sessionError, setSessionError] = useState(null);
+
+  useEffect(() => {
+    let sequence = 0;
+    let closed = false;
+    try { window.localStorage.removeItem('pusher_auth_session'); } catch {}
+    async function verifySession(token = '') {
+      const attempt = ++sequence;
+      let identity = null;
+      let error = null;
+      try {
+        identity = await verifyOperatorSession(token);
+      } catch (cause) {
+        error = cause.message;
+      }
+      if (closed || sequence !== attempt) return;
+      setOperator(identity);
+      setSessionError(error);
+      setSessionReady(true);
+      if (identity && !identity.offline) {
+        setCurrentView((view) => view === 'auth' ? 'dashboard' : view);
+      }
+    }
+
+    const subscription = supabase?.auth.onAuthStateChange((_event, session) => {
+      const subject = session ? `supabase:${session.user.id}` : 'offline:operator';
+      setOperator((current) => current?.user_id === subject ? current : null);
+      void verifySession(session?.access_token);
+    });
+    if (!supabase) void verifySession();
+    return () => {
+      closed = true;
+      subscription?.data.subscription.unsubscribe();
+    };
+  }, []);
+
 
   useEffect(() => {
     const handleLocationChange = () => {
@@ -63,19 +120,32 @@ export default function App() {
     }
   };
 
-  if (currentView === 'waf-setup') {
+  const signOut = async () => {
+    if (!operator?.offline && supabase) await endSession(supabase.auth);
+    setOperator(null);
+    navigateTo('auth');
+  };
+
+  if (!sessionReady && currentView !== 'website') return <main>Checking access…</main>;
+
+  if (operator && currentView === 'waf-setup') {
     return (
       <WafSetupPage
+        appearance={appearance}
         onBack={() => navigateTo('dashboard')}
         onNavigate={navigateTo}
       />
     );
   }
 
-  if (currentView === 'dashboard') {
+  if (operator && currentView === 'dashboard') {
     return (
       <DashboardPage
-        onLogout={() => navigateTo('auth')}
+        key={operator.user_id}
+        appearance={appearance}
+        onAppearanceChange={updateAppearance}
+        operator={operator}
+        onLogout={signOut}
         onNavigate={navigateTo}
       />
     );
@@ -133,8 +203,11 @@ export default function App() {
   // Default view is the Split-Screen Login Page
   return (
     <LoginPage
+      sessionError={sessionError}
+      onClearSessionError={() => setSessionError(null)}
       onBackToWebsite={() => navigateTo('website')}
-      onLoginSuccess={() => navigateTo('dashboard')}
+      canContinueOffline={Boolean(operator?.offline)}
+      onContinueOffline={() => navigateTo('dashboard')}
     />
   );
 }
