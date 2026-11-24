@@ -39,7 +39,9 @@ function getTimeBasedFrameData(date = new Date()) {
 export default function LoginPage({
   onBackToWebsite, canContinueOffline, onContinueOffline, sessionError, onClearSessionError,
 }) {
-  const [authMode, setAuthMode] = useState('signup'); // 'signup' | 'login'
+  const [authMode, setAuthMode] = useState(() => (
+    new URLSearchParams(window.location.search).get('view') === 'login' ? 'login' : 'signup'
+  ));
   const [notification, setNotification] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const fragment = new URLSearchParams(window.location.hash.slice(1));

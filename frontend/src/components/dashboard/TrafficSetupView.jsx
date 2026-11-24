@@ -138,7 +138,7 @@ export default function TrafficSetupView({
               </span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-              {[250, 500, 1024, 2048].map((limit) => (
+              {[250, 500, 1024, 2048, 4096].map((limit) => (
                 <button
                   key={limit}
                   type="button"
@@ -172,7 +172,7 @@ export default function TrafficSetupView({
               />
               <span className="text-[10px] font-bold">MB</span>
               <span className="text-[9px] opacity-75 ml-auto">
-                {maxHardwareSafeRamMb == null ? 'Host cap unavailable' : `Host cap ${maxHardwareSafeRamMb.toLocaleString()} MB (75% host RAM)`}
+                {maxHardwareSafeRamMb == null ? 'Host cap unavailable' : `Maximum ${maxHardwareSafeRamMb.toLocaleString()} MB`}
               </span>
             </div>
           </div>

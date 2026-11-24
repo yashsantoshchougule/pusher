@@ -13,7 +13,7 @@ import psutil
 from fastapi import APIRouter, Depends, HTTPException, Header, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from backend.api.auth_deps import require_operator, resolve_operator
-from backend.core.config import settings
+from backend.core.config import MAX_RAM_BUDGET_MB, max_safe_ram_budget_mb, settings
 from backend.core.dry_run_control import active_dry_runs
 from backend.core.request_owner import request_owner
 from pydantic import BaseModel, Field
@@ -41,7 +41,7 @@ router = APIRouter(prefix="/api", tags=["Load Engine"])
 
 class TrafficConfigRequest(BaseModel):
     mode: str = Field("step_ramp", description="Traffic generation shape")
-    ram_limit_mb: int = Field(500, ge=51, description="RAM ceiling in MB")
+    ram_limit_mb: int = Field(500, ge=51, le=MAX_RAM_BUDGET_MB, description="RAM ceiling in MB")
     virtual_users: int = Field(100, ge=1, le=MAX_REQUESTED_VUS, description="Virtual Users target")
     duration_sec: int = Field(30, ge=1, le=86400, description="Test duration in seconds")
     max_error_pct: float = Field(5.0, ge=1.0, le=100.0, description="Max error threshold %")
@@ -76,7 +76,7 @@ class LoadStartRequest(BaseModel):
     target_vus: int = Field(50, ge=1, le=MAX_REQUESTED_VUS, description="Virtual Users concurrency target")
     duration_sec: int = Field(15, ge=1, le=86400, description="Test duration in seconds")
     cache_bust: bool = Field(True, description="Append unique query nonce to defeat CDN cache")
-    ram_limit_mb: int = Field(DEFAULT_RAM_CEILING_MB, ge=51, description="RAM ceiling in MB")
+    ram_limit_mb: int = Field(DEFAULT_RAM_CEILING_MB, ge=51, le=MAX_RAM_BUDGET_MB, description="RAM ceiling in MB")
     max_error_pct: float = Field(15.0, ge=1.0, le=100.0, description="Circuit breaker error threshold %")
     p95_ceiling_ms: float = Field(1500.0, ge=10.0, le=60000.0, description="Circuit breaker p95 latency ceiling in ms")
     request_timeout_sec: float = Field(5.0, ge=2.0, le=10.0)
@@ -123,9 +123,9 @@ async def start_load_test(
             detail="A load test is already running. Stop the current run before starting a new one.",
         )
 
-    # 1. Host Hardware RAM Safety Limit Validation (Max 75% host RAM)
+    # 1. Enforce the effective RAM limit for this host.
     host_total_ram_mb = int(psutil.virtual_memory().total / (1024 * 1024))
-    max_hardware_safe_ram = int(host_total_ram_mb * 0.75)
+    max_hardware_safe_ram = max_safe_ram_budget_mb(host_total_ram_mb)
     if req.ram_limit_mb > max_hardware_safe_ram:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

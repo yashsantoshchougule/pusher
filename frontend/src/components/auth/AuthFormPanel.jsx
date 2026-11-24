@@ -10,7 +10,7 @@ export default function AuthFormPanel({
   isGoogleLoading = false,
 }) {
   const [showPassword, setShowPassword] = useState(false);
-  const [agreedToTerms, setAgreedToTerms] = useState(true);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -20,6 +20,7 @@ export default function AuthFormPanel({
   });
 
   const isSignUp = mode === 'signup';
+  const submissionBlocked = isGoogleLoading || (isSignUp && !agreedToTerms);
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -31,7 +32,7 @@ export default function AuthFormPanel({
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!isGoogleLoading && onSubmit) {
+    if (!submissionBlocked && onSubmit) {
       onSubmit(formData);
     }
   };
@@ -157,24 +158,22 @@ export default function AuthFormPanel({
         {/* Terms or Remember Me Checkbox */}
         <div className="flex items-center justify-between pt-0.5">
           {isSignUp ? (
-            <label className="flex items-center gap-2 text-xs text-[#455230] cursor-pointer select-none font-medium">
-              <div
-                onClick={() => setAgreedToTerms(!agreedToTerms)}
-                className={`w-4 h-4 rounded-md flex items-center justify-center transition-all ${
-                  agreedToTerms
-                    ? 'bg-[#455230] text-[#EBEBD8] shadow-sm'
-                    : 'bg-[#EBEBD8] border-2 border-[#455230]/60'
-                }`}
-              >
-                {agreedToTerms && <Check className="w-3 h-3 stroke-[3]" />}
-              </div>
-              <span>
-                I agree to the{' '}
-                <a href="#terms" className="text-[#455230] underline font-bold hover:text-black">
-                  Terms & Conditions
-                </a>
-              </span>
-            </label>
+            <div className="flex flex-wrap items-center gap-x-1 text-xs text-[#455230] font-medium">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agreedToTerms}
+                  onChange={e => setAgreedToTerms(e.target.checked)}
+                  required
+                  aria-label="I agree to the Terms and Conditions"
+                  className="h-4 w-4 accent-[#455230]"
+                />
+                I agree to the
+              </label>
+              <a href="/terms" target="_blank" rel="noopener" className="underline font-bold hover:text-black">
+                Terms &amp; Conditions
+              </a>
+            </div>
           ) : (
             <>
               <label
@@ -194,7 +193,7 @@ export default function AuthFormPanel({
                 </div>
                 <span>Remember me</span>
               </label>
-              <a href="#forgot" className="text-xs text-[#455230] underline font-bold hover:text-black">
+              <a href="/auth/forgot" className="text-xs text-[#455230] underline font-bold hover:text-black">
                 Forgot password?
               </a>
             </>
@@ -204,7 +203,8 @@ export default function AuthFormPanel({
         {/* Primary CTA Action Button */}
         <button
           type="submit"
-          className="w-full h-11 mt-2.5 px-4 rounded-xl bg-[#455230] hover:bg-[#343e24] active:scale-[0.99] text-[#EBEBD8] font-bold text-sm shadow-[0_10px_25px_-5px_rgba(69,82,48,0.4)] transition-all duration-200 cursor-pointer flex items-center justify-center tracking-wide border-0"
+          disabled={submissionBlocked}
+          className="w-full h-11 mt-2.5 px-4 rounded-xl bg-[#455230] hover:bg-[#343e24] active:scale-[0.99] text-[#EBEBD8] font-bold text-sm shadow-[0_10px_25px_-5px_rgba(69,82,48,0.4)] transition-all duration-200 cursor-pointer flex items-center justify-center tracking-wide border-0 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {isSignUp ? 'Create account' : 'Log in'}
         </button>
@@ -242,7 +242,7 @@ export default function AuthFormPanel({
           <button
             type="button"
             onClick={onGoogleClick}
-            disabled={isGoogleLoading}
+            disabled={submissionBlocked}
             className="h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
@@ -273,7 +273,8 @@ export default function AuthFormPanel({
         <button
           type="button"
           onClick={onGitHubClick}
-          className="h-11 w-full flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0"
+          disabled={submissionBlocked}
+          className="h-11 w-full flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           <svg className="w-4 h-4 fill-[#455230] shrink-0" viewBox="0 0 24 24">
             <path

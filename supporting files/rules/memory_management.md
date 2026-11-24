@@ -176,15 +176,15 @@ $$\text{Max Allowed VUs} = \left\lfloor \frac{\text{Allocated RAM Limit MB} - 50
 
 #### Host Safety Ceiling (Anti-OOM Protection)
 To ensure the host machine never freezes, swaps, or triggers OS Out-Of-Memory (OOM) killer terminations:
-1. **75% Host RAM Ceiling**: The maximum allocatable RAM limit is strictly hard-capped at **75% of the machine's total physical hardware RAM**:
-   $$\text{Maximum Allocatable RAM (MB)} = \left\lfloor \text{Host\_RAM\_MB} \times 0.75 \right\rfloor$$
+1. **RAM ceiling**: The maximum allocatable RAM budget is **4,096 MB or 75% of the machine's total physical RAM, whichever is lower**:
+   $$\text{Maximum Allocatable RAM (MB)} = \min\left(4096, \left\lfloor \text{Host\_RAM\_MB} \times 0.75 \right\rfloor\right)$$
 2. **70% OS File-Descriptor Ceiling**: Concurrency is concurrently bound by the 70% OS file descriptor limit (Rule 3.7), preventing socket resource starvation.
 
 ---
 
 ## 4. Memory Verification Checklist
 Before approving any load engine code, confirm:
-- [ ] RAM usage stays under 500MB when running 2,250 concurrent requests by default, and scales dynamically up to 75% of host RAM.
+- [ ] RAM usage stays under 500 MB at the default budget and respects the effective cap of 4,096 MB or 75% of host RAM.
 - [ ] No browser packages (Playwright, Puppeteer, Selenium) are installed or imported.
 - [ ] Only 1 load test runs at a time using the single-test queue lock.
 - [ ] Response bodies are read in small chunks and discarded immediately (10MB stream ceiling enforced).

@@ -1,17 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { isRecoveryCallback } from '../../../frontend/src/lib/passwordRecovery.js';
 import { authenticateEmail, authenticateProvider, endSession, verifyOperatorSession } from '../../../frontend/src/lib/signIn.js';
 
 const credentials = { email: ' operator@example.invalid ', password: 'fixture-password' };
 const redirect = 'http://localhost:3000/';
 
-function initializeBrowserAuth(env, createClient) {
+function initializeBrowserAuth(env, createClient, pathname = '/', trackRecoverySession = () => null) {
   const source = readFileSync(new URL('../../../frontend/src/lib/supabaseClient.js', import.meta.url), 'utf8')
     .replace("import { createClient } from '@supabase/supabase-js';", '')
+    .replace("import { isRecoveryCallback, trackRecoverySession } from './passwordRecovery.js';", '')
     .replaceAll('import.meta.env', 'env')
     .replaceAll('export ', '');
-  return new Function('env', 'createClient', source + '\nreturn { supabase, supabaseConfigError };')(env, createClient);
+  return new Function('env', 'createClient', 'window', 'isRecoveryCallback', 'trackRecoverySession',
+    source + '\nreturn { supabase, supabaseConfigError, recoverySession, recoveryCallback };')(
+    env, createClient, { location: new URL(pathname, redirect) }, isRecoveryCallback, trackRecoverySession,
+  );
 }
 
 test('incomplete browser configuration never creates a provider client', () => {
@@ -39,10 +44,44 @@ test('explicit settings initialize the provider and an invalid configuration lea
     assert.equal(options.auth.detectSessionInUrl, true);
     return client;
   });
-  assert.deepEqual(result, { supabase: client, supabaseConfigError: '' });
+  assert.deepEqual(result, { supabase: client, supabaseConfigError: '', recoverySession: null, recoveryCallback: false });
   const invalid = initializeBrowserAuth(env, () => { throw new Error('Invalid URL'); });
   assert.equal(invalid.supabase, null);
   assert.match(invalid.supabaseConfigError, /configuration is invalid/i);
+});
+
+test('the callback uses an in-memory session and subscribes before returning the client', () => {
+  const auth = {};
+  const tracker = {};
+  const result = initializeBrowserAuth({
+    VITE_SUPABASE_URL: 'https://fixture.example.invalid', VITE_SUPABASE_ANON_KEY: 'fixture-key',
+  }, (_url, _key, options) => {
+    assert.equal(options.auth.persistSession, false);
+    assert.equal(options.auth.autoRefreshToken, false);
+    return { auth };
+  }, '/auth/recovery', client => {
+    assert.equal(client, auth);
+    return tracker;
+  });
+  assert.equal(result.recoveryCallback, true);
+  assert.equal(result.recoverySession, tracker);
+});
+
+test('a recovery callback sent to the app root cannot become a saved sign-in', () => {
+  const env = { VITE_SUPABASE_URL: 'https://fixture.example.invalid', VITE_SUPABASE_ANON_KEY: 'fixture-key' };
+  for (const callbackUrl of ['/#type=recovery', '/?type=recovery']) {
+    const client = {};
+    const tracker = {};
+    let options;
+    const result = initializeBrowserAuth(env, (_url, _key, config) => {
+      options = config;
+      return client;
+    }, callbackUrl, () => tracker);
+    assert.equal(options.auth.persistSession, false);
+    assert.equal(options.auth.autoRefreshToken, false);
+    assert.equal(result.recoveryCallback, true);
+    assert.equal(result.recoverySession, tracker);
+  }
 });
 
 test('email login submits the password and requires a returned session', async () => {

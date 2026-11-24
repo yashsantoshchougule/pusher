@@ -6,6 +6,8 @@ Unit Tests for Backend Stage 1:
 - Challenge-Response Target Verification & Kill Revocation
 """
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from backend.main import app
@@ -47,12 +49,33 @@ class TestSystemLimitsEndpoint:
         data = response.json()
         assert "total_system_ram_mb" in data
         assert data["total_system_ram_mb"] > 0
-        assert data["max_safe_ram_mb"] == int(data["total_system_ram_mb"] * 0.75)
+        assert data["max_safe_ram_mb"] == min(4096, int(data["total_system_ram_mb"] * 0.75))
         assert data["default_ram_limit_mb"] == 500
         assert data["base_engine_ram_mb"] == 50
         assert data["ram_per_vu_mb"] == 0.20
         assert data["max_vus_at_default"] == 2250
         assert data["fd_cap_pct"] == 70
+
+    @pytest.mark.parametrize(("host_ram_mb", "expected_cap"), [(4096, 3072), (16384, 4096)])
+    def test_effective_ram_ceiling_and_admission(self, monkeypatch, host_ram_mb, expected_cap):
+        from backend.api import system_router
+
+        monkeypatch.setattr(system_router.psutil, "virtual_memory", lambda: SimpleNamespace(total=host_ram_mb * 1024**2))
+        assert client.get("/api/system/limits").json()["max_safe_ram_mb"] == expected_cap
+        response = client.post("/api/load/start", json={
+            "target_url": "https://fixture.example.invalid", "ram_limit_mb": expected_cap + 1,
+        })
+        assert response.status_code == 422
+        if expected_cap < 4096:
+            assert str(expected_cap) in response.json()["detail"]
+
+    def test_traffic_and_profile_persist_four_gigabytes_and_reject_more(self):
+        assert client.post("/api/traffic/config", json={"ram_limit_mb": 4096}).status_code == 200
+        assert client.get("/api/traffic/config").json()["ram_limit_mb"] == 4096
+        assert client.post("/api/traffic/config", json={"ram_limit_mb": 4097}).status_code == 422
+        assert client.put("/api/profile", json={"default_ram_ceiling_mb": 4096}).status_code == 200
+        assert client.get("/api/profile").json()["default_ram_ceiling_mb"] == 4096
+        assert client.put("/api/profile", json={"default_ram_ceiling_mb": 4097}).status_code == 422
 
 
 class TestSsrfValidationEndpoint:

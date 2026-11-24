@@ -12,6 +12,13 @@ from pydantic import Field
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_FILE = ROOT_DIR / ".env"
 
+MAX_RAM_BUDGET_MB = 4 * 1024
+
+
+def max_safe_ram_budget_mb(total_ram_mb: int) -> int:
+    return min(MAX_RAM_BUDGET_MB, int(total_ram_mb * 0.75))
+
+
 class Settings(BaseSettings):
     # Supabase Configuration
     supabase_url: str = Field(default="", alias="SUPABASE_URL")

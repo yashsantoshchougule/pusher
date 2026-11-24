@@ -139,4 +139,4 @@ The following values apply to the dashboard traffic profile. Direct API callers 
 | **Traffic shape** | Step ramp | The selected mode determines when active users are added |
 | **Domain ownership** | Required for live targets | Uses a Guard for the verified origin that expires after 48 hours |
 
-The 500 MB budget models 2,250 VUs according to $\text{RAM (MB)} = 50 + (\text{Active VUs} \times 0.20)$. The backend also bounds the RAM budget at 75% of host RAM and applies the OS worker limit. These limits are inputs to admission. Measure throughput and actual RAM use on the intended host.
+The 500 MB budget models 2,250 VUs according to $\text{RAM (MB)} = 50 + (\text{Active VUs} \times 0.20)$. The backend caps the RAM budget at 4,096 MB or 75% of host RAM, whichever is lower, and applies the OS worker limit. These limits are inputs to admission. Measure throughput and actual RAM use on the intended host.

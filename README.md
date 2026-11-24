@@ -41,7 +41,21 @@ npm ci --prefix frontend
 
 If `uv` cannot discover Python 3.12.14, install that version and run `uv sync --locked --python <path-to-python>`.
 
-For the offline sandbox, run the backend on loopback and start Vite in a separate terminal.
+Start both services from the project root. Wait for the command to report that Pusher is ready, then open the printed URL. Ctrl+C stops both services.
+
+```powershell
+npm run dev:full --prefix frontend
+```
+
+Use the offline sandbox without a Supabase account:
+
+```powershell
+npm run dev:full --prefix frontend -- --offline
+```
+
+The launcher uses ports 3000 and 8000 by default. To avoid occupied ports, set `PUSHER_DEV_FRONTEND_PORT` and `PUSHER_DEV_BACKEND_PORT` before running it. If Windows refuses to start the synced virtual environment launcher, the command checks the recorded base Python interpreter and uses that environment's packages. Install a permitted Python 3.12 runtime and sync the locked dependencies if the fallback fails.
+
+To start the offline backend and Vite separately:
 
 ```powershell
 $env:PUSHER_MODE = 'local_dev'
@@ -56,6 +70,8 @@ npm run dev --prefix frontend
 Open `http://127.0.0.1:3000/`, choose **Continue offline**, and verify `http://127.0.0.1:8000/api/sandbox/target` with Sandbox Simulation enabled.
 
 For shared use, set `PUSHER_MODE=production` and `PUSHER_OFFLINE_DEV=false`. Set the backend's Supabase values using the root `.env.example` as a reference. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for the same project before building the frontend. Missing frontend settings disable cloud sign-in. Enable the intended providers in Supabase and allow the deployed frontend root URL in the redirect settings. Keep backend service credentials out of the frontend.
+
+For password recovery, allow the exact callback URL in Supabase Auth URL Configuration. Use `http://127.0.0.1:3000/auth/recovery` locally and `https://<staging-host>/auth/recovery` for the deployed staging hostname. Serve the frontend entry page for `/auth/forgot`, `/auth/recovery`, and `/terms`. Email, Google, and GitHub signup require agreement to the Terms and Conditions at `/terms`.
 
 ```powershell
 uv run --locked python -m pytest

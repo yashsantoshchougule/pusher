@@ -4,6 +4,7 @@ Business logic and persistence operations for user profiles stored in backend/pu
 """
 
 from typing import Any, Dict, Optional
+from backend.core.config import MAX_RAM_BUDGET_MB
 from backend.core.database import db_get_profile, db_save_profile
 
 
@@ -12,7 +13,7 @@ def sanitize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:
     ram_mb = data.get("default_ram_ceiling_mb", 500)
     try:
         ram_mb = int(ram_mb)
-        ram_mb = max(50, min(ram_mb, 2048))
+        ram_mb = max(50, min(ram_mb, MAX_RAM_BUDGET_MB))
     except (ValueError, TypeError):
         ram_mb = 500
 

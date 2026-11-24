@@ -126,5 +126,13 @@ async def check_sandbox(measure=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--measure", action="store_true", help="Run bounded 1, 5, and 10 VU loopback measurements.")
-    asyncio.run(check_sandbox(parser.parse_args().measure))
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--measure", action="store_true", help="Run bounded 1, 5, and 10 VU loopback measurements.")
+    mode.add_argument("--benchmark", action="store_true", help="Run repeated 10, 25, and 50 VU measurements on a separate loopback target.")
+    args = parser.parse_args()
+    if args.benchmark:
+        from check_local_capacity import benchmark
+
+        benchmark()
+    else:
+        asyncio.run(check_sandbox(args.measure))

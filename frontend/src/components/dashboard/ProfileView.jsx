@@ -555,8 +555,8 @@ export default function ProfileView({
                 type="range"
                 name="default_ram_ceiling_mb"
                 min="50"
-                max="2048"
-                step="50"
+                max="4096"
+                step="1"
                 value={formData.default_ram_ceiling_mb}
                 onChange={handleChange}
                 className="w-full accent-black cursor-pointer"
@@ -566,7 +566,7 @@ export default function ProfileView({
                 <span>50 MB (Micro)</span>
                 <span>500 MB (Standard)</span>
                 <span>1000 MB (Heavy)</span>
-                <span>2048 MB (Extreme)</span>
+                <span>4 GB (4,096 MB)</span>
               </div>
               <p className="text-[11px] text-black/70 font-normal">
                 Sets your workstation default concurrency memory ceiling when initiating new ramp-up load tests.

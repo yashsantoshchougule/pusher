@@ -7,6 +7,7 @@ import os
 import psutil
 from fastapi import APIRouter
 from backend.core.circuit_breakers import MAX_P95_CEILING_MS
+from backend.core.config import max_safe_ram_budget_mb
 from backend.core.load_engine import (
     BASE_ENGINE_RAM_MB, DEFAULT_RAM_CEILING_MB, MAX_REQUESTED_VUS, RAM_PER_VU_MB,
     RUSH_WARMUP_MIN_VUS, RUSH_WARMUP_RATIO, RUSH_WARMUP_SECONDS, STEP_RAMP_MIN_SECONDS, STEP_RAMP_RATIOS,
@@ -19,7 +20,7 @@ router = APIRouter(prefix="/api/system", tags=["System"])
 async def get_system_limits():
     """
     Returns actual physical hardware limits alongside Pusher's locked engineering constraints:
-    - 75% Host RAM Ceiling
+    - RAM budget capped at 4 GB or 75% of host RAM, whichever is lower
     - 70% OS File-Descriptor Cap
     - 500 MB default ceiling (2,250 VUs)
     """
@@ -30,7 +31,7 @@ async def get_system_limits():
     except Exception:
         total_system_ram_mb = 16384  # 16 GB fallback
 
-    max_safe_ram_mb = int(total_system_ram_mb * 0.75)
+    max_safe_ram_mb = max_safe_ram_budget_mb(total_system_ram_mb)
 
     # Detect OS File Descriptor limits if available
     fd_soft = 2048

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:full": "node scripts/dev-full.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "postinstall": "node -e \"const fs=require('fs');const p='node_modules/rollup/dist/native.js';if(fs.existsSync(p)){let c=fs.readFileSync(p,'utf8');if(!c.includes('@rollup/wasm-node')){c=c.replace('if (error instanceof Error && error.code === \\'ERR_DLOPEN_FAILED\\') {', 'if (error instanceof Error && error.code === \\'ERR_DLOPEN_FAILED\\') { try { return require(\\'@rollup/wasm-node/dist/native.js\\'); } catch {}');fs.writeFileSync(p,c);}}\""

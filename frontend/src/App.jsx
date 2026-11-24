@@ -1,14 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import WafSetupPage from './pages/WafSetupPage';
-import { supabase } from './lib/supabaseClient';
+import AccountRecoveryPage from './pages/AccountRecoveryPage';
+import TermsPage from './pages/TermsPage';
+import { forgotPasswordPath } from './lib/passwordRecovery';
+import { recoveryCallback, supabase } from './lib/supabaseClient';
 import { endSession, verifyOperatorSession } from './lib/signIn';
 import { Shield } from 'lucide-react';
 
 const appearanceStorageKey = 'pusher_appearance';
 
 export default function App() {
+  const path = typeof window !== 'undefined' ? window.location.pathname : '/';
+  if (recoveryCallback) return <AccountRecoveryPage requesting={false} />;
+  if (path === forgotPasswordPath) return <AccountRecoveryPage requesting />;
+  if (path === '/terms') return <TermsPage />;
+  return <PusherApp />;
+}
+
+function PusherApp() {
   const getInitialView = () => {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname;
@@ -45,6 +56,7 @@ export default function App() {
   const [operator, setOperator] = useState(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionError, setSessionError] = useState(null);
+  const freshLogin = useRef(typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fresh') === '1');
 
   useEffect(() => {
     let sequence = 0;
@@ -69,6 +81,10 @@ export default function App() {
     }
 
     const subscription = supabase?.auth.onAuthStateChange((_event, session) => {
+      if (freshLogin.current) {
+        setSessionReady(true);
+        return;
+      }
       const subject = session ? `supabase:${session.user.id}` : 'offline:operator';
       setOperator((current) => current?.user_id === subject ? current : null);
       void verifySession(session?.access_token);
@@ -204,7 +220,15 @@ export default function App() {
   return (
     <LoginPage
       sessionError={sessionError}
-      onClearSessionError={() => setSessionError(null)}
+      onClearSessionError={() => {
+        if (freshLogin.current) {
+          freshLogin.current = false;
+          const url = new URL(window.location.href);
+          url.searchParams.delete('fresh');
+          window.history.replaceState(null, '', url);
+        }
+        setSessionError(null);
+      }}
       onBackToWebsite={() => navigateTo('website')}
       canContinueOffline={Boolean(operator?.offline)}
       onContinueOffline={() => navigateTo('dashboard')}
