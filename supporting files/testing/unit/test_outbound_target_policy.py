@@ -144,3 +144,48 @@ def test_execution_routes_require_current_verification(monkeypatch):
             result = client.post(endpoint, json=payload)
             assert result.status_code == 403
             assert "Verify the target" in result.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_checked_network_backend_dns_cache_timeout_and_dns_timeout(monkeypatch):
+    loop = asyncio.get_running_loop()
+    answer = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    resolver = AsyncMock(return_value=answer)
+    monkeypatch.setattr(loop, "getaddrinfo", resolver)
+
+    cached_net = target_policy.CheckedNetworkBackend(False, dns_cache_ttl=60.0)
+    with patch.object(httpcore.AnyIOBackend, "connect_tcp", new_callable=AsyncMock) as dial:
+        await cached_net.connect_tcp("example.invalid", 443, timeout=2.5)
+        await cached_net.connect_tcp("example.invalid", 443, timeout=2.5)
+        assert resolver.await_count == 1
+        assert dial.await_count == 2
+        dial.assert_awaited_with("93.184.216.34", 443, local_address=None, socket_options=None, timeout=2.5)
+
+    monkeypatch.setattr(loop, "getaddrinfo", AsyncMock(side_effect=TimeoutError))
+    with pytest.raises(target_policy.DestinationTimeoutError):
+        await target_policy.resolve_addresses("example.invalid", 443, False)
+    uncached_net = target_policy.CheckedNetworkBackend(False)
+    with pytest.raises(httpcore.ConnectTimeout):
+        await uncached_net.connect_tcp("example.invalid", 443)
+
+
+@pytest.mark.asyncio
+async def test_target_transport_sharding_and_fast_origin_path(monkeypatch):
+    base = target_policy.parse_target("https://example.invalid")
+    transport = target_policy.TargetTransport(base, is_sandbox=False, connections=100)
+    assert isinstance(transport._pool, target_policy._ShardedAsyncConnectionPool)
+    assert all(shard._max_connections <= 24 for shard in transport._pool._shards)
+    assert sum(shard._max_connections for shard in transport._pool._shards) == 100
+
+    monkeypatch.setattr(target_policy, "bound_target", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("unexpected slow path")))
+    seen = []
+
+    async def respond(self_transport, request):
+        seen.append(request.headers["host"])
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", respond)
+    async with httpx.AsyncClient(transport=transport) as client:
+        res = await client.get("https://example.invalid/fast?_cb=1")
+        assert res.status_code == 200
+    assert seen == ["example.invalid"]

@@ -21,10 +21,13 @@ from pydantic import BaseModel, Field
 from backend.core.load_engine import (
     load_engine,
     calculate_max_allowed_vus,
+    get_os_fd_cap,
+    DEFAULT_MAX_ERROR_PCT,
     DEFAULT_RAM_CEILING_MB,
     MAX_REQUESTED_VUS,
     CHUNK_SIZE_BYTES,
 )
+from backend.core.target_policy import origin
 from backend.core.target_service import (
     active_target,
     verified_destination,
@@ -44,8 +47,9 @@ class TrafficConfigRequest(BaseModel):
     ram_limit_mb: int = Field(500, ge=51, le=MAX_RAM_BUDGET_MB, description="RAM ceiling in MB")
     virtual_users: int = Field(100, ge=1, le=MAX_REQUESTED_VUS, description="Virtual Users target")
     duration_sec: int = Field(30, ge=1, le=86400, description="Test duration in seconds")
-    max_error_pct: float = Field(5.0, ge=1.0, le=100.0, description="Max error threshold %")
+    max_error_pct: float = Field(DEFAULT_MAX_ERROR_PCT, ge=1.0, le=100.0, description="Max error threshold %")
     p95_ceiling_ms: float = Field(1500.0, ge=10.0, le=60000.0, description="p95 latency ceiling in ms")
+    request_timeout_sec: float = Field(5.0, ge=2.0, le=10.0, description="Per-request timeout in seconds")
     cache_bust: bool = Field(True, description="Append unique query nonce")
 
 
@@ -65,6 +69,7 @@ async def save_traffic_config_endpoint(cfg: TrafficConfigRequest):
         "duration_sec": cfg.duration_sec,
         "max_error_pct": cfg.max_error_pct,
         "p95_ceiling_ms": cfg.p95_ceiling_ms,
+        "request_timeout_sec": cfg.request_timeout_sec,
         "cache_bust": 1 if cfg.cache_bust else 0,
     }, request_owner.get())
     return saved
@@ -77,7 +82,7 @@ class LoadStartRequest(BaseModel):
     duration_sec: int = Field(15, ge=1, le=86400, description="Test duration in seconds")
     cache_bust: bool = Field(True, description="Append unique query nonce to defeat CDN cache")
     ram_limit_mb: int = Field(DEFAULT_RAM_CEILING_MB, ge=51, le=MAX_RAM_BUDGET_MB, description="RAM ceiling in MB")
-    max_error_pct: float = Field(15.0, ge=1.0, le=100.0, description="Circuit breaker error threshold %")
+    max_error_pct: float = Field(DEFAULT_MAX_ERROR_PCT, ge=1.0, le=100.0, description="Circuit breaker error threshold %")
     p95_ceiling_ms: float = Field(1500.0, ge=10.0, le=60000.0, description="Circuit breaker p95 latency ceiling in ms")
     request_timeout_sec: float = Field(5.0, ge=2.0, le=10.0)
     is_sandbox: bool = Field(False, description="Sandbox testing flag")
@@ -124,7 +129,10 @@ async def start_load_test(
         )
 
     # 1. Enforce the effective RAM limit for this host.
-    host_total_ram_mb = int(psutil.virtual_memory().total / (1024 * 1024))
+    try:
+        host_total_ram_mb = int(psutil.virtual_memory().total / (1024 * 1024))
+    except Exception:
+        host_total_ram_mb = 1024
     max_hardware_safe_ram = max_safe_ram_budget_mb(host_total_ram_mb)
     if req.ram_limit_mb > max_hardware_safe_ram:
         raise HTTPException(
@@ -132,12 +140,24 @@ async def start_load_test(
             detail=f"RAM limit ({req.ram_limit_mb} MB) exceeds maximum safe host capacity ({max_hardware_safe_ram} MB).",
         )
 
-    # 2. Maximum VUs Invariant Check: max_allowed_vus = floor((ram_limit_mb - 50) / 0.20)
+    # 2. Maximum VUs Invariant Check: bounded by both RAM ceiling and OS FD worker cap.
     max_allowed_vus = calculate_max_allowed_vus(req.ram_limit_mb)
-    if req.target_vus > max_allowed_vus:
+    max_worker_vus = max(1, min(MAX_REQUESTED_VUS, get_os_fd_cap()))
+    effective_max_vus = min(max_allowed_vus, max_worker_vus)
+    if req.target_vus > effective_max_vus:
+        if req.target_vus > max_allowed_vus:
+            detail = (
+                f"Target VUs ({req.target_vus}) exceeds maximum allowed ({max_allowed_vus} VUs) "
+                f"under {req.ram_limit_mb} MB RAM ceiling."
+            )
+        else:
+            detail = (
+                f"Target VUs ({req.target_vus}) exceeds host OS file-descriptor worker limit "
+                f"({max_worker_vus} VUs)."
+            )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Target VUs ({req.target_vus}) exceeds maximum allowed ({max_allowed_vus} VUs) under {req.ram_limit_mb} MB RAM ceiling.",
+            detail=detail,
         )
 
     # Authorize the destination before inspecting or mutating the active Guard.
@@ -190,6 +210,20 @@ async def start_load_test(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail="Enter the target query again or verify the URL without it.")
 
+    dest_scheme, dest_host, dest_port = origin(destination)
+    same_process_loopback = (
+        is_sandbox_target
+        and dest_scheme == "http"
+        and dest_host in {"127.0.0.1", "localhost", "::1"}
+        and dest_port == settings.port
+        and destination.path.startswith("/api/sandbox/")
+    )
+    advisory = (
+        "Target is the in-process loopback sandbox on the same event loop; high VU counts share CPU and loop scheduling with the target."
+        if same_process_loopback
+        else ""
+    )
+
     # 4. Launch Async Load Engine
     run_id = await load_engine.start(
         target_url=str(destination),
@@ -206,6 +240,8 @@ async def start_load_test(
         journey_steps=steps,
         is_sandbox=is_sandbox_target,
         request_timeout_sec=req.request_timeout_sec,
+        same_process_loopback=same_process_loopback,
+        advisory=advisory,
     )
 
     return {
@@ -214,6 +250,8 @@ async def start_load_test(
         "target_vus": req.target_vus,
         "traffic_mode": req.traffic_mode,
         "duration_sec": req.duration_sec,
+        "same_process_loopback": same_process_loopback,
+        "advisory": advisory,
         "snapshot": load_engine.get_status(request_owner.get()),
     }
 

@@ -10,18 +10,19 @@ Async Load Engine for Pusher Load Testing Platform.
 import asyncio
 from array import array
 import collections
+from datetime import datetime, timezone
+import inspect
 import math
 import os
 from uuid import uuid4
 import sys
 import time
 from time import monotonic_ns
-import urllib.parse
 import httpx
 import psutil
 from starlette.websockets import WebSocket
 
-from backend.core.circuit_breakers import CircuitBreakers
+from backend.core.circuit_breakers import MAX_ERROR_PCT_CAP, MAX_P95_CEILING_MS, CircuitBreakers
 from backend.core.journey_service import (
     JourneyInputError, append_cache_buster, build_journey_request, extract_journey_value, journey_request_headers,
 )
@@ -32,14 +33,21 @@ from backend.core.target_policy import DestinationError, parse_target, target_cl
 BASE_ENGINE_RAM_MB = 50
 RAM_PER_VU_MB = 0.20
 DEFAULT_RAM_CEILING_MB = 500
+DEFAULT_MAX_ERROR_PCT = 5.0
 MAX_REQUESTED_VUS = 100_000
 CHUNK_SIZE_BYTES = 4096  # 4 KB chunk discard
 LATENCY_OVERFLOW_MS = 60_001
+WINDOWS_SOCKET_SOFT_LIMIT = 2048
+WINDOWS_SOCKET_HARD_LIMIT = 8192
 STEP_RAMP_RATIOS = (0.20, 0.40, 0.60, 0.80, 1.00)
 STEP_RAMP_MIN_SECONDS = 1.0
 RUSH_WARMUP_SECONDS = 3.0
 RUSH_WARMUP_RATIO = 0.10
 RUSH_WARMUP_MIN_VUS = 10
+
+
+def _utc_iso(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class ConnectionManager:
@@ -98,16 +106,28 @@ def calculate_active_vus(traffic_mode: str, target_vus: int, duration_sec: int, 
         return target_vus
 
 
+def get_os_fd_limits() -> tuple[int, int]:
+    """Return (soft, hard) OS file descriptor limits, or Windows socket cap."""
+    if sys.platform != "win32":
+        import resource
+        return resource.getrlimit(resource.RLIMIT_NOFILE)
+    return WINDOWS_SOCKET_SOFT_LIMIT, WINDOWS_SOCKET_HARD_LIMIT
+
+
 def get_os_fd_cap() -> int:
     """Determine the 70% OS File-Descriptor concurrency limit."""
     try:
         if sys.platform != "win32":
             import resource
-            soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
-            return int(soft_limit * 0.70)
-        else:
-            # Windows typical standard socket handle safety cap
-            return int(4096 * 0.70)
+            soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+            rlim_inf = getattr(resource, "RLIM_INFINITY", -1)
+            if soft_limit <= 0 or soft_limit == rlim_inf:
+                if hard_limit > 0 and hard_limit != rlim_inf:
+                    soft_limit = hard_limit
+                else:
+                    return MAX_REQUESTED_VUS
+            return max(1, int(soft_limit * 0.70))
+        return max(1, int(WINDOWS_SOCKET_SOFT_LIMIT * 0.70))
     except Exception:
         return 1024
 
@@ -124,16 +144,23 @@ class LoadEngine:
         self._worker_limit = 0
         self.traffic_mode: str = "steady_crowd"
         self.target_url: str = ""
+        self._parsed_target: httpx.URL | None = None
         self.is_sandbox: bool = False
         self.cache_bust: bool = True
         self.active_guard_id: str = ""
         self.guard_expires_at: float | None = None
         self.ram_limit_mb: int = DEFAULT_RAM_CEILING_MB
-        self.max_error_pct: float = 15.0
+        self.max_error_pct: float = DEFAULT_MAX_ERROR_PCT
         self.p95_ceiling_ms: float = 1500.0
         self.request_timeout_sec = 5.0
         self.brakes = CircuitBreakers(self.max_error_pct, self.p95_ceiling_ms)
         self.circuit_status: str = "ARMED (Normal)"
+        self.same_process_loopback: bool = False
+        self.advisory: str = ""
+        self.loop_lag_ms: float = 0.0
+        self._scaling_paused: bool = False
+        self._started_at_iso: str | None = None
+        self._process = psutil.Process(os.getpid())
 
         self.use_journey: bool = False
         self.journey_steps: list[dict] = []
@@ -152,27 +179,42 @@ class LoadEngine:
         # Metrics accumulators
         self.total_requests: int = 0
         self.status_2xx: int = 0
+        self.status_3xx: int = 0
+        self.status_4xx: int = 0
         self.status_429: int = 0
         self.status_5xx: int = 0
+        self.timeout_count: int = 0
+        self.network_error_count: int = 0
         self.status_other: int = 0
         self.bytes_discarded: int = 0
         self._failed_requests = 0
         self._successful_journeys = 0
+        self._latency_sample_count: int = 0
         self._latency_counts = array("Q", [0]) * (LATENCY_OVERFLOW_MS + 1)
+        self._overflow_latencies: list[float] = []
         self._max_latency_ms = 0.0
+        self._last_timing_check: float = 0.0
 
         # Rolling 1-second window deques: (timestamp, latency_ms), (timestamp, is_error, bytes)
         self._rolling_latencies = collections.deque()
         self._rolling_requests = collections.deque()
 
+    def _process_ram_mb(self) -> float:
+        try:
+            return round(self._process.memory_info().rss / (1024 * 1024), 1)
+        except Exception:
+            return 52.0
 
     def get_status(self, owner_id: str | None = None) -> dict:
         self._status_revision = max(self._status_revision + 1, monotonic_ns() // 1000)
         if owner_id is not None and owner_id != self.owner_id:
-            return {"is_running": False, "run_id": None, "status_revision": self._status_revision,
-                    "elapsed_sec": 0, "active_vus": 0, "live_rps": 0,
-                    "p95_ms": 0, "error_pct": 0, "use_journey": False,
-                    "step_metrics": [], "circuit_status": "ARMED (Normal)"}
+            return {
+                "is_running": False, "run_id": None, "status_revision": self._status_revision,
+                "elapsed_sec": 0, "active_vus": 0, "live_rps": 0,
+                "p95_ms": 0, "error_pct": 0, "use_journey": False,
+                "step_metrics": [], "circuit_status": "ARMED (Normal)",
+                "loop_lag_ms": 0.0, "same_process_loopback": False, "advisory": "",
+            }
         now = time.time()
         elapsed = int(now - self.start_time) if self.is_running else 0
 
@@ -183,11 +225,11 @@ class LoadEngine:
             self._rolling_requests.popleft()
 
         live_rps = len(self._rolling_requests)
-        
-        # Calculate p95 latency from rolling window
+
+        # Calculate p95 latency from rolling window using nearest-rank
         if self._rolling_latencies:
             sorted_latencies = sorted(lat for _, lat in self._rolling_latencies)
-            p95_idx = int(len(sorted_latencies) * 0.95)
+            p95_idx = max(0, (len(sorted_latencies) * 95 + 99) // 100 - 1)
             p95_ms = round(sorted_latencies[min(p95_idx, len(sorted_latencies) - 1)], 1)
         else:
             p95_ms = 0.0
@@ -199,18 +241,18 @@ class LoadEngine:
         else:
             error_pct = 0.0
 
-        # Current active VUs according to scheduler
-        active_vus = (
-            min(self._worker_limit, calculate_active_vus(self.traffic_mode, self.target_vus, self.duration_sec, elapsed))
-            if self.is_running
-            else 0
-        )
+        # Current active VUs according to scheduler (bounded by spawned workers if scaling paused)
+        if self.is_running:
+            scheduled_vus = min(
+                self._worker_limit,
+                calculate_active_vus(self.traffic_mode, self.target_vus, self.duration_sec, elapsed),
+            )
+            active_vus = min(scheduled_vus, len(self._worker_tasks)) if self._worker_tasks else scheduled_vus
+        else:
+            active_vus = 0
 
-        # Process RSS Memory
-        try:
-            ram_mb = round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1)
-        except Exception:
-            ram_mb = 52.0
+        effective_p95 = min(float(self.p95_ceiling_ms), float(self.brakes.latency_limit))
+        effective_error = min(float(self.max_error_pct), float(self.brakes.error_limit))
 
         return {
             "is_running": self.is_running,
@@ -221,19 +263,36 @@ class LoadEngine:
             "traffic_mode": self.traffic_mode,
             "active_vus": active_vus,
             "target_vus": self.target_vus,
+            "peak_vus": self._peak_vus,
             "live_rps": live_rps,
             "p95_ms": p95_ms,
             "error_pct": error_pct,
             "total_requests": self.total_requests,
             "status_2xx": self.status_2xx,
+            "status_3xx": self.status_3xx,
+            "status_4xx": self.status_4xx,
             "status_429": self.status_429,
             "status_5xx": self.status_5xx,
+            "timeout_count": self.timeout_count,
+            "network_error_count": self.network_error_count,
+            "status_other": self.status_other,
+            "failed_requests": self._failed_requests,
             "bytes_discarded_mb": round(self.bytes_discarded / (1024 * 1024), 2),
-            "ram_mb": ram_mb,
+            "ram_mb": self._process_ram_mb(),
             "ram_limit_mb": self.ram_limit_mb,
+            "p95_ceiling_ms": self.p95_ceiling_ms,
+            "max_error_pct": self.max_error_pct,
+            "effective_p95_ceiling_ms": effective_p95,
+            "effective_max_error_pct": effective_error,
+            "request_timeout_sec": self.request_timeout_sec,
+            "cache_bust": self.cache_bust,
+            "is_sandbox": self.is_sandbox,
             "circuit_status": self.circuit_status,
             "use_journey": self.use_journey,
             "step_metrics": self.step_metrics,
+            "loop_lag_ms": self.loop_lag_ms,
+            "same_process_loopback": self.same_process_loopback,
+            "advisory": self.advisory,
         }
 
     async def start(
@@ -245,13 +304,15 @@ class LoadEngine:
         cache_bust: bool = True,
         active_guard_id: str = "PG-ACTIVE",
         ram_limit_mb: int = DEFAULT_RAM_CEILING_MB,
-        max_error_pct: float = 15.0,
+        max_error_pct: float = DEFAULT_MAX_ERROR_PCT,
         p95_ceiling_ms: float = 1500.0,
         use_journey: bool = False,
         journey_steps: list[dict] | None = None,
         is_sandbox: bool = False,
         request_timeout_sec: float = 5.0,
         guard_expires_at: float | None = None,
+        same_process_loopback: bool | None = None,
+        advisory: str = "",
     ) -> str:
         if self.is_running or (self._master_task and not self._master_task.done()):
             raise RuntimeError("A load test is already actively running.")
@@ -259,11 +320,33 @@ class LoadEngine:
         owner_id = request_owner.get()
         self.owner_id = owner_id
         self.is_sandbox = is_sandbox
-        self.target_url = str(parse_target(target_url))
+        self._parsed_target = parse_target(target_url)
+        self.target_url = str(self._parsed_target)
+
+        if same_process_loopback is None:
+            from backend.core.config import settings
+            from backend.core.target_policy import origin
+            scheme, host, port = origin(self._parsed_target)
+            self.same_process_loopback = (
+                is_sandbox
+                and scheme == "http"
+                and host in {"127.0.0.1", "localhost", "::1"}
+                and port == settings.port
+                and self._parsed_target.path.startswith("/api/sandbox/")
+            )
+            self.advisory = (
+                "Target is the in-process loopback sandbox on the same event loop; high VU counts share CPU and loop scheduling with the target."
+                if self.same_process_loopback
+                else ""
+            )
+        else:
+            self.same_process_loopback = same_process_loopback
+            self.advisory = advisory
 
         self.traffic_mode = traffic_mode
         self.target_vus = target_vus
-        self._worker_limit = max(1, min(target_vus, get_os_fd_cap()))
+        ram_cap = max(1, calculate_max_allowed_vus(ram_limit_mb))
+        self._worker_limit = max(1, min(target_vus, ram_cap, get_os_fd_cap()))
         self.duration_sec = duration_sec
         self.cache_bust = cache_bust
         self.active_guard_id = active_guard_id
@@ -274,6 +357,8 @@ class LoadEngine:
         self.request_timeout_sec = request_timeout_sec
         self.brakes = CircuitBreakers(max_error_pct, p95_ceiling_ms)
         self.circuit_status = "ARMED (Normal)"
+        self.loop_lag_ms = 0.0
+        self._scaling_paused = False
 
         self.use_journey = use_journey
         if use_journey:
@@ -288,7 +373,7 @@ class LoadEngine:
                     "step_id": s.get("step_id", idx + 1),
                     "name": s.get("name", f"Step {idx + 1}"),
                     "method": s.get("method", "GET").upper(),
-                    "path": s.get("path", "").partition("?")[0],
+                    "path": s.get("path", "").split("#", 1)[0].partition("?")[0],
                     "requests": 0,
                     "passed": 0,
                     "failed": 0,
@@ -303,19 +388,27 @@ class LoadEngine:
 
         self.run_id = f"RUN-{uuid4().hex}"
         self.start_time = time.time()
+        self._started_at_iso = _utc_iso(self.start_time)
         self.is_running = True
 
         self._stop_event = asyncio.Event()
         self.total_requests = 0
         self.status_2xx = 0
+        self.status_3xx = 0
+        self.status_4xx = 0
         self.status_429 = 0
         self.status_5xx = 0
+        self.timeout_count = 0
+        self.network_error_count = 0
         self.status_other = 0
         self.bytes_discarded = 0
         self._failed_requests = 0
         self._successful_journeys = 0
+        self._latency_sample_count = 0
         self._latency_counts = array("Q", [0]) * (LATENCY_OVERFLOW_MS + 1)
+        self._overflow_latencies = []
         self._max_latency_ms = 0.0
+        self._last_timing_check = 0.0
         self._rolling_latencies.clear()
         self._rolling_requests.clear()
         self.timeseries_buckets = []
@@ -364,20 +457,31 @@ class LoadEngine:
             "run_id": self.run_id,
         }
 
+    def _ensure_workers(self, client: httpx.AsyncClient, worker_fn, active_target: int) -> None:
+        desired = min(self._worker_limit, max(0, active_target))
+        while len(self._worker_tasks) < desired and not self._stop_event.is_set():
+            vu_id = len(self._worker_tasks)
+            task = asyncio.create_task(worker_fn(client, vu_id))
+            task.add_done_callback(self._worker_finished)
+            self._worker_tasks.append(task)
+
     async def _run_orchestrator(self):
         timeout = httpx.Timeout(self.request_timeout_sec)
+        parsed = self._parsed_target or parse_target(self.target_url)
         try:
             async with target_client(
-                parse_target(self.target_url), self.is_sandbox, timeout=timeout, connections=self._worker_limit
+                parsed, self.is_sandbox, timeout=timeout, connections=self._worker_limit
             ) as client:
                 if not self._stop_event.is_set():
                     worker = self._vu_journey_worker if self.use_journey and self.journey_steps else self._vu_worker
-                    self._worker_tasks = [asyncio.create_task(worker(client, i)) for i in range(self._worker_limit)]
-                    for task in self._worker_tasks:
-                        task.add_done_callback(self._worker_finished)
+                    self._worker_tasks = []
+                    initial_target = calculate_active_vus(
+                        self.traffic_mode, self.target_vus, self.duration_sec, 0.0
+                    )
+                    self._ensure_workers(client, worker, initial_target)
                     monitor = asyncio.create_task(self._circuit_monitor())
                     try:
-                        await self._monitor_until_stopped()
+                        await self._monitor_until_stopped(client, worker)
                     finally:
                         self._stop_event.set()
                         tasks = [monitor, *self._worker_tasks]
@@ -399,8 +503,10 @@ class LoadEngine:
         if not task.cancelled() and task.exception() is not None:
             self.request_stop("FAILED (Worker error)")
 
-    async def _monitor_until_stopped(self):
+    async def _monitor_until_stopped(self, client: httpx.AsyncClient, worker_fn):
         last_tick = time.monotonic()
+        high_lag_since: float | None = None
+        severe_lag_since: float | None = None
         while not self._stop_event.is_set():
             wall_time = time.time()
             guard_remaining = self._guard_remaining(wall_time)
@@ -411,16 +517,48 @@ class LoadEngine:
             remaining = self.duration_sec - elapsed
             if remaining <= 0:
                 break
+            if not self._scaling_paused:
+                desired_vus = calculate_active_vus(
+                    self.traffic_mode, self.target_vus, self.duration_sec, elapsed
+                )
+                self._ensure_workers(client, worker_fn, desired_vus)
             now = time.monotonic()
             if now - last_tick >= 1:
                 last_tick = now
                 snapshot = self.get_status()
                 self._sample_run(elapsed, snapshot)
                 await self.broadcast_telemetry(event="TICK")
+            sleep_for = min(remaining, guard_remaining, 0.1)
+            sleep_started = time.perf_counter()
+            timed_out_sleep = False
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=min(remaining, guard_remaining, 0.1))
+                await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_for)
             except TimeoutError:
-                pass
+                timed_out_sleep = True
+            if timed_out_sleep:
+                perf_now = time.perf_counter()
+                lag_ms = max(0.0, ((perf_now - sleep_started) - sleep_for) * 1000.0)
+                self.loop_lag_ms = round(lag_ms, 1)
+                if lag_ms > 200.0:
+                    if high_lag_since is None:
+                        high_lag_since = perf_now
+                    elif perf_now - high_lag_since >= 5.0:
+                        self._scaling_paused = True
+                else:
+                    high_lag_since = None
+                    self._scaling_paused = False
+                if lag_ms > 500.0:
+                    if severe_lag_since is None:
+                        severe_lag_since = perf_now
+                    elif perf_now - severe_lag_since >= 5.0:
+                        self.request_stop("TRIPPED (Host event-loop starvation)")
+                        break
+                else:
+                    severe_lag_since = None
+
+        if self.total_requests > 0 and self._sample_interval == 1:
+            final_elapsed = min(float(self.duration_sec), max(0.0, time.time() - self.start_time))
+            self._sample_run(final_elapsed, self.get_status())
 
     def _sample_run(self, elapsed, snapshot):
         self._peak_rps = max(self._peak_rps, snapshot["live_rps"])
@@ -465,18 +603,39 @@ class LoadEngine:
             display_status = f"PASSED (Completed {self.duration_sec}s)"
             event_type = "COMPLETE"
 
+        end_wall = time.time()
         now_str = time.strftime("%H:%M:%S")
+        started_ts = self.start_time or end_wall
+        started_at = self._started_at_iso or _utc_iso(started_ts)
+        ended_at_iso = _utc_iso(end_wall)
         status_snap = self.get_status()
-        elapsed_actual = min(int(time.time() - self.start_time), self.duration_sec)
+        elapsed_float = (
+            min(float(self.duration_sec), max(0.0, end_wall - self.start_time))
+            if self.start_time
+            else 0.0
+        )
+        elapsed_actual = min(int(round(elapsed_float)), self.duration_sec) if elapsed_float > 0 else 0
+
+        effective_p95 = min(float(self.p95_ceiling_ms), float(self.brakes.latency_limit))
+        effective_error = min(float(self.max_error_pct), float(self.brakes.error_limit))
 
         from backend.core.report_service import detect_knee_of_curve, save_run
-        knee_analysis = detect_knee_of_curve(self.timeseries_buckets, self.target_vus, self.p95_ceiling_ms)
+        knee_kwargs = {"p95_ceiling_ms": effective_p95}
+        knee_sig = inspect.signature(detect_knee_of_curve).parameters
+        if "max_error_pct" in knee_sig:
+            knee_kwargs["max_error_pct"] = effective_error
+        if "mode" in knee_sig:
+            knee_kwargs["mode"] = self.traffic_mode
+        knee_analysis = detect_knee_of_curve(self.timeseries_buckets, self.target_vus, **knee_kwargs)
 
         peak_rps_val = max(self._peak_rps, status_snap["live_rps"])
+        avg_rps_val = int(round(self.total_requests / max(elapsed_float, 0.001))) if self.total_requests else 0
 
         sqlite_record = {
             "run_id": self.run_id,
             "timestamp": now_str,
+            "started_at": started_at,
+            "ended_at_iso": ended_at_iso,
             "target_url": self.target_url,
             "guard_id": self.active_guard_id,
             "mode": self.traffic_mode.replace("_", " ").title(),
@@ -485,22 +644,45 @@ class LoadEngine:
             "duration_sec": self.duration_sec,
             "elapsed_sec": elapsed_actual,
             "peak_rps": peak_rps_val,
-            "avg_rps": int(self.total_requests / max(1, elapsed_actual)),
+            "avg_rps": avg_rps_val,
             "p95_ms": self._run_p95_ms(),
+            "latency_breakdown": self.latency_breakdown(),
             "error_pct": round(100 * self._failed_requests / self.total_requests, 1) if self.total_requests else 0.0,
             "metrics_scope": "whole_run",
             "total_requests": self.total_requests,
             "status_2xx": self.status_2xx,
+            "status_3xx": self.status_3xx,
+            "status_4xx": self.status_4xx,
             "status_429": self.status_429,
             "status_5xx": self.status_5xx,
+            "timeout_count": self.timeout_count,
+            "network_error_count": self.network_error_count,
+            "status_other": self.status_other,
+            "failed_requests": self._failed_requests,
             "bytes_discarded_mb": float(status_snap.get("bytes_discarded_mb", 0.0)),
             "ram_mb": float(status_snap.get("ram_mb", 50.0)),
+            "ram_limit_mb": self.ram_limit_mb,
+            "p95_ceiling_ms": self.p95_ceiling_ms,
+            "max_error_pct": self.max_error_pct,
+            "effective_p95_ceiling_ms": effective_p95,
+            "effective_max_error_pct": effective_error,
+            "request_timeout_sec": self.request_timeout_sec,
+            "cache_bust": self.cache_bust,
+            "use_journey": self.use_journey,
+            "is_sandbox": self.is_sandbox,
+            "same_process_loopback": self.same_process_loopback,
+            "advisory": self.advisory,
             "verdict": verdict_cat,
             "status_label": display_status,
             "knee_vus": knee_analysis["knee_vus"],
             "knee_rps": knee_analysis["knee_rps"],
             "knee_p95_ms": knee_analysis["knee_p95_ms"],
             "bottleneck_summary": knee_analysis["bottleneck_summary"],
+            "capacity_reason": knee_analysis.get("capacity_reason", ""),
+            "linear_range": knee_analysis.get("linear_range", "Unavailable"),
+            "optimal_point": knee_analysis.get("optimal_point", "Unavailable"),
+            "cliff_point": knee_analysis.get("cliff_point", "Unavailable"),
+            "steps": knee_analysis.get("steps", []),
             "capacity_checked": True,
             "timeseries": self.timeseries_buckets,
             "step_metrics": self.step_metrics,
@@ -509,16 +691,38 @@ class LoadEngine:
 
         await self.broadcast_telemetry(event=event_type)
 
-    def _run_p95_ms(self):
-        if not self.total_requests:
+    def _percentile_ms(self, pct: int) -> float | int:
+        if not self._latency_sample_count:
             return 0.0
-        rank = (self.total_requests * 95 + 99) // 100
+        rank = (self._latency_sample_count * pct + 99) // 100
+        seen = 0
         for latency, count in enumerate(self._latency_counts):
-            rank -= count
-            if rank <= 0:
-                # shortcut: overflow reports the maximum, add finer overflow bins if requests can routinely exceed 60s.
-                return self._max_latency_ms if latency == LATENCY_OVERFLOW_MS else latency
+            if not count:
+                continue
+            seen += count
+            if seen >= rank:
+                if latency == LATENCY_OVERFLOW_MS:
+                    if self._overflow_latencies:
+                        overflow_idx = max(0, rank - (seen - count) - 1)
+                        sorted_overflow = sorted(self._overflow_latencies)
+                        return round(sorted_overflow[min(overflow_idx, len(sorted_overflow) - 1)], 1)
+                    return round(self._max_latency_ms, 1)
+                return latency
         return 0.0
+
+    def _run_p95_ms(self):
+        return self._percentile_ms(95)
+
+    def latency_breakdown(self) -> dict | None:
+        if not self._latency_sample_count:
+            return None
+        return {
+            "p50_ms": self._percentile_ms(50),
+            "p90_ms": self._percentile_ms(90),
+            "p95_ms": self._percentile_ms(95),
+            "p99_ms": self._percentile_ms(99),
+            "max_ms": round(self._max_latency_ms, 1),
+        }
 
     def _request_headers(self) -> dict:
         return journey_request_headers()
@@ -570,6 +774,7 @@ class LoadEngine:
                 continue
 
             context: dict[str, str] = {}
+            parsed_base = self._parsed_target or parse_target(self.target_url)
 
             # Execute sequential steps in journey chain
             for idx, s in enumerate(self.journey_steps):
@@ -579,7 +784,7 @@ class LoadEngine:
                 req_seq += 1
                 try:
                     request_url, headers, body_content = build_journey_request(
-                        s, context, parse_target(self.target_url), self.is_sandbox, self.cache_bust, vu_id, req_seq,
+                        s, context, parsed_base, self.is_sandbox, self.cache_bust, vu_id, req_seq,
                     )
                 except JourneyInputError:
                     self.request_stop(f"FAILED (Step {idx + 1}: required journey variable unavailable)")
@@ -645,18 +850,24 @@ class LoadEngine:
             async with asyncio.timeout(min(self.request_timeout_sec, guard_remaining)):
                 async with client.stream(method, url, headers=headers, content=content) as response:
                     status = response.status_code
-                    reason = self.brakes.observe_status(time.monotonic(), status, response.headers)
-                    if reason:
-                        self.request_stop(f"TRIPPED ({reason})")
+                    if status == 403 and self.brakes.is_waf_headers(response.headers):
+                        self.request_stop("TRIPPED (firewall blocked the request)")
                     else:
+                        preview_tripped = False
                         async for chunk in response.aiter_bytes(chunk_size=CHUNK_SIZE_BYTES):
                             received += len(chunk)
                             if not preview and (capture or status == 403):
                                 preview = chunk
-                                reason = self.brakes.observe_preview(status, preview)
-                                if reason:
-                                    self.request_stop(f"TRIPPED ({reason})")
-                                    break
+                                if status == 403:
+                                    reason = self.brakes.observe_preview(status, preview)
+                                    if reason:
+                                        self.request_stop(f"TRIPPED ({reason})")
+                                        preview_tripped = True
+                                        break
+                        if not preview_tripped:
+                            reason = self.brakes.observe_status(time.monotonic(), status, response.headers)
+                            if reason:
+                                self.request_stop(f"TRIPPED ({reason})")
         except (httpx.TimeoutException, TimeoutError):
             if self._guard_remaining(time.time()) <= 0:
                 self.request_stop("TRIPPED (Guard verification expired)")
@@ -665,6 +876,9 @@ class LoadEngine:
             status = 0
         except httpx.RequestError:
             status = 0
+            reason = self.brakes.observe_status(time.monotonic(), 0, {})
+            if reason:
+                self.request_stop(f"TRIPPED ({reason})")
         finally:
             self._request_vus -= 1
         return status, received, preview, (time.perf_counter() - started) * 1000, timed_out
@@ -672,27 +886,54 @@ class LoadEngine:
     def _record_response(self, status, received, latency, timed_out, passed):
         if 200 <= status < 300:
             self.status_2xx += 1
+        elif 300 <= status < 400:
+            self.status_3xx += 1
         elif status == 429:
             self.status_429 += 1
+        elif 400 <= status < 500:
+            self.status_4xx += 1
         elif 500 <= status < 600:
             self.status_5xx += 1
+        elif timed_out:
+            self.timeout_count += 1
+        elif status == 0:
+            self.network_error_count += 1
         else:
             self.status_other += 1
         self.total_requests += 1
         self._failed_requests += not passed
-        self._latency_counts[min(LATENCY_OVERFLOW_MS, math.ceil(latency))] += 1
-        self._max_latency_ms = max(self._max_latency_ms, latency)
         self.bytes_discarded += received
         now = time.time()
-        self._rolling_latencies.append((now, latency))
         self._rolling_requests.append((now, not passed, received))
-        self.brakes.observe_timing(time.monotonic(), latency, timed_out)
+
+        # Do not feed immediate non-timeout network failures (status == 0, timed_out=False)
+        # into latency histograms or p95 windows so 1ms ConnectErrors cannot mask latency.
+        if status != 0 or timed_out:
+            self._latency_sample_count += 1
+            bucket = min(LATENCY_OVERFLOW_MS, max(0, math.ceil(latency)))
+            self._latency_counts[bucket] += 1
+            if bucket == LATENCY_OVERFLOW_MS and len(self._overflow_latencies) < 10_000:
+                self._overflow_latencies.append(latency)
+            self._max_latency_ms = max(self._max_latency_ms, latency)
+            self._rolling_latencies.append((now, latency))
+
+            mono_now = time.monotonic()
+            self.brakes.observe_timing(mono_now, latency, timed_out)
+            if len(self.brakes.timings) >= 20 and (
+                timed_out
+                or latency > self.brakes.latency_limit
+                or mono_now - self._last_timing_check >= 0.1
+            ):
+                self._last_timing_check = mono_now
+                reason = self.brakes.timing_reason(mono_now)
+                if reason:
+                    self.request_stop(f"TRIPPED ({reason})")
 
     async def _circuit_monitor(self):
         while not self._stop_event.is_set():
             await asyncio.sleep(0.5)
             reason = self.brakes.timing_reason(time.monotonic())
-            if reason is None and self.get_status()["ram_mb"] > self.ram_limit_mb:
+            if reason is None and self._process_ram_mb() > self.ram_limit_mb:
                 reason = f"RAM exceeds {self.ram_limit_mb} MB limit"
             if reason:
                 self.request_stop(f"TRIPPED ({reason})")

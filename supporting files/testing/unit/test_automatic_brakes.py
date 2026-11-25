@@ -90,3 +90,59 @@ async def test_request_deadline_includes_reading_response_body():
         )
     assert status == 0
     assert timed_out
+
+
+def test_timing_reason_uses_nearest_rank_p95_index():
+    brakes = CircuitBreakers(25, 100)
+    # 19 fast samples (10ms) + 1 slow sample (500ms): N=20 -> nearest-rank index 18 -> 10ms (no trip)
+    for index in range(19):
+        brakes.observe_timing(index * 0.1, 10, False)
+    brakes.observe_timing(1.9, 500, False)
+    assert brakes.timing_reason(1.9) is None
+
+    # Replace one 10ms sample with 500ms so 2/20 are 500ms: index 18 is now 500ms -> trips
+    brakes2 = CircuitBreakers(25, 100)
+    for index in range(18):
+        brakes2.observe_timing(index * 0.1, 10, False)
+    brakes2.observe_timing(1.8, 500, False)
+    brakes2.observe_timing(1.9, 500, False)
+    assert "p95" in brakes2.timing_reason(1.9)
+
+
+@pytest.mark.asyncio
+async def test_network_errors_trip_consecutive_and_do_not_pollute_latency(monkeypatch):
+    def fail_connect(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    @asynccontextmanager
+    async def mocked_client(*args, **kwargs):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fail_connect)) as client:
+            yield client
+
+    monkeypatch.setattr(engine_module, "target_client", mocked_client)
+    engine = engine_module.LoadEngine()
+    await engine.start("https://example.invalid", "steady_crowd", 1, 5)
+    await asyncio.wait_for(engine._master_task, 2)
+    assert "TRIPPED" in engine.circuit_status
+    assert "consecutive" in engine.circuit_status
+    assert engine.network_error_count == 5
+    assert engine._latency_sample_count == 0
+    assert engine.latency_breakdown() is None
+
+
+@pytest.mark.asyncio
+async def test_stalled_body_does_not_record_phantom_200_in_breakers():
+    class StalledBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.Event().wait()
+            yield b""
+
+    engine = engine_module.LoadEngine()
+    engine.request_timeout_sec = 0.02
+    transport = httpx.MockTransport(lambda _: httpx.Response(200, stream=StalledBody()))
+    async with httpx.AsyncClient(transport=transport) as client:
+        status, _, _, _, timed_out = await asyncio.wait_for(
+            engine._read_response(client, "GET", "https://example.invalid", {}), 1
+        )
+    assert status == 0 and timed_out
+    assert len(engine.brakes.responses) == 0
