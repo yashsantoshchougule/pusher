@@ -32,10 +32,12 @@ export function trafficPhases(mode, vus, duration, schedule) {
   return phases;
 }
 
-export function createTrafficProfile(fetch, onChange, onSaveError) {
+export function createTrafficProfile(fetch, onChange, onSaveError, onSaveSuccess) {
   let draft = DEFAULT_TRAFFIC_PROFILE;
   let edited = false;
-  let pending = Promise.resolve();
+  let dirty = false;
+  let inFlight = null;
+  let nextSave = null;
   let latestSave = 0;
 
   function replace(config) {
@@ -43,35 +45,63 @@ export function createTrafficProfile(fetch, onChange, onSaveError) {
     onChange(config);
   }
 
-  function save() {
-    const body = JSON.stringify(draft);
-    const saveNumber = ++latestSave;
-    const write = pending.then(async () => {
-      try {
-        const response = await fetch('/api/traffic/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-        });
-        if (!response.ok) throw new Error('Save rejected');
-        if (saveNumber === latestSave) onSaveError('');
-        return true;
-      } catch {
-        if (saveNumber === latestSave) onSaveError('Could not save Traffic Setup. Please try again.');
-        return false;
+  async function writeNow(body, saveNumber) {
+    try {
+      const response = await fetch('/api/traffic/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (!response.ok) throw new Error('Save rejected');
+      if (saveNumber === latestSave) {
+        dirty = false;
+        onSaveError('');
+        onSaveSuccess?.();
       }
-    });
-    pending = write;
-    return write;
+      return true;
+    } catch {
+      if (saveNumber === latestSave) onSaveError('Could not save Traffic Setup. Please try again.');
+      return false;
+    }
+  }
+
+  function save() {
+    latestSave += 1;
+    if (!inFlight) {
+      const run = writeNow(JSON.stringify(draft), latestSave).finally(() => {
+        if (inFlight === run) inFlight = null;
+      });
+      inFlight = run;
+      return run;
+    }
+    if (!nextSave) {
+      const queued = inFlight.then(() => {
+        nextSave = null;
+        const run = writeNow(JSON.stringify(draft), latestSave).finally(() => {
+          if (inFlight === run) inFlight = null;
+        });
+        inFlight = run;
+        return run;
+      });
+      nextSave = queued;
+    }
+    return nextSave;
   }
 
   return {
     hydrate(config) {
-      if (!edited) replace({ ...DEFAULT_TRAFFIC_PROFILE, ...config, cache_bust: Boolean(config.cache_bust ?? true) });
+      if (!edited) {
+        dirty = false;
+        replace({ ...DEFAULT_TRAFFIC_PROFILE, ...config, cache_bust: Boolean(config.cache_bust ?? true) });
+      }
     },
     edit(overrides) {
       edited = true;
+      dirty = true;
       replace({ ...draft, ...overrides });
+    },
+    isDirty() {
+      return dirty;
     },
     save,
   };

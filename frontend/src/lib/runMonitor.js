@@ -1,4 +1,12 @@
-const terminalEvents = new Set(['COMPLETE', 'STOP', 'CIRCUIT_TRIPPED']);
+const terminalEvents = new Set([
+  'COMPLETE',
+  'STOP',
+  'STOPPED',
+  'CIRCUIT_TRIPPED',
+  'EMERGENCY_STOP',
+  'FAILED',
+  'MANUAL_ABORT',
+]);
 
 function isSnapshot(data) {
   return Number.isSafeInteger(data?.status_revision) && typeof data.is_running === 'boolean' &&
@@ -7,6 +15,7 @@ function isSnapshot(data) {
 
 export function watchRun({ fetch, getToken, openSocket, onStatus, onStatusError, onStopping, onStopError }) {
   let latest = null;
+  let lastTerminalRunId = null;
   let closed = false;
   let lastFrameAt = null;
   let statusRequest;
@@ -19,8 +28,16 @@ export function watchRun({ fetch, getToken, openSocket, onStatus, onStatusError,
   function accept(data) {
     if (closed || !isSnapshot(data) || (latest && data.status_revision <= latest.status_revision)) return;
     const changed = latest?.run_id !== data.run_id || latest?.is_running !== data.is_running;
-    const ended = (latest?.is_running && changed) ||
-      (terminalEvents.has(data.event) && latest?.run_id !== data.run_id);
+    const isTerminalEvent = terminalEvents.has(data.event) && !data.is_running && (
+      data.run_id ? lastTerminalRunId !== data.run_id : latest?.run_id !== data.run_id
+    );
+    const ended = Boolean((latest?.is_running && changed) || isTerminalEvent);
+    if (data.is_running && data.run_id && lastTerminalRunId === data.run_id) {
+      lastTerminalRunId = null;
+    }
+    if (isTerminalEvent && data.run_id) {
+      lastTerminalRunId = data.run_id;
+    }
     latest = data;
     if (changed) onStopError('');
     onStatus(data, ended);

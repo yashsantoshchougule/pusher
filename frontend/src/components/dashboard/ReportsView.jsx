@@ -1,11 +1,42 @@
 import React, { useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, AlertTriangle } from 'lucide-react';
 
 const measured = (value, unit) => Number.isFinite(value) ? `${value} ${unit}` : 'Unavailable';
 const capacity = (vus) => vus > 0 ? measured(vus, 'VUs') : 'Capacity unavailable';
 const timelinePageSize = 50;
 
-function RunTimeline({ timeseries }) {
+function aggregateStepsFromTimeseries(timeseries) {
+  if (!Array.isArray(timeseries) || timeseries.length === 0) return [];
+  const tiers = new Map();
+  for (const sample of timeseries) {
+    if (!sample || !Number.isFinite(sample.vus) || sample.vus <= 0) continue;
+    if (!tiers.has(sample.vus)) tiers.set(sample.vus, []);
+    tiers.get(sample.vus).push(sample);
+  }
+  const median = (arr) => {
+    if (!arr.length) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : Math.round(((sorted[mid - 1] + sorted[mid]) / 2) * 10) / 10;
+  };
+  let stepIndex = 0;
+  return Array.from(tiers.entries()).map(([vus, samples]) => {
+    stepIndex += 1;
+    const rpsList = samples.map((s) => s.rps).filter(Number.isFinite);
+    const p95List = samples.map((s) => s.p95_ms).filter(Number.isFinite);
+    const errList = samples.map((s) => s.error_pct).filter(Number.isFinite);
+    return {
+      step: stepIndex,
+      vus,
+      rps: rpsList.length ? Math.round(rpsList.reduce((a, b) => a + b, 0) / rpsList.length) : 0,
+      p95_ms: median(p95List),
+      error_pct: errList.length ? Math.max(...errList) : null,
+      samples: samples.length,
+    };
+  });
+}
+
+function RunTimeline({ timeseries, p95Ceiling, isProd }) {
   const [page, setPage] = useState(0);
   const samples = Array.isArray(timeseries) ? timeseries
     .filter((sample) => Number.isFinite(sample?.elapsed_sec) && sample.elapsed_sec >= 0)
@@ -32,15 +63,24 @@ function RunTimeline({ timeseries }) {
               </tr>
             </thead>
             <tbody>
-              {samples.slice(offset, offset + timelinePageSize).map((sample, index) => (
-                <tr key={offset + index} className="border-b border-black/20">
-                  <td className="py-1">{measured(sample.elapsed_sec, 's')}</td>
-                  <td>{measured(sample.vus, 'VUs')}</td>
-                  <td>{measured(sample.rps, 'RPS')}</td>
-                  <td>{measured(sample.p95_ms, 'ms')}</td>
-                  <td>{Number.isFinite(sample.error_pct) ? `${sample.error_pct}%` : 'Unavailable'}</td>
-                </tr>
-              ))}
+              {samples.slice(offset, offset + timelinePageSize).map((sample, index) => {
+                const isBreach = (Number.isFinite(sample.error_pct) && sample.error_pct > 0) ||
+                  (Number.isFinite(p95Ceiling) && p95Ceiling > 0 && Number.isFinite(sample.p95_ms) && sample.p95_ms > p95Ceiling);
+                return (
+                  <tr
+                    key={offset + index}
+                    className={`border-b border-black/20 ${
+                      isBreach ? (isProd ? 'bg-rose-50 text-rose-900 font-bold' : 'bg-black/10 font-bold') : ''
+                    }`}
+                  >
+                    <td className="py-1">{measured(sample.elapsed_sec, 's')}</td>
+                    <td>{measured(sample.vus, 'VUs')}</td>
+                    <td>{measured(sample.rps, 'RPS')}</td>
+                    <td>{measured(sample.p95_ms, 'ms')}</td>
+                    <td>{Number.isFinite(sample.error_pct) ? `${sample.error_pct}%` : 'Unavailable'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -59,9 +99,10 @@ function RunTimeline({ timeseries }) {
 }
 
 const comparisonMetrics = [
-  ['Recommended Load', 'knee_vus', 'knee_vus_delta', 'VUs'],
-  ['Peak Throughput', 'peak_rps', 'peak_rps_delta', 'RPS'],
-  ['P95 Latency', 'p95_ms', 'p95_ms_delta', 'ms'],
+  ['Recommended Load', 'knee_vus', 'knee_vus_delta', 'knee_vus_pct_change', 'VUs'],
+  ['Peak Throughput', 'peak_rps', 'peak_rps_delta', 'peak_rps_pct_change', 'RPS'],
+  ['P95 Latency', 'p95_ms', 'p95_ms_delta', 'p95_ms_pct_change', 'ms'],
+  ['Error Rate', 'error_pct', 'error_pct_delta', null, '%'],
 ];
 
 export default function ReportsView({
@@ -75,6 +116,7 @@ export default function ReportsView({
   compareCandidateId,
   setCompareCandidateId,
   compareData,
+  reportError = '',
   handleViewSingleReport,
   handleCompareRuns,
   handleExportReport,
@@ -96,6 +138,7 @@ export default function ReportsView({
             </p>
           </div>
         </div>
+        {reportError && <p role="alert" className="text-xs font-bold text-rose-700">{reportError}</p>}
         <div className="border-2 border-dashed border-black p-12 text-center bg-gray-50 flex flex-col items-center justify-center">
           <div className="text-sm font-black uppercase tracking-wider text-black">
             NO TEST RUNS AVAILABLE FOR ANALYSIS
@@ -116,8 +159,72 @@ export default function ReportsView({
   }
 
   const report = singleRunReport || (
-    selectedReportId ? runHistory.find((run) => run.run_id === selectedReportId) : runHistory[0]
+    selectedReportId ? runHistory.find((run) => (run.run_id || run.id) === selectedReportId) : runHistory[0]
   ) || {};
+
+  const activeReportId = selectedReportId || report.run_id || report.id || '';
+  const verdictCat = (report.verdictCategory || report.verdict || '').toUpperCase();
+  const isPassed = verdictCat === 'PASSED' || String(report.status || report.status_label || '').toUpperCase().includes('PASSED');
+  const isFailed = verdictCat === 'CIRCUIT_BREAKER' || verdictCat === 'FAILED';
+  const verdictTileBorder = isProd
+    ? (isFailed ? 'border-t-rose-600' : isPassed ? 'border-t-emerald-600' : 'border-t-amber-500')
+    : '';
+  const verdictBadgeClass = isProd
+    ? (isFailed
+      ? 'bg-rose-50 text-rose-800 border-rose-400'
+      : isPassed
+      ? 'bg-emerald-50 text-emerald-800 border-emerald-400'
+      : 'bg-amber-50 text-amber-900 border-amber-400')
+    : 'bg-white text-black border-black';
+
+  // Thresholds & failure counts
+  const p95Ceiling = report.effective_p95_ceiling_ms ?? report.p95_ceiling_ms;
+  const maxErrPct = report.effective_max_error_pct ?? report.max_error_pct;
+  const totalReq = report.total_requests ?? 0;
+  const s2xx = report.status_2xx ?? 0;
+  const s429 = report.status_429 ?? 0;
+  const s5xx = report.status_5xx ?? 0;
+  const sTimeout = report.timeout_count ?? 0;
+  const sNetErr = report.network_error_count ?? 0;
+  const s3xx = report.status_3xx ?? 0;
+  const s4xx = report.status_4xx ?? 0;
+  const sOther = Number.isFinite(report.status_other)
+    ? report.status_other
+    : Math.max(0, totalReq - s2xx - s3xx - s4xx - s429 - s5xx - sTimeout - sNetErr);
+
+  // Latency breakdown (support both p50 and p50_ms keys)
+  const lb = report.latency_breakdown || {};
+  const p50Val = lb.p50 ?? lb.p50_ms;
+  const p90Val = lb.p90 ?? lb.p90_ms;
+  const p99Val = lb.p99 ?? lb.p99_ms;
+  const maxVal = lb.max ?? lb.max_ms;
+
+  // Steps with timeseries VU-tier fallback
+  const progressionSteps = (Array.isArray(report.steps) && report.steps.length > 0)
+    ? report.steps
+    : aggregateStepsFromTimeseries(report.timeseries);
+
+  // Comparison comparability warnings
+  const compareWarnings = [];
+  if (compareData?.comparability_warnings?.length) {
+    compareWarnings.push(...compareData.comparability_warnings);
+  } else if (compareData?.base_run && compareData?.candidate_run) {
+    const b = compareData.base_run;
+    const c = compareData.candidate_run;
+    if (b.target_url && c.target_url && b.target_url !== c.target_url) {
+      compareWarnings.push('Runs targeted different URLs.');
+    }
+    if (b.mode && c.mode && b.mode !== c.mode) {
+      compareWarnings.push(`Traffic modes differ (${b.mode} vs ${c.mode}).`);
+    }
+    if (b.target_vus && c.target_vus && b.target_vus !== c.target_vus) {
+      compareWarnings.push(`Planned concurrency differs (${b.target_vus} vs ${c.target_vus} VUs).`);
+    }
+    if ((b.verdict && b.verdict !== 'PASSED') || (c.verdict && c.verdict !== 'PASSED')) {
+      compareWarnings.push(`At least one run did not complete cleanly (${b.verdict || 'unknown'} vs ${c.verdict || 'unknown'}).`);
+    }
+  }
+  const showCompareWarning = Boolean(compareData?.comparable === false || compareWarnings.length > 0);
 
   return (
     <div className="space-y-6">
@@ -149,6 +256,12 @@ export default function ReportsView({
         </div>
       </div>
 
+      {reportError && (
+        <p role="alert" className="border-2 border-rose-500 bg-rose-50 text-rose-800 px-3 py-2 text-xs font-bold">
+          {reportError}
+        </p>
+      )}
+
       {/* Sub-Navigation Tabs: Single-Run vs. Comparison */}
       <div className="flex border-b-2 border-black gap-2">
         <button
@@ -166,8 +279,12 @@ export default function ReportsView({
           type="button"
           onClick={() => {
             setReportMode('compare');
-            if (!compareData) {
+            if (!compareData && compareBaseId && compareCandidateId) {
               handleCompareRuns(compareBaseId, compareCandidateId);
+            } else if (!compareData && !compareBaseId && !compareCandidateId && runHistory.length >= 2) {
+              const base = runHistory[1]?.run_id || runHistory[1]?.id;
+              const cand = runHistory[0]?.run_id || runHistory[0]?.id;
+              if (base && cand) handleCompareRuns(base, cand);
             }
           }}
           className={`px-4 py-2 text-xs font-black uppercase tracking-wider border-2 border-black border-b-0 cursor-pointer ${
@@ -190,10 +307,11 @@ export default function ReportsView({
             <div className="flex items-center gap-2 w-full sm:w-auto">
               <span className="text-xs font-bold uppercase whitespace-nowrap">Select Run to Inspect:</span>
               <select
-                value={selectedReportId}
+                value={activeReportId}
                 onChange={(e) => handleViewSingleReport(e.target.value)}
                 className="border-2 border-black px-2 py-1 text-xs font-mono bg-white focus:outline-none w-full sm:w-64 cursor-pointer"
               >
+                {!activeReportId && <option value="">Select run…</option>}
                 {runHistory.map((r) => (
                   <option key={r.id || r.run_id} value={r.id || r.run_id}>
                     {r.id || r.run_id} — {r.mode || 'Load Test'} ({r.timestamp})
@@ -204,8 +322,9 @@ export default function ReportsView({
 
             <button
               type="button"
-              onClick={() => handleExportReport(selectedReportId)}
-              className="border-2 border-black px-3 py-1.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+              disabled={!activeReportId}
+              onClick={() => handleExportReport(activeReportId)}
+              className="border-2 border-black px-3 py-1.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Download className="w-3.5 h-3.5" />
               <span>EXPORT JSON SCORECARD</span>
@@ -229,7 +348,9 @@ export default function ReportsView({
               <div className="text-2xl font-black mt-1">
                 {Number(report.peak_rps ?? 0).toLocaleString()} RPS
               </div>
-              <div className="text-[10px] opacity-75">Total: {Number(report.total_requests ?? 0).toLocaleString()} Reqs</div>
+              <div className="text-[10px] opacity-75">
+                Total: {Number(totalReq).toLocaleString()} Reqs · Avg: {measured(report.avg_rps, 'RPS')}
+              </div>
             </div>
             <div className={`border-2 border-black p-3.5 bg-white text-center ${
               isProd ? 'border-t-4 border-t-teal-700 shadow-sm' : ''
@@ -240,14 +361,81 @@ export default function ReportsView({
               </div>
             </div>
             <div className={`border-2 border-black p-3.5 bg-white text-center ${
-              isProd ? 'border-t-4 border-t-teal-700 shadow-sm' : ''
+              isProd ? `border-t-4 ${verdictTileBorder} shadow-sm` : ''
             }`}>
               <div className="text-[10px] font-bold uppercase">VERDICT STATUS</div>
-              <div className="text-sm font-black mt-2 uppercase border border-black px-1 py-0.5 inline-block">
-                {report.status ?? report.verdict ?? '—'}
+              <div className={`text-xs font-black mt-2 uppercase border px-1.5 py-0.5 inline-block ${verdictBadgeClass}`}>
+                {report.status ?? report.status_label ?? report.verdict ?? '—'}
               </div>
               <div className="text-[10px] opacity-75 mt-1">
                 Error rate: {report.error_pct == null ? 'Unavailable' : `${report.error_pct}%`}
+              </div>
+            </div>
+          </div>
+
+          {/* Execution Metadata, Configured Thresholds & Request Outcome Breakdown */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className={`border-2 border-black p-4 bg-white space-y-2 text-xs font-mono ${isProd ? 'shadow-sm' : ''}`}>
+              <div className="text-xs font-bold uppercase border-b border-black pb-1">
+                Execution Profile &amp; Configured Limits
+              </div>
+              <div className="grid grid-cols-2 gap-y-1 gap-x-2">
+                <div><span className="font-bold">Target:</span> <span className="break-all">{report.target_url || report.target || 'Unavailable'}</span></div>
+                <div><span className="font-bold">Mode:</span> {report.mode || 'Unavailable'}</div>
+                <div><span className="font-bold">VUs (Peak/Target):</span> {report.peak_vus ?? report.peakVus ?? '—'} / {report.target_vus ?? '—'}</div>
+                <div><span className="font-bold">Elapsed / Duration:</span> {report.elapsed_sec ?? '—'}s / {report.duration_sec ?? report.duration ?? '—'}s</div>
+                <div><span className="font-bold">Avg Throughput:</span> {measured(report.avg_rps, 'RPS')}</div>
+                <div><span className="font-bold">Engine RAM / Stream:</span> {measured(report.ram_mb, 'MB')} · {measured(report.bytes_discarded_mb, 'MB')}</div>
+                <div>
+                  <span className="font-bold">P95 Ceiling:</span>{' '}
+                  {Number.isFinite(p95Ceiling) ? `${Number(p95Ceiling).toLocaleString()} ms` : 'Unavailable'}
+                </div>
+                <div>
+                  <span className="font-bold">Max Error %:</span>{' '}
+                  {Number.isFinite(maxErrPct) ? `${maxErrPct}%` : 'Unavailable'}
+                </div>
+                <div>
+                  <span className="font-bold">RAM Limit:</span>{' '}
+                  {Number.isFinite(report.ram_limit_mb) ? `${report.ram_limit_mb} MB` : 'Unavailable'}
+                </div>
+                <div>
+                  <span className="font-bold">Req Timeout:</span>{' '}
+                  {Number.isFinite(report.request_timeout_sec) ? `${report.request_timeout_sec}s` : 'Unavailable'}
+                </div>
+              </div>
+            </div>
+
+            <div className={`border-2 border-black p-4 bg-white space-y-2 text-xs font-mono ${isProd ? 'shadow-sm' : ''}`}>
+              <div className="text-xs font-bold uppercase border-b border-black pb-1">
+                Request &amp; Failure Breakdown
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="border border-black p-2">
+                  <div className="text-[10px] opacity-75">2XX OK</div>
+                  <div className={`text-sm font-black ${isProd ? 'text-emerald-700' : ''}`}>{s2xx.toLocaleString()}</div>
+                </div>
+                <div className="border border-black p-2">
+                  <div className="text-[10px] opacity-75">429 LIMIT</div>
+                  <div className={`text-sm font-black ${isProd && s429 > 0 ? 'text-amber-700' : ''}`}>{s429.toLocaleString()}</div>
+                </div>
+                <div className="border border-black p-2">
+                  <div className="text-[10px] opacity-75">5XX ERROR</div>
+                  <div className={`text-sm font-black ${isProd && s5xx > 0 ? 'text-rose-700' : ''}`}>{s5xx.toLocaleString()}</div>
+                </div>
+                <div className="border border-black p-2">
+                  <div className="text-[10px] opacity-75">TIMEOUTS</div>
+                  <div className={`text-sm font-black ${isProd && sTimeout > 0 ? 'text-rose-700' : ''}`}>{sTimeout.toLocaleString()}</div>
+                </div>
+                <div className="border border-black p-2">
+                  <div className="text-[10px] opacity-75">NETWORK ERR</div>
+                  <div className={`text-sm font-black ${isProd && sNetErr > 0 ? 'text-rose-700' : ''}`}>{sNetErr.toLocaleString()}</div>
+                </div>
+                <div className="border border-black p-2">
+                  <div className="text-[10px] opacity-75">OTHER ({s3xx > 0 || s4xx > 0 ? '3XX/4XX/MISC' : 'NON-2XX'})</div>
+                  <div className={`text-sm font-black ${isProd && (sOther + s3xx + s4xx) > 0 ? 'text-amber-800' : ''}`}>
+                    {(sOther + s3xx + s4xx).toLocaleString()}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -257,7 +445,12 @@ export default function ReportsView({
           )}
 
           {singleRunReport && (
-            <RunTimeline key={report.run_id ?? selectedReportId} timeseries={report.timeseries} />
+            <RunTimeline
+              key={report.run_id ?? selectedReportId}
+              timeseries={report.timeseries}
+              p95Ceiling={p95Ceiling}
+              isProd={isProd}
+            />
           )}
 
           {/* Mathematical Knee-of-the-Curve Analysis Card */}
@@ -276,6 +469,18 @@ export default function ReportsView({
             <p className="text-xs font-mono opacity-80 leading-relaxed">
               {report.bottleneck_summary ?? 'Open the full report to view the knee analysis.'}
             </p>
+            {report.capacity_reason && (
+              <p className="text-xs font-mono opacity-75">
+                <strong>Reason:</strong> {report.capacity_reason}
+              </p>
+            )}
+            {(report.linear_range || report.optimal_point || report.cliff_point) && (
+              <div className="flex flex-wrap gap-4 text-[11px] font-mono pt-1 border-t border-black/20">
+                {report.linear_range && <span>Linear Range: <strong>{report.linear_range}</strong></span>}
+                {report.optimal_point && <span>Optimal Point: <strong>{report.optimal_point}</strong></span>}
+                {report.cliff_point && <span>Cliff Point: <strong>{report.cliff_point}</strong></span>}
+              </div>
+            )}
           </div>
 
           {/* Latency Percentile Breakdown & VU Progression Table */}
@@ -288,23 +493,23 @@ export default function ReportsView({
                 <tbody>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P50 (Median):</td>
-                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.p50, 'ms')}</td>
+                    <td className="py-1 font-bold text-right">{measured(p50Val, 'ms')}</td>
                   </tr>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P90:</td>
-                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.p90, 'ms')}</td>
+                    <td className="py-1 font-bold text-right">{measured(p90Val, 'ms')}</td>
                   </tr>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P95:</td>
-                    <td className="py-1 font-bold text-right">{measured(report.p95_ms, 'ms')}</td>
+                    <td className="py-1 font-bold text-right">{measured(report.p95_ms ?? lb.p95 ?? lb.p95_ms, 'ms')}</td>
                   </tr>
                   <tr className="border-b border-black/20">
                     <td className="py-1">P99:</td>
-                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.p99, 'ms')}</td>
+                    <td className="py-1 font-bold text-right">{measured(p99Val, 'ms')}</td>
                   </tr>
                   <tr>
                     <td className="py-1">Max Recorded:</td>
-                    <td className="py-1 font-bold text-right">{measured(report.latency_breakdown?.max, 'ms')}</td>
+                    <td className="py-1 font-bold text-right">{measured(maxVal, 'ms')}</td>
                   </tr>
                 </tbody>
               </table>
@@ -325,22 +530,61 @@ export default function ReportsView({
                   </tr>
                 </thead>
                 <tbody>
-                  {!report.steps?.length && (
+                  {!progressionSteps.length && (
                     <tr><td colSpan={5} className="py-2">No step summaries available.</td></tr>
                   )}
-                  {(report.steps || []).map((s, idx) => (
+                  {progressionSteps.map((s, idx) => (
                     <tr key={s.step || idx} className="border-b border-black/20">
                       <td className="py-1">Step {s.step || idx + 1}</td>
                       <td className="py-1 text-right font-bold">{s.vus}</td>
                       <td className="py-1 text-right">{s.rps}</td>
                       <td className="py-1 text-right">{measured(s.p95_ms, 'ms')}</td>
-                      <td className="py-1 text-right">{measured(s.error_pct, '%')}</td>
+                      <td className="py-1 text-right">{Number.isFinite(s.error_pct) ? `${s.error_pct}%` : 'Unavailable'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </div>
+
+          {/* Journey Step Metrics Table (if journey steps exist) */}
+          {Array.isArray(report.step_metrics) && report.step_metrics.length > 0 && (
+            <div className={`border-2 border-black p-4 bg-white space-y-2 ${isProd ? 'shadow-sm' : ''}`}>
+              <div className="text-xs font-bold uppercase border-b border-black pb-1">
+                API Journey Step Performance
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-black text-[10px]">
+                      <th className="py-1">STEP</th>
+                      <th className="py-1">METHOD</th>
+                      <th className="py-1">PATH</th>
+                      <th className="py-1 text-right">REQS</th>
+                      <th className="py-1 text-right">PASS</th>
+                      <th className="py-1 text-right">FAIL</th>
+                      <th className="py-1 text-right">AVG (MS)</th>
+                      <th className="py-1 text-center">LAST HTTP</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.step_metrics.map((sm, idx) => (
+                      <tr key={sm.step_id || idx} className="border-b border-black/20">
+                        <td className="py-1 font-bold">{sm.name || `Step ${idx + 1}`}</td>
+                        <td className="py-1">{sm.method}</td>
+                        <td className="py-1 truncate max-w-[200px]">{sm.path}</td>
+                        <td className="py-1 text-right">{sm.requests ?? 0}</td>
+                        <td className="py-1 text-right">{sm.passed ?? 0}</td>
+                        <td className="py-1 text-right">{sm.failed ?? 0}</td>
+                        <td className="py-1 text-right">{measured(sm.avg_latency_ms, 'ms')}</td>
+                        <td className="py-1 text-center">{sm.last_status || '---'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -353,10 +597,11 @@ export default function ReportsView({
               <div className="md:col-span-5 flex items-center gap-2">
                 <span className="text-xs font-bold uppercase whitespace-nowrap">Baseline (Base):</span>
                 <select
-                  value={compareBaseId}
+                  value={compareBaseId || ''}
                   onChange={(e) => setCompareBaseId(e.target.value)}
                   className="w-full border-2 border-black p-1 text-xs font-mono bg-white focus:outline-none cursor-pointer"
                 >
+                  <option value="">Select baseline run…</option>
                   {runHistory.map((r) => (
                     <option key={r.id || r.run_id} value={r.id || r.run_id}>
                       {r.id || r.run_id} — {r.mode} ({r.timestamp})
@@ -368,10 +613,11 @@ export default function ReportsView({
               <div className="md:col-span-5 flex items-center gap-2">
                 <span className="text-xs font-bold uppercase whitespace-nowrap">Candidate:</span>
                 <select
-                  value={compareCandidateId}
+                  value={compareCandidateId || ''}
                   onChange={(e) => setCompareCandidateId(e.target.value)}
                   className="w-full border-2 border-black p-1 text-xs font-mono bg-white focus:outline-none cursor-pointer"
                 >
+                  <option value="">Select candidate run…</option>
                   {runHistory.map((r) => (
                     <option key={r.id || r.run_id} value={r.id || r.run_id}>
                       {r.id || r.run_id} — {r.mode} ({r.timestamp})
@@ -383,8 +629,9 @@ export default function ReportsView({
               <div className="md:col-span-2">
                 <button
                   type="button"
+                  disabled={!compareBaseId || !compareCandidateId}
                   onClick={() => handleCompareRuns(compareBaseId, compareCandidateId)}
-                  className={`w-full border-2 border-black py-1.5 px-2 text-xs font-black uppercase transition-colors cursor-pointer text-center ${
+                  className={`w-full border-2 border-black py-1.5 px-2 text-xs font-black uppercase transition-colors cursor-pointer text-center disabled:opacity-40 disabled:cursor-not-allowed ${
                     isProd ? 'bg-teal-700 text-white hover:bg-teal-800' : 'bg-black text-white hover:bg-white hover:text-black'
                   }`}
                 >
@@ -396,8 +643,31 @@ export default function ReportsView({
 
           {compareData ? (
             <div className="border-2 border-black p-4 bg-white space-y-3">
-              <h2 className="text-xs font-black uppercase">{compareData.overall_verdict}</h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className={`text-xs font-black uppercase px-2 py-0.5 border ${
+                  isProd
+                    ? (compareData.overall_verdict === 'IMPROVED'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-400'
+                      : compareData.overall_verdict === 'REGRESSED'
+                      ? 'bg-rose-50 text-rose-800 border-rose-400'
+                      : 'bg-amber-50 text-amber-900 border-amber-400')
+                    : 'border-black'
+                }`}>
+                  {compareData.overall_verdict}
+                </h2>
+              </div>
               <p className="text-xs">{compareData.summary}</p>
+              {showCompareWarning && (
+                <div role="status" className={`border p-2.5 text-xs font-mono flex items-start gap-2 ${
+                  isProd ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-black bg-white'
+                }`}>
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Comparability warning:</strong>{' '}
+                    {compareWarnings.join(' ') || 'Baseline and candidate runs differ in configuration or outcome.'}
+                  </div>
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs font-mono">
                   <thead>
@@ -409,14 +679,21 @@ export default function ReportsView({
                     </tr>
                   </thead>
                   <tbody>
-                    {comparisonMetrics.map(([label, field, deltaField, unit]) => (
-                      <tr key={field} className="border-b border-black/20">
-                        <th scope="row" className="py-2 px-3">{label}</th>
-                        <td className="py-2 px-3">{field === 'knee_vus' ? capacity(compareData.base_run[field]) : measured(compareData.base_run[field], unit)}</td>
-                        <td className="py-2 px-3">{field === 'knee_vus' ? capacity(compareData.candidate_run[field]) : measured(compareData.candidate_run[field], unit)}</td>
-                        <td className="py-2 px-3 text-right">{measured(compareData.deltas[deltaField], unit)}</td>
-                      </tr>
-                    ))}
+                    {comparisonMetrics.map(([label, field, deltaField, pctField, unit]) => {
+                      const deltaVal = compareData.deltas?.[deltaField];
+                      const pctVal = pctField ? compareData.deltas?.[pctField] : null;
+                      return (
+                        <tr key={field} className="border-b border-black/20">
+                          <th scope="row" className="py-2 px-3">{label}</th>
+                          <td className="py-2 px-3">{field === 'knee_vus' ? capacity(compareData.base_run[field]) : measured(compareData.base_run[field], unit)}</td>
+                          <td className="py-2 px-3">{field === 'knee_vus' ? capacity(compareData.candidate_run[field]) : measured(compareData.candidate_run[field], unit)}</td>
+                          <td className="py-2 px-3 text-right">
+                            {measured(deltaVal, unit)}
+                            {Number.isFinite(pctVal) ? ` (${pctVal > 0 ? '+' : ''}${pctVal}%)` : ''}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

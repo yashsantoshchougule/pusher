@@ -212,3 +212,107 @@ test('Clone explains a cap adjustment and preserves the current count for legacy
   assert.equal(setup().duration, 300);
   assert.match(setup().trafficCloneNotice, /no planned user count/i);
 });
+
+test('rapid slider updates coalesce into one pending write with the latest draft', async () => {
+  const first = deferred();
+  const saved = [];
+  const dashboard = await trafficDashboard(async (path, options) => {
+    if (path === '/api/target/status') return reply(verifiedTarget);
+    assert.equal(path, '/api/traffic/config');
+    saved.push(JSON.parse(options.body));
+    return saved.length === 1 ? first.promise : reply({});
+  });
+  const setup = dashboard.props('TrafficSetupView');
+  setup.setVus(110);
+  for (let next = 111; next <= 160; next += 1) {
+    setup.setVus(next);
+  }
+  await setImmediate();
+  assert.equal(saved.length, 1);
+  first.resolve(reply({}));
+  await setImmediate();
+  await setImmediate();
+  assert.equal(saved.length, 2);
+  assert.equal(saved[1].virtual_users, 160);
+});
+
+test('Clone preserves thresholds, marks unsaved draft, and Dashboard launch auto-saves and clamps p95', async () => {
+  const calls = [];
+  const dashboard = await trafficDashboard(async (path, options) => {
+    if (path === '/api/target/status') return reply(verifiedTarget);
+    calls.push([path, JSON.parse(options.body)]);
+    if (path === '/api/traffic/config') return reply({});
+    if (path === '/api/load/start') return reply({ snapshot: { is_running: true } });
+    return reply({});
+  }, { hardware: { max_safe_ram_mb: 12000, base_engine_ram_mb: 50, ram_per_vu_mb: 0.2, max_worker_vus: 3000, max_p95_ceiling_ms: 8000 } });
+
+  dashboard.navigate('history');
+  dashboard.props('TestHistoryView').handleCloneRun({
+    mode: 'Step Ramp',
+    target_vus: 150,
+    duration_sec: 60,
+    ram_limit_mb: 1024,
+    p95_ceiling_ms: 9500,
+    max_error_pct: 10,
+    cache_bust: false,
+  });
+  const setup = dashboard.props('TrafficSetupView');
+  assert.equal(setup.ramLimitMb, 1024);
+  assert.equal(setup.p95Ceiling, 8000);
+  assert.equal(setup.max5xxThreshold, 10);
+  assert.equal(setup.cacheBusting, false);
+  assert.equal(setup.hasUnsavedTraffic, true);
+  assert.equal(calls.length, 0);
+
+  dashboard.navigate('dashboard');
+  assert.equal(dashboard.props('OverviewBoxes').hasUnsavedTraffic, true);
+  await dashboard.props('OverviewBoxes').handleStartTest();
+  assert.deepEqual(calls.map(([p]) => p), ['/api/traffic/config', '/api/load/start']);
+  assert.equal(calls[1][1].p95_ceiling_ms, 8000);
+});
+
+test('filtered history preserves dashboard scorecard and clear-archive honors confirm()', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let deletes = 0;
+  let allowConfirm = false;
+  const dashboard = await trafficDashboard(async (path, options) => {
+    if (path === '/api/target/status') return reply(verifiedTarget);
+    if (path === '/api/history' && options?.method === 'DELETE') {
+      deletes += 1;
+      return reply({});
+    }
+    if (path.startsWith('/api/history')) {
+      const hasFilter = path.includes('verdict=');
+      return reply({
+        runs: [{ run_id: hasFilter ? 'R-FILTERED' : 'R-GLOBAL', mode: 'Step Ramp', verdict: hasFilter ? 'FAILED' : 'PASSED' }],
+        scorecard: hasFilter
+          ? { run_id: 'R-FILTERED', knee_vus: 0, peak_rps: 10, p95_ms: 5000 }
+          : { run_id: 'R-GLOBAL', knee_vus: 40, peak_rps: 500, p95_ms: 120 },
+      });
+    }
+    return reply({});
+  }, { confirm: () => allowConfirm });
+
+  dashboard.runEffect('fetchHistory');
+  t.mock.timers.tick(200);
+  await setImmediate();
+  dashboard.navigate('dashboard');
+  assert.equal(dashboard.props('OverviewBoxes').latestScorecard.run_id, 'R-GLOBAL');
+
+  dashboard.navigate('history');
+  await dashboard.props('TestHistoryView').handleClearArchive();
+  assert.equal(deletes, 0);
+  allowConfirm = true;
+  await dashboard.props('TestHistoryView').handleClearArchive();
+  assert.equal(deletes, 1);
+
+  dashboard.runEffect('fetchHistory');
+  t.mock.timers.tick(200);
+  await setImmediate();
+  dashboard.props('TestHistoryView').setHistoryStatusFilter('CIRCUIT_BREAKER');
+  dashboard.runEffect('fetchHistory');
+  t.mock.timers.tick(200);
+  await setImmediate();
+  dashboard.navigate('dashboard');
+  assert.equal(dashboard.props('OverviewBoxes').latestScorecard.run_id, 'R-GLOBAL');
+});

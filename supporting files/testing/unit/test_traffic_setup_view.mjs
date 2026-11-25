@@ -82,3 +82,18 @@ test('the schedule shows the rush warm-up, skips unreachable phases, and renders
   assert.ok(markup.includes('3–30 s'));
   assert.ok(markup.includes('105 VUs'));
 });
+
+test('step-ramp warnings, loopback high-VU advisory, and null host RAM guard render cleanly', () => {
+  const markup = renderTraffic({
+    trafficMode: 'step_ramp',
+    vus: 175,
+    duration: 30,
+    sandboxMode: true,
+    maxHardwareSafeRamMb: null,
+  });
+  assert.ok(markup.includes('5 steps · 6s/step · starts at Step 1 35 VUs'));
+  assert.ok(markup.includes('Short step window'));
+  assert.ok(markup.includes('Loopback / single-host saturation warning'));
+  assert.ok(markup.includes('max 25%'));
+  assert.ok(!markup.includes('Above host limit'));
+});

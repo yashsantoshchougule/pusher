@@ -1,18 +1,14 @@
 import React from 'react';
 import {
-  Search,
   CheckSquare,
   Square,
   Trash2,
-  ArrowRight,
-  Copy,
-  ExternalLink,
-  Activity
 } from 'lucide-react';
 
 export default function TestHistoryView({
   runHistory,
   filteredRuns,
+  hasActiveFilter = false,
   historyLoading,
   historyError,
   hasMoreHistory,
@@ -97,7 +93,7 @@ export default function TestHistoryView({
               <option value="ALL">ALL VERDICTS</option>
               <option value="PASSED">PASSED</option>
               <option value="FAILED">FAILED</option>
-              <option value="CIRCUIT_TRIPPED">CIRCUIT TRIPPED (429/5XX)</option>
+              <option value="CIRCUIT_BREAKER">CIRCUIT BREAKER (TRIPPED)</option>
               <option value="MANUAL_ABORT">MANUAL ABORT</option>
             </select>
           </div>
@@ -121,7 +117,7 @@ export default function TestHistoryView({
             <button
               type="button"
               disabled={selectedForCompare.length < 2}
-              onClick={() => handleCompareRuns(selectedForCompare[1], selectedForCompare[0])}
+              onClick={() => handleCompareRuns(selectedForCompare[0], selectedForCompare[1])}
               className={`border-2 border-black px-3 py-1.5 text-xs font-bold uppercase transition-colors ${
                 selectedForCompare.length === 2
                   ? (isProd ? 'bg-teal-700 text-white hover:bg-teal-800 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
@@ -136,7 +132,7 @@ export default function TestHistoryView({
               className={`border-2 border-black px-2.5 py-1.5 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center gap-1 ${
                 isProd ? 'bg-rose-50 text-rose-800 border-rose-400 hover:bg-rose-100' : 'bg-white text-black hover:bg-black hover:text-white'
               }`}
-              title="Clear all saved test runs from database"
+              title="Confirm and clear all saved test runs from database"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>CLEAR</span>
@@ -155,10 +151,13 @@ export default function TestHistoryView({
               <th className="py-2.5 px-3">TIMESTAMP</th>
               <th className="py-2.5 px-3">TARGET</th>
               <th className="py-2.5 px-3">MODE</th>
-              <th className="py-2.5 px-3 text-right">PEAK VUs</th>
+              <th className="py-2.5 px-3 text-right">VUs (PEAK / TARGET)</th>
               <th className="py-2.5 px-3 text-right">DUR</th>
+              <th className="py-2.5 px-3 text-right">REQS</th>
               <th className="py-2.5 px-3 text-right">PEAK RPS</th>
               <th className="py-2.5 px-3 text-right">P95</th>
+              <th className="py-2.5 px-3 text-right">ERR %</th>
+              <th className="py-2.5 px-3 text-right">KNEE</th>
               <th className="py-2.5 px-3">VERDICT</th>
               <th className="py-2.5 px-3 text-center">ACTIONS</th>
             </tr>
@@ -166,17 +165,34 @@ export default function TestHistoryView({
           <tbody>
             {filteredRuns.length === 0 ? (
               <tr>
-                <td colSpan="11" className="text-center py-10 opacity-70 font-bold uppercase tracking-wider text-xs">
-                  {runHistory.length === 0 ? '0 RECORDED RUNS IN DATABASE' : 'No matching load test runs found in archive.'}
+                <td colSpan="14" className="text-center py-10 opacity-70 font-bold uppercase tracking-wider text-xs">
+                  {!hasActiveFilter && runHistory.length === 0 ? '0 RECORDED RUNS IN DATABASE' : 'No matching load test runs found in archive.'}
                 </td>
               </tr>
             ) : (
               filteredRuns.map((run) => {
                 const runId = run.id || run.run_id;
                 const isSelected = selectedForCompare.includes(runId);
-                const verdict = run.status || (run.verdictCategory === 'PASSED' ? 'PASSED' : 'AUTO-ABORT');
-                const isPassed = run.verdictCategory === 'PASSED' || verdict.includes('PASSED');
-                const isTripped = run.verdictCategory === 'CIRCUIT_BREAKER' || verdict.includes('Circuit') || verdict.includes('429');
+                const category = (run.verdictCategory || run.verdict || '').toUpperCase();
+                const fullVerdict = run.status || run.status_label || category || 'UNKNOWN';
+                const lowerVerdict = fullVerdict.toLowerCase();
+                const isPassed = category === 'PASSED' || (!category && lowerVerdict.includes('passed'));
+                const isTripped = category === 'CIRCUIT_BREAKER' || lowerVerdict.includes('circuit') || lowerVerdict.includes('tripped');
+                const isFailed = category === 'FAILED' || lowerVerdict.startsWith('failed');
+                const pillLabel = isPassed
+                  ? 'PASSED'
+                  : isTripped
+                  ? 'CIRCUIT BREAKER'
+                  : isFailed
+                  ? 'FAILED'
+                  : (category === 'MANUAL_ABORT' || lowerVerdict.includes('abort'))
+                  ? 'MANUAL ABORT'
+                  : fullVerdict;
+
+                const peakVus = run.peakVus ?? run.peak_vus;
+                const targetVus = run.target_vus;
+                const elapsedSec = run.elapsed_sec;
+                const plannedDur = run.duration_sec ?? run.duration;
 
                 return (
                   <tr key={runId} className="border-b border-black/30 hover:bg-black/5">
@@ -203,21 +219,39 @@ export default function TestHistoryView({
                       </button>
                     </td>
                     <td className="py-2 px-3 text-[11px] opacity-80">{run.timestamp}</td>
-                    <td className="py-2 px-3 font-mono text-[11px] truncate max-w-[160px]">{run.target}</td>
+                    <td className="py-2 px-3 font-mono text-[11px] truncate max-w-[160px]" title={run.target_url || run.target}>
+                      {run.target || run.target_url}
+                    </td>
                     <td className="py-2 px-3 font-bold uppercase text-[11px]">{run.mode}</td>
-                    <td className="py-2 px-3 text-right font-bold">{run.peakVus ?? run.peak_vus ?? '—'}</td>
-                    <td className="py-2 px-3 text-right">{run.duration}s</td>
-                    <td className="py-2 px-3 text-right font-bold">{run.peakRps || run.rps}</td>
-                    <td className="py-2 px-3 text-right">{run.p95}</td>
+                    <td className="py-2 px-3 text-right font-bold">
+                      {peakVus ?? '—'}{targetVus != null ? ` / ${targetVus}` : ''}
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      {elapsedSec != null && plannedDur != null ? `${elapsedSec}s / ${plannedDur}s` : `${plannedDur ?? '—'}s`}
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      {run.total_requests != null ? Number(run.total_requests).toLocaleString() : '—'}
+                    </td>
+                    <td className="py-2 px-3 text-right font-bold">{run.peakRps ?? run.peak_rps ?? run.rps ?? 0}</td>
+                    <td className="py-2 px-3 text-right">{run.p95 ?? (run.p95_ms != null ? `${run.p95_ms} ms` : 'Unavailable')}</td>
+                    <td className={`py-2 px-3 text-right font-bold ${isProd && (run.error_pct ?? 0) > 0 ? 'text-rose-700' : ''}`}>
+                      {run.error_pct != null ? `${run.error_pct}%` : '—'}
+                    </td>
+                    <td className="py-2 px-3 text-right">
+                      {run.knee_vus > 0 ? `${run.knee_vus} VUs` : 'Unavailable'}
+                    </td>
                     <td className="py-2 px-3">
-                      <span className={`border border-current px-1.5 py-0.5 text-[10px] font-bold ${
-                        isPassed
-                          ? (isProd ? 'bg-emerald-50 text-emerald-800 border-emerald-400' : 'bg-black text-white border-black')
-                          : isTripped
-                          ? (isProd ? 'bg-rose-50 text-rose-800 border-rose-400' : 'bg-black text-white border-black')
-                          : (isProd ? 'bg-amber-50 text-amber-800 border-amber-400' : 'bg-white text-black border-black')
-                      }`}>
-                        {verdict}
+                      <span
+                        title={fullVerdict}
+                        className={`border px-1.5 py-0.5 text-[10px] font-bold uppercase whitespace-nowrap ${
+                          isPassed
+                            ? (isProd ? 'bg-emerald-50 text-emerald-800 border-emerald-400' : 'bg-black text-white border-black')
+                            : (isTripped || isFailed)
+                            ? (isProd ? 'bg-rose-50 text-rose-800 border-rose-400' : 'bg-black text-white border-black')
+                            : (isProd ? 'bg-amber-50 text-amber-800 border-amber-400' : 'bg-white text-black border-black')
+                        }`}
+                      >
+                        {pillLabel}
                       </span>
                     </td>
                     <td className="py-2 px-3 text-center">
