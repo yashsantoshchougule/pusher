@@ -57,3 +57,13 @@ On 24 November 2026, reran the release commands from a disposable, environment-f
 - 185 backend tests, 89 Node unit tests, and 10 clock checks passed with zero failures and zero skips. The production build and loopback sandbox through finalized report export passed. Both lockfiles were unchanged.
 - Pytest emitted 11 existing deprecation warnings. npm reported one uncovered esbuild install script. The installed toolchain completed the tests and build with the existing npm script policy.
 - GitHub still exposed only `main` at `cd9dc7ac3a77e19efea764c9064e95774bc63431` when the rehearsal began. The local candidate is ready for owner review and publication. The published commit remains the input for the final verification pass.
+
+## Published commit verification
+
+Passed on 24 November 2026. GitHub `main` pointed to `586f10461f894c759291ea895c84bcce1cce3396`. A fresh GitHub clone at that exact commit contained the approved Terms, account recovery, full startup launcher, and 4 GB RAM ceiling. The checkout was clean before and after the checks and contained no tracked environment or database files other than environment examples.
+
+- `uv sync --locked --python <Python 3.12.14>` and `npm ci --prefix frontend --no-audit --no-fund` passed. Both lockfiles stayed unchanged.
+- 185 backend tests, 89 Node unit tests, and 10 clock checks passed with zero failures and zero skips. The pinned Python executable used packages from the fresh virtual environment. Backend HTTPX traffic was restricted to loopback.
+- `npm run build --prefix frontend` passed without provider settings. `check_local_sandbox.py` passed through finalized report export with a disposable database.
+- Pytest reported 11 existing deprecation warnings. npm reported one uncovered esbuild install script. The toolchain passed the build with the current script policy.
+- The Terms and published release-candidate tasks are complete. Hosted verification remains separate. GitHub listed zero public deployments for this commit during verification.

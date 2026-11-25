@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from contextlib import asynccontextmanager
 
 import pytest
@@ -7,6 +8,19 @@ from fastapi.testclient import TestClient
 from backend.core import database, load_engine as engine_module, report_service
 from backend.core.config import settings
 from backend.main import app
+
+
+def _test_client(target_app, *, base_url: str, client: tuple[str, int]) -> TestClient:
+    """Create a TestClient with a deterministic client address across Starlette versions."""
+    if "client" in inspect.signature(TestClient.__init__).parameters:
+        return TestClient(target_app, base_url=base_url, client=client)
+
+    async def asgi_with_client(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = {**scope, "client": client}
+        await target_app(scope, receive, send)
+
+    return TestClient(asgi_with_client, base_url=base_url)
 
 
 @pytest.mark.parametrize("invalid, field", [
@@ -21,7 +35,7 @@ def test_invalid_steps_rejected_at_each_entry_point(monkeypatch, tmp_path, inval
     monkeypatch.setattr(settings, "offline_dev", True)
     target = "http://127.0.0.1:8000/api/sandbox/target"
     steps = [{"path": "/api/sandbox/target", **invalid}]
-    with TestClient(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 50000)) as client:
+    with _test_client(app, base_url="http://127.0.0.1:8000", client=("127.0.0.1", 50000)) as client:
         assert client.post("/api/target/verify", json={
             "target_url": target, "is_sandbox": True,
         }).status_code == 200

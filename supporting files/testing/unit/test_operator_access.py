@@ -1,3 +1,4 @@
+import inspect
 import time
 from unittest.mock import AsyncMock
 
@@ -117,12 +118,25 @@ def test_stop_is_bound_to_the_current_run_and_owner(token, monkeypatch):
     stop.assert_awaited_once_with(reason="MANUAL_ABORT")
 
 
+def _test_client(target_app, *, base_url: str, client: tuple[str, int]) -> TestClient:
+    """Create a TestClient with a deterministic client address across Starlette versions."""
+    if "client" in inspect.signature(TestClient.__init__).parameters:
+        return TestClient(target_app, base_url=base_url, client=client)
+
+    async def asgi_with_client(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = {**scope, "client": client}
+        await target_app(scope, receive, send)
+
+    return TestClient(asgi_with_client, base_url=base_url)
+
+
 def test_offline_is_explicit_and_loopback_only(monkeypatch):
     monkeypatch.setattr(settings, "offline_dev", True)
     monkeypatch.setattr(settings, "pusher_mode", "local_dev")
     monkeypatch.setattr(settings, "host", "127.0.0.1")
-    with TestClient(app, base_url="http://localhost:8000", client=("127.0.0.1", 50000)) as local:
+    with _test_client(app, base_url="http://localhost:8000", client=("127.0.0.1", 50000)) as local:
         assert local.get("/api/session").json()["offline"] is True
         assert local.get("/api/session", headers={"Origin": "https://example.invalid"}).status_code == 401
-    with TestClient(app, base_url="http://localhost:8000", client=("192.0.2.1", 50000)) as remote:
+    with _test_client(app, base_url="http://localhost:8000", client=("192.0.2.1", 50000)) as remote:
         assert remote.get("/api/session").status_code == 401
