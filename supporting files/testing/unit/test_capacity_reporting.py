@@ -105,3 +105,57 @@ async def test_capacity_persists_from_run_sampling_through_export(samples, expec
         assert report["knee_vus"] == expected_vus
         assert (report["bottleneck_summary"] == "Capacity unavailable") == (expected_vus == 0)
     assert len(exported["timeseries"]) == len(samples)
+
+
+def test_detect_knee_handles_floats_slow_targets_and_capacity_reason():
+    # Steady Crowd (1 tier) -> unavailable with clear mode reason
+    steady = report_service.detect_knee_of_curve(
+        [sample(175.0, 54.0, 2951.9, 53.7)],
+        target_vus=873,
+        p95_ceiling_ms=5000.0,
+        max_error_pct=15.0,
+        mode="step_ramp",
+    )
+    assert steady["knee_vus"] == 0
+    assert steady["bottleneck_summary"] == "Capacity unavailable"
+    assert "175 VUs" in steady["capacity_reason"]
+    assert len(steady["steps"]) == 1
+    assert steady["steps"][0]["healthy"] is False
+
+    # Steady Crowd with 1 healthy tier explains mode limitation
+    steady_ok = report_service.detect_knee_of_curve(
+        [sample(50, 120, 45, 0.0)],
+        target_vus=50,
+        p95_ceiling_ms=1000.0,
+        mode="steady_crowd",
+    )
+    assert steady_ok["knee_vus"] == 0
+    assert "steady_crowd" in steady_ok["capacity_reason"]
+
+    # Slow target (0.5 RPS/VU) scaling linearly should NOT false-trigger knee on rps_gain_per_vu < 1.5
+    slow_linear = [
+        sample(10, 5.0, 200.0, 0.0),
+        sample(20, 10.0, 210.0, 0.0),
+        sample(30, 15.0, 220.0, 0.0),
+        sample(40, 20.0, 230.0, 0.0),
+    ]
+    slow_res = report_service.detect_knee_of_curve(slow_linear, target_vus=40, p95_ceiling_ms=1000.0)
+    assert slow_res["knee_vus"] == 40
+    assert "Highest healthy load observed" in slow_res["bottleneck_summary"]
+
+    # Stricter max_error_pct=1.0 rejects 1.5% tier, while looser max_error_pct=15.0 still caps healthy capacity at 2.0%
+    strict_res = report_service.detect_knee_of_curve(
+        [sample(10, 50, 20, 0.0), sample(20, 100, 25, 0.0), sample(30, 150, 30, 1.5)],
+        target_vus=30,
+        p95_ceiling_ms=1000.0,
+        max_error_pct=1.0,
+    )
+    assert strict_res["knee_vus"] == 0
+    loose_res = report_service.detect_knee_of_curve(
+        [sample(10, 50, 20, 0.0), sample(20, 100, 25, 0.0), sample(30, 150, 30, 9.0)],
+        target_vus=30,
+        p95_ceiling_ms=1000.0,
+        max_error_pct=15.0,
+    )
+    assert loose_res["knee_vus"] == 0
+    assert "30 VUs" in loose_res["capacity_reason"]

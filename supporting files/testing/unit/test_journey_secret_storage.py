@@ -136,3 +136,14 @@ def test_legacy_scrub_preserves_owned_and_unowned_templates(private_db):
     assert saved == {owner: database.db_get_journey(owner) for owner in saved}
     for file in private_db.parent.glob(private_db.name + "*"):
         assert b"synthetic-legacy" not in file.read_bytes()
+
+
+def test_journey_step_metadata_strips_query_and_fragment():
+    cleaned = database.journey_step_metadata([
+        {"path": "/api/orders?token=secret#section-2", "name": "orders"},
+        {"path": "/api/items#frag-secret", "name": "items"},
+    ])
+    assert cleaned == [
+        {"path": "/api/orders", "name": "orders"},
+        {"path": "/api/items", "name": "items"},
+    ]

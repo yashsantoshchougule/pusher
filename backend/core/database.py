@@ -26,11 +26,17 @@ def target_template(url: str) -> str:
     return url.split("#", 1)[0].partition("?")[0]
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    """Return the set of column names currently defined on a SQLite table."""
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table_name});").fetchall()}
+
+
 def get_db_connection() -> sqlite3.Connection:
     """Returns a thread-safe connection to the central SQLite database with Row factory."""
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=10000;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 
@@ -38,6 +44,7 @@ def init_all_tables() -> None:
     """Initializes all required schema tables and applies migrations."""
     conn = get_db_connection()
     try:
+        conn.execute("PRAGMA journal_mode=WAL;")
         with conn:
             # 0. Users Account Authentication Table
             conn.execute("""
@@ -74,7 +81,7 @@ def init_all_tables() -> None:
                 );
             """)
             # Check if active_target_state needs migration to user_id primary key
-            ats_cols = [r["name"] for r in conn.execute("PRAGMA table_info(active_target_state);").fetchall()]
+            ats_cols = _table_columns(conn, "active_target_state")
             if "user_id" not in ats_cols:
                 conn.execute("ALTER TABLE active_target_state RENAME TO active_target_state_legacy;")
                 conn.execute("""
@@ -107,6 +114,7 @@ def init_all_tables() -> None:
                     FROM active_target_state_legacy;
                 """)
                 conn.execute("DROP TABLE active_target_state_legacy;")
+                ats_cols = _table_columns(conn, "active_target_state")
             else:
                 conn.execute("""
                     INSERT OR IGNORE INTO active_target_state (
@@ -126,7 +134,7 @@ def init_all_tables() -> None:
                     user_id TEXT NOT NULL DEFAULT 'default_test_user'
                 );
             """)
-            gg_cols = [r["name"] for r in conn.execute("PRAGMA table_info(guard_generations);").fetchall()]
+            gg_cols = _table_columns(conn, "guard_generations")
             if "user_id" not in gg_cols:
                 conn.execute("ALTER TABLE guard_generations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_test_user';")
 
@@ -149,14 +157,11 @@ def init_all_tables() -> None:
                     bound_host_hash TEXT
                 );
             """)
-            try:
+            bg_cols = _table_columns(conn, "burned_guards")
+            if "offending_device_hash" not in bg_cols:
                 conn.execute("ALTER TABLE burned_guards ADD COLUMN offending_device_hash TEXT;")
-            except Exception:
-                pass
-            try:
+            if "bound_host_hash" not in bg_cols:
                 conn.execute("ALTER TABLE burned_guards ADD COLUMN bound_host_hash TEXT;")
-            except Exception:
-                pass
 
             # 5. Traffic Configuration Profile (Scoped by user_id)
             conn.execute("""
@@ -172,7 +177,7 @@ def init_all_tables() -> None:
                     id INTEGER DEFAULT 1
                 );
             """)
-            tc_cols = [r["name"] for r in conn.execute("PRAGMA table_info(traffic_config);").fetchall()]
+            tc_cols = _table_columns(conn, "traffic_config")
             if "user_id" not in tc_cols:
                 conn.execute("ALTER TABLE traffic_config RENAME TO traffic_config_legacy;")
                 conn.execute("""
@@ -219,7 +224,7 @@ def init_all_tables() -> None:
                     PRIMARY KEY (user_id, step_id)
                 );
             """)
-            jstep_cols = [r["name"] for r in conn.execute("PRAGMA table_info(journey_steps);").fetchall()]
+            jstep_cols = _table_columns(conn, "journey_steps")
             if "user_id" not in jstep_cols:
                 conn.execute("ALTER TABLE journey_steps RENAME TO journey_steps_legacy;")
                 conn.execute("""
@@ -245,6 +250,7 @@ def init_all_tables() -> None:
                     FROM journey_steps_legacy;
                 """)
                 conn.execute("DROP TABLE journey_steps_legacy;")
+                jstep_cols = _table_columns(conn, "journey_steps")
             if "runtime_fields_json" not in jstep_cols:
                 conn.execute("ALTER TABLE journey_steps ADD COLUMN runtime_fields_json TEXT;")
 
@@ -257,7 +263,7 @@ def init_all_tables() -> None:
                     id INTEGER DEFAULT 1
                 );
             """)
-            js_cols = [r["name"] for r in conn.execute("PRAGMA table_info(journey_settings);").fetchall()]
+            js_cols = _table_columns(conn, "journey_settings")
             if "user_id" not in js_cols:
                 conn.execute("ALTER TABLE journey_settings RENAME TO journey_settings_legacy;")
                 conn.execute("""
@@ -298,8 +304,23 @@ def init_all_tables() -> None:
                     error_pct REAL NOT NULL,
                     total_requests INTEGER NOT NULL,
                     status_2xx INTEGER NOT NULL,
+                    status_3xx INTEGER NOT NULL DEFAULT 0,
+                    status_4xx INTEGER NOT NULL DEFAULT 0,
                     status_429 INTEGER NOT NULL,
                     status_5xx INTEGER NOT NULL,
+                    status_other INTEGER NOT NULL DEFAULT 0,
+                    timeout_count INTEGER NOT NULL DEFAULT 0,
+                    network_error_count INTEGER NOT NULL DEFAULT 0,
+                    failed_requests INTEGER NOT NULL DEFAULT 0,
+                    p95_ceiling_ms REAL,
+                    max_error_pct REAL,
+                    effective_p95_ceiling_ms REAL,
+                    effective_max_error_pct REAL,
+                    ram_limit_mb INTEGER,
+                    request_timeout_sec REAL,
+                    cache_bust INTEGER,
+                    use_journey INTEGER,
+                    is_sandbox INTEGER,
                     bytes_discarded_mb REAL NOT NULL,
                     ram_mb REAL NOT NULL,
                     verdict TEXT NOT NULL,
@@ -308,18 +329,53 @@ def init_all_tables() -> None:
                     knee_rps INTEGER NOT NULL,
                     knee_p95_ms REAL NOT NULL,
                     bottleneck_summary TEXT NOT NULL,
+                    capacity_reason TEXT NOT NULL DEFAULT '',
+                    linear_range TEXT NOT NULL DEFAULT '',
+                    optimal_point TEXT NOT NULL DEFAULT '',
+                    cliff_point TEXT NOT NULL DEFAULT '',
+                    latency_breakdown_json TEXT NOT NULL DEFAULT 'null',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    started_at TEXT,
+                    ended_at_iso TEXT,
+                    metrics_scope TEXT NOT NULL DEFAULT 'legacy_window',
+                    capacity_checked INTEGER NOT NULL DEFAULT 0,
                     timeseries_json TEXT NOT NULL,
                     step_metrics_json TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
             """)
-            tr_cols = [r["name"] for r in conn.execute("PRAGMA table_info(test_runs);").fetchall()]
-            if "user_id" not in tr_cols:
-                conn.execute("ALTER TABLE test_runs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_test_user';")
-            if "metrics_scope" not in tr_cols:
-                conn.execute("ALTER TABLE test_runs ADD COLUMN metrics_scope TEXT NOT NULL DEFAULT 'legacy_window';")
-            if "capacity_checked" not in tr_cols:
-                conn.execute("ALTER TABLE test_runs ADD COLUMN capacity_checked INTEGER NOT NULL DEFAULT 0;")
+            tr_cols = _table_columns(conn, "test_runs")
+            test_runs_migrations = (
+                ("user_id", "TEXT NOT NULL DEFAULT 'default_test_user'"),
+                ("metrics_scope", "TEXT NOT NULL DEFAULT 'legacy_window'"),
+                ("capacity_checked", "INTEGER NOT NULL DEFAULT 0"),
+                ("status_3xx", "INTEGER NOT NULL DEFAULT 0"),
+                ("status_4xx", "INTEGER NOT NULL DEFAULT 0"),
+                ("status_other", "INTEGER NOT NULL DEFAULT 0"),
+                ("timeout_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("network_error_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("failed_requests", "INTEGER NOT NULL DEFAULT 0"),
+                ("p95_ceiling_ms", "REAL"),
+                ("max_error_pct", "REAL"),
+                ("effective_p95_ceiling_ms", "REAL"),
+                ("effective_max_error_pct", "REAL"),
+                ("ram_limit_mb", "INTEGER"),
+                ("request_timeout_sec", "REAL"),
+                ("cache_bust", "INTEGER"),
+                ("use_journey", "INTEGER"),
+                ("is_sandbox", "INTEGER"),
+                ("capacity_reason", "TEXT NOT NULL DEFAULT ''"),
+                ("linear_range", "TEXT NOT NULL DEFAULT ''"),
+                ("optimal_point", "TEXT NOT NULL DEFAULT ''"),
+                ("cliff_point", "TEXT NOT NULL DEFAULT ''"),
+                ("latency_breakdown_json", "TEXT NOT NULL DEFAULT 'null'"),
+                ("steps_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("started_at", "TEXT"),
+                ("ended_at_iso", "TEXT"),
+            )
+            for col_name, col_def in test_runs_migrations:
+                if col_name not in tr_cols:
+                    conn.execute(f"ALTER TABLE test_runs ADD COLUMN {col_name} {col_def};")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS test_runs_owner_order ON test_runs(user_id, created_at DESC, run_id DESC)"
             )
@@ -341,12 +397,9 @@ def init_all_tables() -> None:
                     user_id TEXT
                 );
             """)
-            up_cols = [r["name"] for r in conn.execute("PRAGMA table_info(user_profiles);").fetchall()]
+            up_cols = _table_columns(conn, "user_profiles")
             if "user_id" not in up_cols:
-                try:
-                    conn.execute("ALTER TABLE user_profiles ADD COLUMN user_id TEXT;")
-                except Exception:
-                    pass
+                conn.execute("ALTER TABLE user_profiles ADD COLUMN user_id TEXT;")
             conn.execute("""
                 INSERT OR IGNORE INTO user_profiles (
                     user_key, email, full_name, username, role_title, organization, github_username, avatar_url, bio_notes, default_ram_ceiling_mb, updated_at, user_id
@@ -451,7 +504,9 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
             "SELECT * FROM active_target_state WHERE user_id = ?;", (user_id,)
         ).fetchone()
         if not row and user_id in ("default_test_user", "default_user"):
-            row = conn.execute("SELECT * FROM active_target_state WHERE id = 1 LIMIT 1;").fetchone()
+            row = conn.execute(
+                "SELECT * FROM active_target_state WHERE user_id IN ('default_test_user', 'default_user') LIMIT 1;"
+            ).fetchone()
 
         if not row:
             return {
@@ -636,7 +691,9 @@ def db_get_traffic_config(user_id: str = "default_test_user") -> Dict[str, Any]:
             "SELECT * FROM traffic_config WHERE user_id = ?;", (user_id,)
         ).fetchone()
         if not row and user_id in ("default_test_user", "default_user"):
-            row = conn.execute("SELECT * FROM traffic_config WHERE id = 1 LIMIT 1;").fetchone()
+            row = conn.execute(
+                "SELECT * FROM traffic_config WHERE user_id IN ('default_test_user', 'default_user') LIMIT 1;"
+            ).fetchone()
 
         if not row:
             return {
@@ -700,7 +757,7 @@ def journey_step_metadata(steps: list[dict]) -> list[dict]:
     if not isinstance(steps, list):
         return []
     return [
-        {**step, "path": step["path"].partition("?")[0]} if isinstance(step.get("path"), str) else step
+        {**step, "path": target_template(step["path"])} if isinstance(step.get("path"), str) else step
         for step in steps if isinstance(step, dict)
     ]
 
@@ -724,7 +781,8 @@ def _journey_inputs(step: dict) -> tuple[dict, dict]:
     return safe_headers, {
         "required_headers": sorted(required_headers),
         "requires_body": bool(step.get("requires_body")) or step.get("body") not in (None, ""),
-        "requires_query": bool(step.get("requires_query")) or bool(step.get("path", "/").partition("?")[2]),
+        "requires_query": bool(step.get("requires_query"))
+        or bool(step.get("path", "/").split("#", 1)[0].partition("?")[2]),
     }
 
 
@@ -736,7 +794,9 @@ def _stored_journey_inputs(row) -> dict:
         headers = None
     if row["runtime_fields_json"] is not None:
         fields = json.loads(row["runtime_fields_json"])
-        fields["requires_query"] = fields.get("requires_query", False) or bool(row["path"].partition("?")[2])
+        fields["requires_query"] = fields.get("requires_query", False) or bool(
+            row["path"].split("#", 1)[0].partition("?")[2]
+        )
         return {"headers": headers, "body": None, **fields}
 
     raw_body = row["body_json"]
@@ -765,7 +825,7 @@ def scrub_legacy_journey_inputs() -> None:
         conn.execute("PRAGMA secure_delete=ON;")
         with conn:
             for row in conn.execute(
-                "SELECT user_id, target_url, requires_target_query FROM active_target_state WHERE instr(target_url, '?') > 0;"
+                "SELECT user_id, target_url, requires_target_query FROM active_target_state WHERE instr(target_url, '?') > 0 OR instr(target_url, '#') > 0;"
             ).fetchall():
                 url = row["target_url"]
                 conn.execute(
@@ -773,11 +833,11 @@ def scrub_legacy_journey_inputs() -> None:
                     (target_template(url), int(bool(row["requires_target_query"] or url.split("#", 1)[0].partition("?")[2])),
                      row["user_id"]),
                 )
-            for row in conn.execute("SELECT run_id, target_url FROM test_runs WHERE instr(target_url, '?') > 0;").fetchall():
+            for row in conn.execute("SELECT run_id, target_url FROM test_runs WHERE instr(target_url, '?') > 0 OR instr(target_url, '#') > 0;").fetchall():
                 conn.execute("UPDATE test_runs SET target_url = ? WHERE run_id = ?;",
                              (target_template(row["target_url"]), row["run_id"]))
             rows = conn.execute(
-                "SELECT * FROM journey_steps WHERE runtime_fields_json IS NULL OR instr(path, '?') > 0;"
+                "SELECT * FROM journey_steps WHERE runtime_fields_json IS NULL OR instr(path, '?') > 0 OR instr(path, '#') > 0;"
             ).fetchall()
             for row in rows:
                 safe = _stored_journey_inputs(row)
@@ -786,7 +846,7 @@ def scrub_legacy_journey_inputs() -> None:
                     """UPDATE journey_steps SET headers_json = ?, body_json = ?, runtime_fields_json = ?, path = ?
                     WHERE user_id = ? AND step_id = ?;""",
                     (json.dumps(headers), json.dumps(body), json.dumps(safe),
-                     row["path"].partition("?")[0], row["user_id"], row["step_id"]),
+                     target_template(row["path"]), row["user_id"], row["step_id"]),
                 )
             for row in conn.execute("SELECT user_id, last_dry_run_json FROM journey_settings;").fetchall():
                 try:
@@ -798,7 +858,7 @@ def scrub_legacy_journey_inputs() -> None:
                     (json.dumps(summary), row["user_id"]),
                 )
             for row in conn.execute(
-                "SELECT run_id, step_metrics_json FROM test_runs WHERE instr(step_metrics_json, '?') > 0;"
+                "SELECT run_id, step_metrics_json FROM test_runs WHERE instr(step_metrics_json, '?') > 0 OR instr(step_metrics_json, '#') > 0;"
             ).fetchall():
                 try:
                     metrics = journey_step_metadata(json.loads(row["step_metrics_json"]))
@@ -820,7 +880,9 @@ def db_get_journey(user_id: str = "default_test_user") -> Dict[str, Any]:
             "SELECT * FROM journey_settings WHERE user_id = ?;", (user_id,)
         ).fetchone()
         if not settings_row and user_id in ("default_test_user", "default_user"):
-            settings_row = conn.execute("SELECT * FROM journey_settings WHERE id = 1 LIMIT 1;").fetchone()
+            settings_row = conn.execute(
+                "SELECT * FROM journey_settings WHERE user_id IN ('default_test_user', 'default_user') LIMIT 1;"
+            ).fetchone()
 
         use_journey = bool(settings_row["use_journey"]) if settings_row else False
         last_dry_run = None
@@ -840,7 +902,7 @@ def db_get_journey(user_id: str = "default_test_user") -> Dict[str, Any]:
                 "step_order": r["step_order"],
                 "name": r["name"],
                 "method": r["method"],
-                "path": r["path"].partition("?")[0],
+                "path": target_template(r["path"]),
                 **_stored_journey_inputs(r),
                 "expected_status": r["expected_status"],
                 "extract_json_key": r["extract_json_key"],
@@ -887,7 +949,7 @@ def db_save_journey(
                         idx + 1,
                         s.get("name", f"Step {idx+1}"),
                         s.get("method", "GET").upper(),
-                        s.get("path", "/").partition("?")[0],
+                        target_template(s.get("path", "/")),
                         json.dumps(headers),
                         int(s.get("expected_status", 200)),
                         s.get("extract_json_key", ""),

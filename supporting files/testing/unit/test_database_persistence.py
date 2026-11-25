@@ -262,3 +262,36 @@ def test_test_runs_sqlite_persistence_and_empty_state():
     assert data_pop["scorecard"] is not None
     assert data_pop["scorecard"]["run_id"] == "RUN-PERSIST-001"
     assert data_pop["scorecard"]["peak_rps"] == 620
+
+
+def test_cross_user_isolation_without_id1_fallback(tmp_path, monkeypatch):
+    """Ensure default_test_user never reads another user's id=1 row and WAL is not set per connection."""
+    from backend.core import database
+
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "isolation.sqlite")
+    database.init_all_tables()
+    conn = database.get_db_connection()
+    try:
+        assert conn.execute("PRAGMA journal_mode;").fetchone()[0].lower() == "wal"
+        with conn:
+            conn.execute("DELETE FROM active_target_state WHERE user_id IN ('default_test_user', 'default_user');")
+            conn.execute("DELETE FROM traffic_config WHERE user_id IN ('default_test_user', 'default_user');")
+            conn.execute("DELETE FROM journey_settings WHERE user_id IN ('default_test_user', 'default_user');")
+            conn.execute(
+                """INSERT INTO active_target_state (user_id, target_url, guard_id, is_verified, id)
+                VALUES ('supabase:other', 'https://other-user.example.invalid', 'PG-OTHER', 1, 1);"""
+            )
+            conn.execute(
+                """INSERT INTO traffic_config (user_id, virtual_users, id)
+                VALUES ('supabase:other', 777, 1);"""
+            )
+            conn.execute(
+                """INSERT INTO journey_settings (user_id, use_journey, id)
+                VALUES ('supabase:other', 1, 1);"""
+            )
+    finally:
+        conn.close()
+
+    assert database.db_get_active_target("default_test_user")["target_url"] == ""
+    assert database.db_get_traffic_config("default_test_user")["virtual_users"] == 100
+    assert database.db_get_journey("default_test_user")["use_journey"] is False
