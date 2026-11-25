@@ -1,4 +1,6 @@
 import json
+import re
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from backend.api.auth_deps import require_operator
 from pydantic import BaseModel, Field
@@ -64,6 +66,19 @@ async def compare_reports_endpoint(req: CompareRequest):
         )
 
 
+_EXPORT_UI_ALIASES = (
+    "id",
+    "target",
+    "guardToken",
+    "peakVus",
+    "duration",
+    "peakRps",
+    "p95",
+    "status",
+    "verdictCategory",
+)
+
+
 @router.get("/reports/{run_id}/export")
 async def export_report_endpoint(run_id: str):
     """Export complete load test scorecard and time-series as downloadable JSON."""
@@ -75,15 +90,19 @@ async def export_report_endpoint(run_id: str):
         )
 
     export_payload = {
-        **run,
-        "generator": "Pusher Open-Source Load-Testing Platform",
-        "exported_at": run.get("timestamp"),
+        key: value
+        for key, value in run.items()
+        if key != "user_id" and not key.endswith("_json") and key not in _EXPORT_UI_ALIASES
     }
+    export_payload["generator"] = "Pusher Open-Source Load-Testing Platform"
+    export_payload["exported_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
     content = json.dumps(export_payload, indent=2)
-    filename = f"report_{run_id}.json"
+    safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "_", run_id).strip("._") or "run"
+    filename = f"report_{safe_run_id}.json"
 
     return Response(
         content=content,
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
