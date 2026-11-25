@@ -1,6 +1,6 @@
 import { journeyRequestError, restoreJourneyInputs, saveAndLaunchJourney } from '../lib/journeyLaunch';
 import { restoreTargetQuery, targetOrigin, targetTemplate } from '../lib/targetInput';
-import { mapTelemetry } from '../lib/telemetry';
+import { mapRunMeta, mapTelemetry } from '../lib/telemetry';
 import { operatorFetch, operatorToken } from '../lib/operatorApi';
 import { watchRun } from '../lib/runMonitor';
 import { createTrafficProfile, DEFAULT_TRAFFIC_PROFILE, trafficPhases } from '../lib/trafficProfile';
@@ -113,10 +113,16 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   const [trafficSaveError, setTrafficSaveError] = useState('');
   const [trafficCloneNotice, setTrafficCloneNotice] = useState('');
   const [trafficSaving, setTrafficSaving] = useState(false);
+  const [hasUnsavedTraffic, setHasUnsavedTraffic] = useState(false);
   const trafficActionInProgress = useRef(false);
   const trafficProfile = useRef(null);
   if (!trafficProfile.current) {
-    trafficProfile.current = createTrafficProfile(operatorFetch, setTrafficConfig, setTrafficSaveError);
+    trafficProfile.current = createTrafficProfile(
+      operatorFetch,
+      setTrafficConfig,
+      setTrafficSaveError,
+      () => setHasUnsavedTraffic(false),
+    );
   }
   const {
     mode: trafficMode, ram_limit_mb: ramLimitMb, virtual_users: vus, duration_sec: duration,
@@ -128,11 +134,14 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   const [stopError, setStopError] = useState('');
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState('');
+  const [lastStartAdvisory, setLastStartAdvisory] = useState({ sameProcessLoopback: false, advisory: '' });
+  const [dismissedOutcomeKey, setDismissedOutcomeKey] = useState('');
   const launchInProgress = useRef(false);
   const runMonitor = useRef(null);
   const testRunning = runStatus?.is_running ?? false;
   const canStart = Boolean(runStatus && !testRunning && !statusUnavailable && !launching);
   const telemetry = mapTelemetry(runStatus ?? undefined);
+  const runMeta = typeof mapRunMeta === 'function' ? mapRunMeta(runStatus ?? undefined) : {};
   const elapsed = runStatus?.elapsed_sec ?? 0;
 
   // Stage 4: Multi-Step API Journey Builder State
@@ -166,7 +175,9 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   const [compareCandidateId, setCompareCandidateId] = useState(null);
   const [compareData, setCompareData] = useState(null);
   const [reportMode, setReportMode] = useState('single');
+  const [reportError, setReportError] = useState('');
   const [latestScorecard, setLatestScorecard] = useState(null);
+  const [latestRunSummary, setLatestRunSummary] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
   const [historyCursor, setHistoryCursor] = useState(null);
   const [historyVersion, setHistoryVersion] = useState(0);
@@ -199,13 +210,14 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
     const updated = await res.json();
     setUserProfile(updated);
     if (updated.default_ram_ceiling_mb) {
-      await updateTrafficConfig({ ram_limit_mb: updated.default_ram_ceiling_mb });
+      await updateTrafficConfig({ ram_limit_mb: Math.max(51, updated.default_ram_ceiling_mb) });
     }
     return updated;
   };
 
   const updateTrafficConfig = (overrides) => {
     setTrafficCloneNotice('');
+    setHasUnsavedTraffic(true);
     trafficProfile.current.edit(overrides);
     return trafficProfile.current.save();
   };
@@ -492,7 +504,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
       runMonitor.current = null;
       monitor.close();
     };
-  }, [operator.user_id, guardToken, confirmedTarget]);
+  }, [operator.user_id]);
 
 
   // Actions: Download Guard with Rate Limiting (3/Day), Hardware Device Binding & Superseding Feedback
@@ -896,22 +908,49 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
       setVerificationError('Target must be verified with active 48h guard before launching test.');
       return;
     }
-    if (journey.selectionKnown === false) {
-      setLaunchError('Open API Journey Builder to confirm what the test should run.');
-      return;
-    }
-    setVerificationError(null);
-    setLaunchError('');
-    launchInProgress.current = true;
-    setLaunching(true);
-    const monitor = runMonitor.current;
     const showError = (message) => {
       if (activeNav === 'api') setJourneyMessage(message);
       else setLaunchError(message);
     };
+    if (journey.selectionKnown === false) {
+      setLaunchError('Open API Journey Builder to confirm what the test should run.');
+      return;
+    }
+    if (journey.use_journey && (!Array.isArray(journey.steps) || journey.steps.length === 0)) {
+      showError(missingJourneySteps);
+      return;
+    }
+    if (trafficCapacityError) {
+      showError(trafficCapacityError);
+      return;
+    }
+    setVerificationError(null);
+    setLaunchError('');
+    if (trafficProfile.current?.isDirty?.() && !trafficActionInProgress.current) {
+      trafficActionInProgress.current = true;
+      setTrafficSaving(true);
+      let savedDraft = false;
+      try {
+        savedDraft = await trafficProfile.current.save();
+      } finally {
+        trafficActionInProgress.current = false;
+        setTrafficSaving(false);
+      }
+      if (!savedDraft) {
+        showError('Could not save staged traffic profile before launching. Review Traffic Setup and try again.');
+        return;
+      }
+      setHasUnsavedTraffic(false);
+    }
+    launchInProgress.current = true;
+    setLaunching(true);
+    const monitor = runMonitor.current;
 
     try {
       const isSandboxTarget = sandboxMode;
+      const clampedP95 = Number.isFinite(hardwareLimits?.max_p95_ceiling_ms)
+        ? Math.min(p95Ceiling, hardwareLimits.max_p95_ceiling_ms)
+        : p95Ceiling;
       const res = await operatorFetch(`/api/load/start`, {
         method: 'POST',
         signal: AbortSignal.timeout(10000),
@@ -927,7 +966,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
           cache_bust: cacheBusting,
           ram_limit_mb: ramLimitMb,
           max_error_pct: max5xxThreshold,
-          p95_ceiling_ms: p95Ceiling,
+          p95_ceiling_ms: clampedP95,
           is_sandbox: isSandboxTarget,
           use_journey: journey.use_journey,
           journey_steps: journey.use_journey ? journey.steps : null,
@@ -937,6 +976,11 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
 
       const data = await res.json().catch(() => null);
       if (res.ok && data?.snapshot) {
+        setDismissedOutcomeKey('');
+        setLastStartAdvisory({
+          sameProcessLoopback: Boolean(data.same_process_loopback ?? data.snapshot.same_process_loopback),
+          advisory: data.advisory || data.snapshot.advisory || '',
+        });
         monitor?.accept(data.snapshot);
         setActiveNav('dashboard');
       } else if (res.ok) {
@@ -970,6 +1014,10 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   };
 
   // Stage 5 History & Report Actions
+  const hasActiveHistoryFilter = Boolean(
+    historySearch.trim() || historyModeFilter !== 'ALL' || historyStatusFilter !== 'ALL'
+  );
+
   const fetchHistory = async (cursor = null) => {
     historyRequest.current?.abort();
     const controller = new AbortController();
@@ -984,11 +1032,19 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
     try {
       const res = await operatorFetch('/api/history?' + params.toString(), { signal: controller.signal });
       if (!res.ok) throw new Error('Could not load test history.');
-      const { runs, scorecard, next_cursor } = await res.json();
+      const data = await res.json();
       if (controller.signal.aborted) return;
+      const { runs = [], scorecard, global_scorecard, latest_run, next_cursor } = data;
       setRunHistory((previous) => cursor ? [...previous, ...runs] : runs);
-      setLatestScorecard(scorecard);
-      setHistoryCursor(next_cursor);
+      if (!hasActiveHistoryFilter) {
+        setLatestScorecard(global_scorecard ?? scorecard ?? null);
+        if (latest_run !== undefined) setLatestRunSummary(latest_run);
+        else if (!cursor) setLatestRunSummary(runs[0] ?? null);
+      } else if (global_scorecard !== undefined) {
+        setLatestScorecard(global_scorecard);
+        if (latest_run !== undefined) setLatestRunSummary(latest_run);
+      }
+      setHistoryCursor(next_cursor ?? null);
     } catch (error) {
       if (!controller.signal.aborted) setHistoryError(error.message);
     } finally {
@@ -1007,23 +1063,34 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   }, [historyModeFilter, historyStatusFilter, historySearch, historyVersion]);
 
   const handleClearArchive = async () => {
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      if (!window.confirm('Clear all saved test runs from the archive? This cannot be undone.')) return;
+    }
     setHistoryError('');
     try {
       const response = await operatorFetch('/api/history', { method: 'DELETE' });
       if (!response.ok) throw new Error('Could not clear test history.');
       setSingleRunReport(null);
+      setSelectedReportId(null);
+      setCompareBaseId(null);
+      setCompareCandidateId(null);
+      setCompareData(null);
       setSelectedForCompare([]);
+      setLatestScorecard(null);
+      setLatestRunSummary(null);
+      setReportError('');
       setHistoryVersion((version) => version + 1);
     } catch (error) {
-      setHistoryError(error.message);
+      setHistoryError(error.message || 'Could not clear test history.');
     }
   };
 
   const handleViewSingleReport = async (runId) => {
     const idToFetch = runId || selectedReportId;
     if (!idToFetch) return;
+    setReportError('');
     try {
-      const res = await operatorFetch(`/api/reports/${idToFetch}`);
+      const res = await operatorFetch(`/api/reports/${encodeURIComponent(idToFetch)}`);
       if (res.ok) {
         const data = await res.json();
         setSingleRunReport(data);
@@ -1032,7 +1099,11 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
         setActiveNav('reports');
         return;
       }
-    } catch { }
+      const errData = await res.json().catch(() => null);
+      setReportError(typeof errData?.detail === 'string' ? errData.detail : `Could not load report ${idToFetch}.`);
+    } catch (error) {
+      setReportError(error?.message || `Could not load report ${idToFetch}.`);
+    }
     setSingleRunReport(null);
     setSelectedReportId(idToFetch);
     setReportMode('single');
@@ -1046,10 +1117,16 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   }, [activeNav, reportMode, selectedReportId, runHistory]);
 
   const handleCompareRuns = async (baseId, candId) => {
-    const base = baseId || compareBaseId || (selectedForCompare.length >= 2 ? selectedForCompare[1] : null);
-    const cand = candId || compareCandidateId || (selectedForCompare.length >= 1 ? selectedForCompare[0] : null);
+    const base = baseId || compareBaseId || (selectedForCompare.length >= 2 ? selectedForCompare[0] : null);
+    const cand = candId || compareCandidateId || (selectedForCompare.length >= 2 ? selectedForCompare[1] : null);
+    setReportError('');
     if (!base || !cand) {
-      setActiveNav('history');
+      if (activeNav === 'reports') {
+        setReportMode('compare');
+        setReportError('Select both a baseline and candidate run to compare.');
+      } else {
+        setActiveNav('history');
+      }
       return;
     }
     setCompareData(null);
@@ -1059,16 +1136,15 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ base_run_id: base, candidate_run_id: cand }),
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
         setCompareData(data);
-        setCompareBaseId(base);
-        setCompareCandidateId(cand);
-        setReportMode('compare');
-        setActiveNav('reports');
-        return;
+      } else {
+        setReportError(typeof data?.detail === 'string' ? data.detail : 'Could not compare selected runs.');
       }
-    } catch { }
+    } catch (error) {
+      setReportError(error?.message || 'Could not compare selected runs.');
+    }
     setCompareBaseId(base);
     setCompareCandidateId(cand);
     setReportMode('compare');
@@ -1076,16 +1152,26 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   };
 
   const handleExportReport = async (runId) => {
-    const id = runId || selectedReportId;
-    if (id) {
+    const id = runId || selectedReportId || runHistory[0]?.run_id || runHistory[0]?.id;
+    if (!id) {
+      setReportError('Select a report before exporting.');
+      return;
+    }
+    setReportError('');
+    try {
       const response = await operatorFetch(`/api/reports/${encodeURIComponent(id)}/export`);
-      if (!response.ok) throw new Error('Export unavailable');
+      if (!response.ok) {
+        const err = await response.json().catch(() => null);
+        throw new Error(typeof err?.detail === 'string' ? err.detail : 'Export unavailable.');
+      }
       const url = URL.createObjectURL(await response.blob());
       const download = document.createElement('a');
       download.href = url;
       download.download = `report_${id}.json`;
       download.click();
       setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setReportError(error?.message || 'Could not export report.');
     }
   };
 
@@ -1104,16 +1190,37 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
     } else {
       notes.push('The report has no valid planned duration. Kept the current duration.');
     }
+    if (Number.isInteger(run.ram_limit_mb) && run.ram_limit_mb >= 51) {
+      const clampedRam = (capacityKnown && maxHardwareSafeRamMb >= 51)
+        ? Math.min(run.ram_limit_mb, maxHardwareSafeRamMb)
+        : run.ram_limit_mb;
+      overrides.ram_limit_mb = clampedRam;
+      if (clampedRam < run.ram_limit_mb) {
+        notes.push(`Reduced the cloned RAM budget from ${run.ram_limit_mb.toLocaleString()} MB to ${clampedRam.toLocaleString()} MB to fit host limits.`);
+      }
+    }
+    const effectiveVuCap = overrides.ram_limit_mb ? trafficVuLimit(overrides.ram_limit_mb) : maxAllowedVus;
     if (Number.isInteger(run.target_vus) && run.target_vus > 0) {
-      overrides.virtual_users = maxAllowedVus > 0 ? Math.min(run.target_vus, maxAllowedVus) : run.target_vus;
+      overrides.virtual_users = effectiveVuCap > 0 ? Math.min(run.target_vus, effectiveVuCap) : run.target_vus;
       if (overrides.virtual_users < run.target_vus) {
         notes.push(`Reduced the cloned user count from ${run.target_vus.toLocaleString()} to ${overrides.virtual_users.toLocaleString()} to fit the current limit.`);
       }
     } else {
       notes.push('The report has no planned user count. Kept the current user count.');
     }
+    if (Number.isFinite(run.p95_ceiling_ms) && run.p95_ceiling_ms >= 10) {
+      const maxP95 = hardwareLimits?.max_p95_ceiling_ms;
+      overrides.p95_ceiling_ms = Number.isFinite(maxP95) ? Math.min(run.p95_ceiling_ms, maxP95) : run.p95_ceiling_ms;
+    }
+    if (Number.isFinite(run.max_error_pct) && run.max_error_pct >= 1 && run.max_error_pct <= 100) {
+      overrides.max_error_pct = run.max_error_pct;
+    }
+    if (typeof run.cache_bust === 'boolean' || run.cache_bust === 0 || run.cache_bust === 1) {
+      overrides.cache_bust = Boolean(run.cache_bust);
+    }
+    setHasUnsavedTraffic(true);
     trafficProfile.current.edit(overrides);
-    setTrafficCloneNotice(notes.join(' ') || 'Copied the planned traffic settings. Review and save them below.');
+    setTrafficCloneNotice(notes.join(' ') || 'Copied the planned traffic settings (unsaved draft). Review and save them below.');
     setActiveNav('traffic');
   };
 
@@ -1240,12 +1347,20 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
           </div>
           <span className="border-l-2 border-black h-3.5" />
           <div>
-            <span>RAM: {testRunning ? estimatedRam : 50} MB / {ramLimitMb} MB MAX</span>
+            <span>
+              {testRunning ? 'LIVE RAM' : 'EST. RAM'}:{' '}
+              {(testRunning ? (runStatus?.ram_mb ?? estimatedRam) : estimatedRam) != null
+                ? `${testRunning ? (runStatus?.ram_mb ?? estimatedRam) : estimatedRam} MB`
+                : 'Unavailable'}{' '}
+              / {ramLimitMb} MB MAX
+            </span>
             <span className="text-[10px] ml-1.5 opacity-80">(4KB Chunk Discard Active)</span>
           </div>
           <span className="border-l-2 border-black h-3.5" />
           <div>
-            <span>FD CAP: 70% OS LIMIT</span>
+            <span>
+              FD CAP: {maxWorkerVus != null ? `${maxWorkerVus.toLocaleString()} VUs (${hardwareLimits?.fd_cap_pct ?? 70}% OS LIMIT)` : '70% OS LIMIT'}
+            </span>
           </div>
         </div>
 
@@ -1435,17 +1550,32 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               formatTimer={formatTimer}
               ssrfCheck={ssrfCheck}
               latestScorecard={latestScorecard}
+              latestRunSummary={latestRunSummary}
               modeLabel={modeLabel}
               vus={vus}
               duration={duration}
               estimatedRam={estimatedRam}
               ramLimitMb={ramLimitMb}
+              effectiveP95Ceiling={Number.isFinite(hardwareLimits?.max_p95_ceiling_ms) ? Math.min(p95Ceiling, hardwareLimits.max_p95_ceiling_ms) : p95Ceiling}
+              max5xxThreshold={max5xxThreshold}
+              hasUnsavedTraffic={hasUnsavedTraffic}
+              trafficCapacityError={trafficCapacityError}
+              journeyStepsCount={journeySteps.length}
+              journeySelectionKnown={journeySelectionKnown}
+              sameProcessLoopback={Boolean(
+                runStatus?.same_process_loopback ||
+                lastStartAdvisory.sameProcessLoopback ||
+                sandboxMode ||
+                /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\]|::1|0\.0\.0\.0)(:|\/|$)/i.test((targetUrl || '').trim())
+              )}
+              loopbackAdvisory={runStatus?.advisory || lastStartAdvisory.advisory || ''}
               testRunning={testRunning}
               canStart={canStart}
               statusUnavailable={statusUnavailable}
               stopping={stopping}
               elapsed={elapsed}
               telemetry={telemetry}
+              runMeta={runMeta}
               stepMetrics={stepMetrics}
               useJourney={testRunning ? Boolean(runStatus.use_journey) : useJourney}
               handleStartTest={handleStartTest}
@@ -1454,6 +1584,9 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               launchError={launchError}
               launching={launching}
               handleSimulateSpike={handleSimulateSpike}
+              onInspectRun={handleViewSingleReport}
+              outcomeDismissed={Boolean(dismissedOutcomeKey && dismissedOutcomeKey === (runMeta?.runId || latestRunSummary?.run_id || runMeta?.lastCircuitStatus))}
+              onDismissOutcome={setDismissedOutcomeKey}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1529,6 +1662,16 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               trafficLoading={trafficLoading}
               trafficSaveError={trafficSaveError}
               trafficCloneNotice={trafficCloneNotice}
+              sameProcessLoopback={Boolean(
+                runStatus?.same_process_loopback ||
+                lastStartAdvisory.sameProcessLoopback ||
+                sandboxMode
+              )}
+              loopbackAdvisory={runStatus?.advisory || lastStartAdvisory.advisory || ''}
+              sandboxMode={sandboxMode}
+              targetUrl={targetTemplate(targetUrl)}
+              requestTimeoutSec={runStatus?.request_timeout_sec ?? 5}
+              hasUnsavedTraffic={hasUnsavedTraffic}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1571,6 +1714,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
             <TestHistoryView
               runHistory={runHistory}
               filteredRuns={runHistory}
+              hasActiveFilter={hasActiveHistoryFilter}
               historyLoading={historyLoading}
               historyError={historyError}
               hasMoreHistory={Boolean(historyCursor)}
@@ -1605,6 +1749,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               compareCandidateId={compareCandidateId}
               setCompareCandidateId={setCompareCandidateId}
               compareData={compareData}
+              reportError={reportError}
               handleViewSingleReport={handleViewSingleReport}
               handleCompareRuns={handleCompareRuns}
               handleExportReport={handleExportReport}

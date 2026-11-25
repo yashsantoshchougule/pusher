@@ -139,3 +139,33 @@ test('closing a monitor aborts the pending status request and ignores late respo
   assert.equal(fetch.mock.callCount(), 1);
   assert.equal(state.status, null);
 });
+
+test('terminal WS event still fires ended=true after an intermediate HTTP poll flipped is_running to false', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const socket = { close: t.mock.fn(), send: t.mock.fn(), readyState: 1 };
+  const endedEvents = [];
+  const monitor = watchRun({
+    fetch: async () => reply(active(1, 'RUN-RACE')),
+    getToken: async () => 'test-session',
+    openSocket: () => socket,
+    onStatus(status, ended) {
+      if (ended) endedEvents.push(status);
+    },
+    onStatusError() {},
+    onStopping() {},
+    onStopError() {},
+  });
+  t.after(() => monitor.close());
+  await setImmediate();
+
+  // Intermediate HTTP poll after engine sets is_running=false but before _finish_run saves
+  monitor.accept({ status_revision: 2, is_running: false, run_id: 'RUN-RACE' });
+  assert.equal(endedEvents.length, 1);
+
+  // Terminal WS event arrives after save_run() completes
+  socket.onmessage({
+    data: JSON.stringify({ status_revision: 3, is_running: false, run_id: 'RUN-RACE', event: 'CIRCUIT_TRIPPED' }),
+  });
+  assert.equal(endedEvents.length, 2);
+  assert.equal(endedEvents[1].event, 'CIRCUIT_TRIPPED');
+});

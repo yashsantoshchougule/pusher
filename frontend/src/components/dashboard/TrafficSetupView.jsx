@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 export default function TrafficSetupView({
   trafficMode,
@@ -31,6 +31,12 @@ export default function TrafficSetupView({
   trafficLoading,
   trafficSaveError,
   trafficCloneNotice,
+  sameProcessLoopback = false,
+  loopbackAdvisory = '',
+  sandboxMode = false,
+  targetUrl = '',
+  requestTimeoutSec = 5,
+  hasUnsavedTraffic = false,
   setActiveNav,
   themeMode = 'production',
 }) {
@@ -39,6 +45,60 @@ export default function TrafficSetupView({
   const canSetVus = maxAllowedVus > 0;
   const time = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
   const effectiveP95 = Math.min(p95Ceiling, maxP95Ceiling ?? p95Ceiling);
+  const effective5xx = Math.min(max5xxThreshold, 25);
+
+  const [ramDraft, setRamDraft] = useState(String(ramLimitMb));
+  const [vuDraft, setVuDraft] = useState(String(vus));
+  const [durationDraft, setDurationDraft] = useState(String(duration));
+
+  useEffect(() => { setRamDraft(String(ramLimitMb)); }, [ramLimitMb]);
+  useEffect(() => { setVuDraft(String(vus)); }, [vus]);
+  useEffect(() => { setDurationDraft(String(duration)); }, [duration]);
+
+  const targetIsLoopback = Boolean(
+    sandboxMode || sameProcessLoopback || (() => {
+      try {
+        const host = new URL((targetUrl || '').trim()).hostname.toLowerCase();
+        return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host === '0.0.0.0';
+      } catch {
+        return false;
+      }
+    })()
+  );
+
+  // Step-ramp schedule summary & warnings
+  const stepDuration = duration / 5;
+  const stepCount = phases.length || 5;
+  const step1Vus = phases[0]?.vus ?? Math.max(1, Math.round(vus * 0.2));
+
+  const commitRam = (raw) => {
+    if (maxHardwareSafeRamMb == null || maxHardwareSafeRamMb < 51) return;
+    const parsed = Math.floor(Number(raw));
+    const clamped = Number.isFinite(parsed) && raw.trim() !== ''
+      ? Math.max(51, Math.min(maxHardwareSafeRamMb, parsed))
+      : ramLimitMb;
+    setRamDraft(String(clamped));
+    if (clamped !== ramLimitMb) handleSetRamLimit(clamped);
+  };
+
+  const commitVus = (raw) => {
+    if (!canSetVus) return;
+    const parsed = Math.floor(Number(raw));
+    const clamped = Number.isFinite(parsed) && raw.trim() !== ''
+      ? Math.max(1, Math.min(maxAllowedVus, parsed))
+      : vus;
+    setVuDraft(String(clamped));
+    if (clamped !== vus) setVus(clamped);
+  };
+
+  const commitDuration = (raw) => {
+    const parsed = Math.floor(Number(raw));
+    const clamped = Number.isFinite(parsed) && raw.trim() !== ''
+      ? Math.max(1, Math.min(86400, parsed))
+      : duration;
+    setDurationDraft(String(clamped));
+    if (clamped !== duration) setDuration(clamped);
+  };
 
   return (
     <div className="space-y-6">
@@ -73,6 +133,20 @@ export default function TrafficSetupView({
         </button>
       </div>
       {trafficCloneNotice && <p role="status" className="text-xs font-bold">{trafficCloneNotice}</p>}
+      {hasUnsavedTraffic && !trafficCloneNotice && (
+        <p role="status" className="text-xs font-bold text-amber-800">
+          Unsaved staged draft — click Save Profile or Save &amp; Launch to persist.
+        </p>
+      )}
+
+      {targetIsLoopback && vus > 50 && (
+        <div role="status" className={`border-2 p-3 text-xs font-mono ${
+          isProd ? 'border-amber-500 bg-amber-50 text-amber-900' : 'border-black bg-white'
+        }`}>
+          <strong>Loopback / single-host saturation warning:</strong>{' '}
+          {loopbackAdvisory || `Running ${vus.toLocaleString()} VUs against a local/sandbox target shares the same host CPU and event loop and typically saturates above ~50 VUs.`}
+        </div>
+      )}
 
       <fieldset disabled={trafficSaving || trafficLoading} aria-label="Traffic settings" className="min-w-0 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Mode, Concurrency & Visual Curve */}
@@ -110,11 +184,31 @@ export default function TrafficSetupView({
             </div>
           </div>
 
-          <div className="border-2 border-black p-3 bg-white">
-            <div className="text-[10px] font-bold uppercase tracking-wider mb-2 flex justify-between">
+          <div className="border-2 border-black p-3 bg-white space-y-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider flex justify-between">
               <span>Traffic schedule</span>
               <span>{modeLabel}</span>
             </div>
+            {trafficMode === 'step_ramp' && (
+              <div className="text-[11px] font-mono opacity-85">
+                {stepCount} steps · {time.format(stepDuration)}s/step · starts at Step 1 {step1Vus.toLocaleString()} VUs
+              </div>
+            )}
+            {trafficMode === 'step_ramp' && duration < 5 && (
+              <p className="text-[10px] font-bold text-amber-800">
+                Duration under 5s truncates later ramp steps (minimum 1s/step).
+              </p>
+            )}
+            {trafficMode === 'step_ramp' && duration >= 5 && stepDuration <= 10 && (
+              <p className="text-[10px] font-bold text-amber-800">
+                Short step window ({time.format(stepDuration)}s/step) overlaps the 10s rolling breaker window and {requestTimeoutSec}s request timeout.
+              </p>
+            )}
+            {trafficMode === 'step_ramp' && vus < 5 && (
+              <p className="text-[10px] font-bold text-amber-800">
+                Fewer than 5 VUs produces duplicate step levels, preventing 3-tier knee detection.
+              </p>
+            )}
             {phases.length ? (
               <ol className="space-y-1 text-xs font-mono">
                 {phases.map(phase => (
@@ -142,7 +236,7 @@ export default function TrafficSetupView({
                 <button
                   key={limit}
                   type="button"
-                  disabled={!maxHardwareSafeRamMb || limit > maxHardwareSafeRamMb}
+                  disabled={maxHardwareSafeRamMb == null || limit > maxHardwareSafeRamMb}
                   onClick={() => handleSetRamLimit(limit)}
                   className={`border-2 border-black py-1.5 px-1 text-[10px] font-bold uppercase transition-colors text-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                     ramLimitMb === limit
@@ -152,7 +246,9 @@ export default function TrafficSetupView({
                 >
                   <div>{limit.toLocaleString()} MB</div>
                   <div className="text-[9px] opacity-80">
-                    {limit > maxHardwareSafeRamMb ? 'Above host limit' : `${trafficVuLimit(limit)?.toLocaleString() ?? 'Unknown'} max VUs`}
+                    {maxHardwareSafeRamMb != null && limit > maxHardwareSafeRamMb
+                      ? 'Above host limit'
+                      : `${trafficVuLimit(limit)?.toLocaleString() ?? 'Unknown'} max VUs`}
                   </div>
                 </button>
               ))}
@@ -163,11 +259,19 @@ export default function TrafficSetupView({
               <input
                 type="number"
                 min="51"
-                max={maxHardwareSafeRamMb}
+                max={maxHardwareSafeRamMb ?? undefined}
                 step="1"
-                disabled={!maxHardwareSafeRamMb || maxHardwareSafeRamMb < 51}
-                value={ramLimitMb}
-                onChange={(e) => handleSetRamLimit(Number(e.target.value))}
+                disabled={maxHardwareSafeRamMb == null || maxHardwareSafeRamMb < 51}
+                value={ramDraft}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setRamDraft(val);
+                  const parsed = Math.floor(Number(val));
+                  if (val.trim() !== '' && Number.isFinite(parsed) && parsed >= 51 && parsed <= maxHardwareSafeRamMb) {
+                    handleSetRamLimit(parsed);
+                  }
+                }}
+                onBlur={() => commitRam(ramDraft)}
                 className="w-24 border border-black px-2 py-1 text-xs font-mono font-bold bg-white text-black focus:outline-none focus:bg-black focus:text-white"
               />
               <span className="text-[10px] font-bold">MB</span>
@@ -188,8 +292,16 @@ export default function TrafficSetupView({
                   max={maxAllowedVus ?? undefined}
                   step="1"
                   disabled={!canSetVus}
-                  value={vus}
-                  onChange={(e) => setVus(Math.max(1, Math.min(maxAllowedVus, Math.floor(Number(e.target.value)) || 1)))}
+                  value={vuDraft}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setVuDraft(val);
+                    const parsed = Math.floor(Number(val));
+                    if (val.trim() !== '' && Number.isFinite(parsed) && parsed >= 1 && (maxAllowedVus == null || parsed <= maxAllowedVus)) {
+                      setVus(parsed);
+                    }
+                  }}
+                  onBlur={() => commitVus(vuDraft)}
                   className="w-20 border-2 border-black px-1.5 py-0.5 text-xs font-mono font-black text-center bg-white text-black focus:outline-none focus:bg-black focus:text-white"
                 />
                 <span className="text-[10px] font-bold">VUs</span>
@@ -210,8 +322,8 @@ export default function TrafficSetupView({
             />
           </div>
 
-          {/* Duration Selector */}
-          <div className="space-y-1">
+          {/* Duration Selector + Custom Duration */}
+          <div className="space-y-2">
             <div className="text-xs font-bold uppercase">Duration · {duration} s</div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[
@@ -235,6 +347,27 @@ export default function TrafficSetupView({
                 </button>
               ))}
             </div>
+            <div className="flex items-center gap-2 pt-1">
+              <span className="text-[10px] font-bold uppercase shrink-0">Custom Duration:</span>
+              <input
+                type="number"
+                min="1"
+                max="86400"
+                step="1"
+                value={durationDraft}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setDurationDraft(val);
+                  const parsed = Math.floor(Number(val));
+                  if (val.trim() !== '' && Number.isFinite(parsed) && parsed >= 1 && parsed <= 86400) {
+                    setDuration(parsed);
+                  }
+                }}
+                onBlur={() => commitDuration(durationDraft)}
+                className="w-24 border border-black px-2 py-1 text-xs font-mono font-bold bg-white text-black focus:outline-none focus:bg-black focus:text-white"
+              />
+              <span className="text-[10px] font-bold">sec (1–86,400)</span>
+            </div>
           </div>
         </div>
 
@@ -251,9 +384,11 @@ export default function TrafficSetupView({
           {/* Max Error Rate Selector */}
           <div className="space-y-1">
             <label className="text-xs font-bold uppercase block">
-              Rolling server-error threshold (5xx)
+              Rolling server-error threshold (5xx) · {effective5xx}%
             </label>
-            <p className="text-[10px] opacity-75">Applies when at least 20 responses were received in the last 5 seconds.</p>
+            <p className="text-[10px] opacity-75">
+              Applies when at least 20 responses were received in the last 5 seconds (hard breaker cap: max 25%).
+            </p>
             <div className="grid grid-cols-3 gap-2">
               {[
                 { val: 2, label: '2% (Strict)' },
@@ -265,7 +400,7 @@ export default function TrafficSetupView({
                   type="button"
                   onClick={() => setMax5xxThreshold(t.val)}
                   className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
-                    max5xxThreshold === t.val
+                    effective5xx === t.val
                       ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
                       : 'bg-white text-black hover:bg-black/5'
                   }`}
@@ -279,13 +414,18 @@ export default function TrafficSetupView({
           <div className="border-2 border-black p-3 bg-white space-y-1">
             <div className="text-xs font-bold uppercase">Automatic stops are always on</div>
             <p className="text-[10px] opacity-75">
-              Pusher stops on a detected firewall block, 3 rate-limit responses in 3 seconds, or 5 consecutive server errors.
+              Pusher stops on a detected firewall block, 3 rate-limit responses in 3 seconds, 5 consecutive server errors, &gt;30% request timeouts, or rolling p95 ceiling breaches.
             </p>
           </div>
 
           {/* P95 Latency Ceiling */}
           <div className="space-y-1">
             <div className="text-xs font-bold uppercase">P95 latency ceiling · {effectiveP95.toLocaleString()} ms</div>
+            {maxP95Ceiling != null && p95Ceiling > maxP95Ceiling && (
+              <p className="text-[10px] font-bold text-amber-800">
+                Clamped to engine ceiling of {maxP95Ceiling.toLocaleString()} ms.
+              </p>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {[
                 { ms: 1000, label: '1,000 ms' },
@@ -296,10 +436,11 @@ export default function TrafficSetupView({
                 <button
                   key={p.ms}
                   type="button"
-                  aria-pressed={p95Ceiling === p.ms}
+                  disabled={maxP95Ceiling != null && p.ms > maxP95Ceiling}
+                  aria-pressed={effectiveP95 === p.ms}
                   onClick={() => setP95Ceiling(p.ms)}
-                  className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
-                    p95Ceiling === p.ms
+                  className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                    effectiveP95 === p.ms
                       ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
                       : 'bg-white text-black hover:bg-black/5'
                   }`}
@@ -348,7 +489,7 @@ export default function TrafficSetupView({
             </div>
             <div className="flex justify-between text-[10px] opacity-75">
               <span>Host Safety Ceiling:</span>
-              <span className={isProd && ramLimitMb <= maxHardwareSafeRamMb ? 'text-emerald-700 font-bold' : ''}>
+              <span className={isProd && maxHardwareSafeRamMb != null && ramLimitMb <= maxHardwareSafeRamMb ? 'text-emerald-700 font-bold' : ''}>
                 {maxHardwareSafeRamMb == null ? 'Unavailable' : ramLimitMb <= maxHardwareSafeRamMb ? 'Within host limit' : 'Above host limit'}
               </span>
             </div>
