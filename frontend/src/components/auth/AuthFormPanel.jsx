@@ -38,12 +38,12 @@ export default function AuthFormPanel({
   };
 
   return (
-    <div className="w-full h-full flex flex-col justify-center px-14 py-8 bg-[#9BA685] text-[#455230] select-none overflow-hidden">
+    <div className="w-full space-y-4 text-ink">
       {/* 2-Option Segmented Control: Log In / Sign Up with 1px Margin */}
-      <div className="relative flex p-[1px] rounded-xl bg-[#EBEBD8]/60 backdrop-blur-sm mb-3 border-0 shadow-inner shrink-0">
+      <div className="relative flex rounded-xl bg-soft p-[1px]">
         {/* Sliding active indicator pill with 1px margin */}
         <div
-          className={`absolute top-[1px] bottom-[1px] w-[calc(50%-1px)] rounded-[11px] bg-[#455230] shadow-md transition-all duration-300 ease-in-out ${
+          className={`absolute top-[1px] bottom-[1px] w-[calc(50%-1px)] rounded-[11px] bg-primary transition-[left] duration-200 motion-reduce:transition-none ${
             isSignUp ? 'left-[calc(50%+0.5px)]' : 'left-[1px]'
           }`}
         />
@@ -51,9 +51,10 @@ export default function AuthFormPanel({
         {/* Tab 1: Log In */}
         <button
           type="button"
+          aria-pressed={!isSignUp}
           onClick={() => onToggleMode && onToggleMode('login')}
-          className={`relative z-10 flex-1 py-2 text-center text-sm font-bold transition-colors duration-200 cursor-pointer select-none ${
-            !isSignUp ? 'text-[#EBEBD8]' : 'text-[#455230] hover:text-black'
+          className={`relative z-10 min-h-11 flex-1 rounded-xl text-center text-sm font-bold transition-colors ${
+            !isSignUp ? 'text-white' : 'text-ink hover:text-ink'
           }`}
         >
           Log In
@@ -62,9 +63,10 @@ export default function AuthFormPanel({
         {/* Tab 2: Sign Up */}
         <button
           type="button"
+          aria-pressed={isSignUp}
           onClick={() => onToggleMode && onToggleMode('signup')}
-          className={`relative z-10 flex-1 py-2 text-center text-sm font-bold transition-colors duration-200 cursor-pointer select-none ${
-            isSignUp ? 'text-[#EBEBD8]' : 'text-[#455230] hover:text-black'
+          className={`relative z-10 min-h-11 flex-1 rounded-xl text-center text-sm font-bold transition-colors ${
+            isSignUp ? 'text-white' : 'text-ink hover:text-ink'
           }`}
         >
           Sign Up
@@ -73,78 +75,78 @@ export default function AuthFormPanel({
 
       {/* Header Section */}
       <div className="mb-2.5 shrink-0">
-        <h1 className="text-2xl sm:text-[28px] font-black tracking-tight text-[#455230] transition-all duration-300">
+        <h1 className="ui-page-title">
           {isSignUp ? 'Create an account' : 'Welcome back'}
         </h1>
       </div>
 
       {/* Main Authentication Form */}
-      <form onSubmit={handleSubmit} autoComplete="off" className="space-y-2.5 shrink-0">
-        {/* Name Fields (Shown smoothly in Sign Up mode) */}
-        <div
-          className={`grid grid-cols-2 gap-3 transition-all duration-300 overflow-hidden ${
-            isSignUp ? 'max-h-20 opacity-100' : 'max-h-0 opacity-0 pointer-events-none'
-          }`}
-        >
+      <form onSubmit={handleSubmit} className="space-y-3.5">
+        {isSignUp && <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
           <div>
+            <label htmlFor="firstName" className="mb-1.5 block text-sm font-semibold">First name</label>
             <input
               id="firstName"
               name="firstName"
               type="text"
-              autoComplete="off"
-              required={isSignUp}
+              autoComplete="given-name"
+              required
               value={formData.firstName}
               onChange={handleChange}
               placeholder="First name"
-              className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+              className="w-full h-11 bg-field focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl px-4 text-sm text-ink placeholder-muted/70 transition-all shadow-sm font-medium border-0"
             />
           </div>
           <div>
+            <label htmlFor="lastName" className="mb-1.5 block text-sm font-semibold">Last name</label>
             <input
               id="lastName"
               name="lastName"
               type="text"
-              autoComplete="off"
+              autoComplete="family-name"
               value={formData.lastName}
               onChange={handleChange}
               placeholder="Last name"
-              className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+              className="w-full h-11 bg-field focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl px-4 text-sm text-ink placeholder-muted/70 transition-all shadow-sm font-medium border-0"
             />
           </div>
-        </div>
+        </div>}
 
         {/* Email Field */}
         <div>
+          <label htmlFor="email" className="mb-1.5 block text-sm font-semibold">Email</label>
           <input
             id="email"
             name="email"
             type="email"
-            autoComplete="off"
+            autoComplete="email"
             required
             value={formData.email}
             onChange={handleChange}
             placeholder="Email"
-            className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl px-4 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+            className="w-full h-11 bg-field focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl px-4 text-sm text-ink placeholder-muted/70 transition-all shadow-sm font-medium border-0"
           />
         </div>
 
         {/* Password Field with Toggle */}
-        <div className="relative">
+        <div>
+          <label htmlFor="password" className="mb-1.5 block text-sm font-semibold">Password</label>
+          <div className="relative">
           <input
             id="password"
             name="password"
             type={showPassword ? 'text' : 'password'}
-            autoComplete="new-password"
+            autoComplete={isSignUp ? 'new-password' : 'current-password'}
             required
             value={formData.password}
             onChange={handleChange}
             placeholder="Enter your password"
-            className="w-full h-11 bg-[#EBEBD8] focus:outline-none focus:ring-2 focus:ring-[#455230]/40 rounded-xl pl-4 pr-11 text-sm text-[#455230] placeholder-[#637545]/70 transition-all shadow-sm font-medium border-0"
+            className="w-full h-11 bg-field focus:outline-none focus:ring-2 focus:ring-primary/40 rounded-xl pl-4 pr-11 text-sm text-ink placeholder-muted/70 transition-all shadow-sm font-medium border-0"
           />
           <button
             type="button"
             onClick={() => setShowPassword(!showPassword)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#455230]/70 hover:text-[#455230] transition-colors cursor-pointer p-1"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted hover:text-ink transition-colors cursor-pointer p-1"
             aria-label={showPassword ? 'Hide password' : 'Show password'}
           >
             {showPassword ? (
@@ -153,13 +155,14 @@ export default function AuthFormPanel({
               <Eye className="w-4 h-4 stroke-[2.5]" />
             )}
           </button>
+          </div>
         </div>
 
         {/* Terms or Remember Me Checkbox */}
         <div className="space-y-1 pt-0.5">
           {isSignUp ? (
             <>
-              <div className="flex flex-wrap items-center gap-x-1 text-xs text-[#455230] font-medium">
+              <div className="flex flex-wrap items-center gap-x-1 text-xs text-ink font-medium">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -167,16 +170,16 @@ export default function AuthFormPanel({
                     onChange={e => setAgreedToTerms(e.target.checked)}
                     required
                     aria-label="I agree to the Terms and Conditions"
-                    className="h-4 w-4 accent-[#455230] cursor-pointer"
+                    className="h-4 w-4 accent-primary cursor-pointer"
                   />
                   I agree to the
                 </label>
-                <a href="/terms" target="_blank" rel="noopener" className="underline font-bold hover:text-black">
+                <a href="/terms" target="_blank" rel="noopener" className="underline font-bold hover:text-ink">
                   Terms &amp; Conditions
                 </a>
               </div>
               {!agreedToTerms && (
-                <p className="text-[11px] font-semibold text-[#455230]/85">
+                <p className="text-[11px] font-semibold text-ink/85">
                   Check the Terms &amp; Conditions box above to enable Sign Up, Google, and GitHub.
                 </p>
               )}
@@ -187,20 +190,20 @@ export default function AuthFormPanel({
                 onClick={() =>
                   setFormData((prev) => ({ ...prev, rememberMe: !prev.rememberMe }))
                 }
-                className="flex items-center gap-2 text-xs text-[#455230] cursor-pointer select-none font-medium"
+                className="flex items-center gap-2 text-xs text-ink cursor-pointer select-none font-medium"
               >
                 <div
                   className={`w-4 h-4 rounded-md flex items-center justify-center transition-all ${
                     formData.rememberMe
-                      ? 'bg-[#455230] text-[#EBEBD8] shadow-sm'
-                      : 'bg-[#EBEBD8] border-2 border-[#455230]/60'
+                      ? 'bg-primary text-white shadow-sm'
+                      : 'bg-field border-2 border-[#455230]/60'
                   }`}
                 >
                   {formData.rememberMe && <Check className="w-3 h-3 stroke-[3]" />}
                 </div>
                 <span>Remember me</span>
               </label>
-              <a href="/auth/forgot" className="text-xs text-[#455230] underline font-bold hover:text-black">
+              <a href="/auth/forgot" className="text-xs text-ink underline font-bold hover:text-ink">
                 Forgot password?
               </a>
             </div>
@@ -212,18 +215,18 @@ export default function AuthFormPanel({
           type="submit"
           disabled={submissionBlocked}
           title={isSignUp && !agreedToTerms ? 'Check "I agree to the Terms & Conditions" above first' : undefined}
-          className="w-full h-11 mt-2.5 px-4 rounded-xl bg-[#455230] hover:bg-[#343e24] active:scale-[0.99] text-[#EBEBD8] font-bold text-sm shadow-[0_10px_25px_-5px_rgba(69,82,48,0.4)] transition-all duration-200 cursor-pointer flex items-center justify-center tracking-wide border-0 disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full h-11 mt-2.5 px-4 rounded-xl bg-primary hover:bg-primary-hover active:scale-[0.99] text-white font-bold text-sm shadow-[0_10px_25px_-5px_rgba(69,82,48,0.4)] transition-all duration-200 cursor-pointer flex items-center justify-center tracking-wide border-0 disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {isSignUp ? 'Create account' : 'Log in'}
         </button>
 
         {/* Toggle Mode Link Below CTA */}
-        <p className="text-center text-xs text-[#455230]/80 font-medium pt-0.5">
+        <p className="text-center text-xs text-muted font-medium pt-0.5">
           {isSignUp ? 'Already have an account? ' : "Don't have an account? "}
           <button
             type="button"
             onClick={onToggleMode}
-            className="text-[#455230] hover:text-black underline font-bold transition-colors cursor-pointer ml-1"
+            className="text-ink hover:text-ink underline font-bold transition-colors cursor-pointer ml-1"
           >
             {isSignUp ? 'Log in' : 'Sign up'}
           </button>
@@ -233,10 +236,10 @@ export default function AuthFormPanel({
       {/* Divider */}
       <div className="relative my-2.5 shrink-0">
         <div className="absolute inset-0 flex items-center">
-          <div className="w-full h-[1px] bg-[#455230]/20" />
+          <div className="w-full h-[1px] bg-primary/20" />
         </div>
         <div className="relative flex justify-center text-xs">
-          <span className="bg-[#9BA685] px-3 text-[#455230] font-bold">
+          <span className="bg-surface px-3 text-ink font-bold">
             {isSignUp ? 'Or register with' : 'Or log in with'}
           </span>
         </div>
@@ -252,7 +255,7 @@ export default function AuthFormPanel({
             onClick={onGoogleClick}
             disabled={submissionBlocked}
             title={isSignUp && !agreedToTerms ? 'Check "I agree to the Terms & Conditions" above first' : undefined}
-            className="h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-field hover:bg-surface text-xs font-bold text-ink transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
               <path
@@ -281,7 +284,7 @@ export default function AuthFormPanel({
             onClick={onGitHubClick}
             disabled={submissionBlocked}
             title={isSignUp && !agreedToTerms ? 'Check "I agree to the Terms & Conditions" above first' : undefined}
-            className="h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-[#EBEBD8] hover:bg-white text-xs font-bold text-[#455230] transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="h-11 flex items-center justify-center gap-2 px-3 rounded-xl bg-field hover:bg-surface text-xs font-bold text-ink transition-all cursor-pointer shadow-sm hover:shadow border-0 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <svg className="w-4 h-4 fill-[#455230] shrink-0" viewBox="0 0 24 24">
               <path

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from backend.core.config import settings
 from backend.core.database import db_get_traffic_config
+from backend.core.db_async import run_db_read, run_db_write
 from backend.core.dry_run_control import DryRunControl, active_dry_runs
 from backend.core.request_owner import request_owner
 from backend.core.journey_service import (
@@ -92,7 +93,7 @@ class StopDryRunRequest(BaseModel):
 @router.get("/journey", dependencies=[Depends(require_operator)])
 async def get_journey_endpoint():
     """Retrieve saved journey steps, use_journey toggle state, and latest dry-run results."""
-    return journey_store.get_journey()
+    return await run_db_read(journey_store.get_journey)
 
 
 @router.get("/journey/sandbox-defaults", dependencies=[Depends(require_operator)])
@@ -115,7 +116,7 @@ async def save_journey_endpoint(req: SaveJourneyRequest):
             detail=err_msg or "Invalid journey step specification.",
         )
 
-    saved = journey_store.save_journey(req.steps, use_journey=req.use_journey)
+    saved = await run_db_write(journey_store.save_journey, req.steps, use_journey=req.use_journey)
     return {
         "status": "saved",
         "count": len(req.steps),

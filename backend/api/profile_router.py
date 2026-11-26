@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from backend.core.config import MAX_RAM_BUDGET_MB
+from backend.core.db_async import run_db_read, run_db_write
 from backend.core.profile_service import get_or_create_profile, update_user_profile
 from backend.api.auth_deps import require_operator
 from backend.core.jwks_verifier import AuthenticatedUser
@@ -23,13 +24,13 @@ class ProfileUpdateRequest(BaseModel):
     github_username: Optional[str] = None
     avatar_url: Optional[str] = None
     bio_notes: Optional[str] = None
-    default_ram_ceiling_mb: Optional[int] = Field(default=None, ge=50, le=MAX_RAM_BUDGET_MB)
+    default_ram_ceiling_mb: Optional[int] = Field(default=None, ge=51, le=MAX_RAM_BUDGET_MB)
 
 
 @router.get("")
 @router.get("/")
 async def get_profile(actor: AuthenticatedUser = Depends(require_operator)) -> Dict[str, Any]:
-    return get_or_create_profile(user_key=actor.user_id, email=actor.email or "")
+    return await run_db_read(get_or_create_profile, user_key=actor.user_id, email=actor.email or "")
 
 
 @router.put("")
@@ -39,4 +40,4 @@ async def update_profile(
 ) -> Dict[str, Any]:
     updates = payload.model_dump(exclude_none=True, exclude={"email"})
     updates["email"] = actor.email or ""
-    return update_user_profile(user_key=actor.user_id, data=updates)
+    return await run_db_write(update_user_profile, user_key=actor.user_id, data=updates)

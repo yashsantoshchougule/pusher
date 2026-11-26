@@ -1,10 +1,14 @@
+from io import BytesIO
 import json
 import re
 import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from backend.api.auth_deps import require_operator
 from pydantic import BaseModel, Field
 
+from backend.core.db_async import run_db_read, run_db_write
+from backend.core.pdf_report_service import generate_run_pdf_bytes, safe_pdf_slug
 from backend.core.report_service import (
     clear_runs,
     compare_two_runs,
@@ -30,7 +34,7 @@ async def get_history_endpoint(
 ):
     """Retrieve historical load test executions and latest scorecard KPIs."""
     try:
-        return get_all_runs(mode=mode, verdict=verdict, q=q, limit=limit, cursor=cursor)
+        return await run_db_read(get_all_runs, mode=mode, verdict=verdict, q=q, limit=limit, cursor=cursor)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -38,14 +42,14 @@ async def get_history_endpoint(
 @router.delete("/history")
 async def delete_history_endpoint():
     """Clear test run history and reset baseline profiles."""
-    clear_runs()
-    return get_all_runs()
+    await run_db_write(clear_runs)
+    return await run_db_read(get_all_runs)
 
 
 @router.get("/reports/{run_id}")
 async def get_report_endpoint(run_id: str):
     """Retrieve full capacity scorecard, Knee of the Curve analysis, and ramp metrics for a run."""
-    run = get_run(run_id)
+    run = await run_db_read(get_run, run_id)
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -58,7 +62,7 @@ async def get_report_endpoint(run_id: str):
 async def compare_reports_endpoint(req: CompareRequest):
     """Perform mathematical Before-vs-After differential comparison between two runs."""
     try:
-        return compare_two_runs(req.base_run_id, req.candidate_run_id)
+        return await run_db_read(compare_two_runs, req.base_run_id, req.candidate_run_id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -82,7 +86,7 @@ _EXPORT_UI_ALIASES = (
 @router.get("/reports/{run_id}/export")
 async def export_report_endpoint(run_id: str):
     """Export complete load test scorecard and time-series as downloadable JSON."""
-    run = get_run(run_id)
+    run = await run_db_read(get_run, run_id)
     if not run:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -104,5 +108,26 @@ async def export_report_endpoint(run_id: str):
     return Response(
         content=content,
         media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/reports/{run_id}/pdf")
+async def export_report_pdf_endpoint(run_id: str):
+    """Render and stream a vector PDF capacity + crash-diagnosis report for an owned run."""
+    run = await run_db_read(get_run, run_id)
+    if not run:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Test run '{run_id}' not found.",
+        )
+
+    pdf_bytes = generate_run_pdf_bytes(run)
+    safe_run_id = re.sub(r"[^A-Za-z0-9._-]+", "_", run_id).strip("._") or "run"
+    proj_slug = safe_pdf_slug(run.get("project_name") or "", fallback="project")
+    filename = f"pusher-{proj_slug}-{safe_run_id}.pdf"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

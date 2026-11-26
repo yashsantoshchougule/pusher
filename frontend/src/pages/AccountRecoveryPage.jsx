@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { closeRecoverySession, forgotPasswordPath, recoveryPath, requestPasswordReset, updateRecoveryPassword } from '../lib/passwordRecovery.js';
 import { recoverySession, supabase, supabaseConfigError } from '../lib/supabaseClient.js';
 
-const fieldClass = 'w-full rounded-lg border border-[#455230] bg-white p-2';
-const buttonClass = 'w-full rounded-lg bg-[#455230] p-2 font-semibold text-white disabled:opacity-60';
+const fieldClass = 'mt-1 w-full min-h-11 px-3';
+const buttonClass = 'w-full min-h-11 rounded-xl bg-primary px-4 font-semibold text-white disabled:opacity-60';
 const loginUrl = '/?view=login';
 const unavailable = { status: 'invalid', userId: null };
 const getSnapshot = recoverySession?.getSnapshot ?? (() => unavailable);
@@ -66,8 +66,8 @@ export default function AccountRecoveryPage({ requesting }) {
   }
 
   return (
-    <main className="mx-auto mt-12 w-[min(90%,28rem)] space-y-4 rounded-xl bg-[#EBEBD8] p-6 text-[#455230] shadow">
-      <h1 className="text-2xl font-bold">{requesting ? 'Reset your password' : 'Choose a new password'}</h1>
+    <main className="mx-auto my-8 w-[min(92%,31rem)] space-y-5 rounded-[1.5rem] border border-line bg-surface p-6 sm:my-12 sm:p-8">
+      <h1 className="ui-page-title">{requesting ? 'Reset your password' : 'Choose a new password'}</h1>
       {supabaseConfigError && <p role="alert">{supabaseConfigError}</p>}
       {message && <p role="status">{message}</p>}
       {error && <p role="alert">{error}</p>}

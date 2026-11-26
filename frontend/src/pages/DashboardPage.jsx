@@ -53,11 +53,20 @@ import ReportsView from '../components/dashboard/ReportsView';
 import ProfileView from '../components/dashboard/ProfileView';
 import { getDeviceId } from '../utils/deviceFingerprint';
 
+const workspaceNav = [
+  { id: 'dashboard', label: 'Dashboard', icon: Activity },
+  { id: 'verify', label: 'Verify Target', icon: Shield },
+  { id: 'traffic', label: 'Traffic Setup', icon: Sliders },
+  { id: 'api', label: 'API Builder', icon: Code },
+  { id: 'history', label: 'Test History', icon: History },
+  { id: 'reports', label: 'Reports', icon: FileText },
+  { id: 'profile', label: 'Profile', icon: User },
+];
+
 export default function DashboardPage({ operator, onLogout, onNavigate, appearance = 'light', onAppearanceChange }) {
   const maxJourneySteps = 10;
   // Navigation & Dropdown States (7 Views)
   const [activeNav, setActiveNav] = useState('dashboard'); // 'dashboard' | 'verify' | 'traffic' | 'api' | 'history' | 'reports' | 'profile'
-  const [menuOpen, setMenuOpen] = useState(false);
   const [sandboxMode, setSandboxMode] = useState(false);
   const [sandboxTargetUrl, setSandboxTargetUrl] = useState(null);
   const liveTargetDraft = useRef(null);
@@ -72,6 +81,9 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
 
   // Target Verification & 48h Timer States (Shared across views - Zero hardcoded values)
   const [targetUrl, setTargetUrl] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [projectNameSource, setProjectNameSource] = useState('');
+  const projectNameManualRef = useRef(false);
   const [confirmedTarget, setConfirmedTarget] = useState('');
   const [confirmedSandbox, setConfirmedSandbox] = useState(false);
   const [requiresTargetQuery, setRequiresTargetQuery] = useState(false);
@@ -163,6 +175,9 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   const [dryRunResults, setDryRunResults] = useState(null);
   const [journeyMessage, setJourneyMessage] = useState(null);
   const stepMetrics = runStatus?.step_metrics ?? [];
+  const failureBreakdown = runStatus?.failure_breakdown ?? [];
+  const crashSummary = runStatus?.crash_summary ?? null;
+  const timelinePoints = runStatus?.timeline_points ?? [];
 
   // Stage 5: Test History & Reports State
   const [historySearch, setHistorySearch] = useState('');
@@ -183,6 +198,8 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   const [historyVersion, setHistoryVersion] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [expandedHistoryRunId, setExpandedHistoryRunId] = useState(null);
+  const [expandedHistoryRunDetail, setExpandedHistoryRunDetail] = useState(null);
   const historyRequest = useRef(null);
 
   // User Profile State (SQLite Persistent)
@@ -296,6 +313,10 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
         const sameGuard = Boolean(data.guard_id && targetGuardRef.current === data.guard_id);
         targetGuardRef.current = data.guard_id || null;
         setTargetUrl((draft) => restoreTargetQuery(data.target_url || '', draft, sameGuard));
+        if (data.project_name && !projectNameManualRef.current) {
+          setProjectName(data.project_name);
+          setProjectNameSource((prev) => prev || 'saved');
+        }
         setConfirmedTarget(data.target_url || '');
         setConfirmedSandbox(Boolean(data.is_sandbox));
         setSandboxTargetUrl(data.sandbox_url || null);
@@ -324,13 +345,38 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
     fetchTargetStatus();
   }, [activeNav]);
 
+  const handleProjectNameChange = (value) => {
+    const next = String(value ?? '');
+    projectNameManualRef.current = Boolean(next.trim());
+    setProjectName(next);
+    setProjectNameSource(next.trim() ? 'custom' : '');
+  };
+
+  const handleSaveProjectName = async (valueOverride = null) => {
+    const toSave = String(valueOverride ?? projectName ?? '').trim().slice(0, 80);
+    try {
+      const res = await operatorFetch(`/api/target/project-name`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: toSave }),
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        setProjectName(saved.project_name ?? toSave);
+      }
+    } catch {}
+  };
+
   const handleToggleSandbox = () => {
     if (!sandboxTargetUrl) return;
+    projectNameManualRef.current = false;
     if (sandboxMode) {
       setTargetUrl(liveTargetDraft.current ?? (confirmedSandbox ? '' : confirmedTarget));
     } else {
       liveTargetDraft.current = targetUrl;
       setTargetUrl(confirmedSandbox ? confirmedTarget : sandboxTargetUrl);
+      setProjectName('Pusher Sandbox');
+      setProjectNameSource('sandbox');
     }
     setSandboxMode(!sandboxMode);
     setVerificationError(null);
@@ -422,6 +468,10 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
             suggestions: data.suggestions || [],
             resolved_ip: data.resolved_ip || null,
           });
+          if (data.ready && data.detected_project_name && (!projectNameManualRef.current || !projectName.trim())) {
+            setProjectName(data.detected_project_name);
+            setProjectNameSource(data.detected_project_source || 'auto');
+          }
         } else {
           const err = await res.json();
           const detail = err.detail || {};
@@ -960,6 +1010,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
         },
         body: JSON.stringify({
           target_url: targetUrl,
+          project_name: projectName.trim(),
           traffic_mode: trafficMode,
           target_vus: vus,
           duration_sec: duration,
@@ -1085,6 +1136,21 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
     }
   };
 
+  const handleToggleExpandHistoryRun = async (runId) => {
+    if (expandedHistoryRunId === runId) {
+      setExpandedHistoryRunId(null);
+      return;
+    }
+    setExpandedHistoryRunId(runId);
+    try {
+      const res = await operatorFetch(`/api/reports/${encodeURIComponent(runId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setExpandedHistoryRunDetail(data);
+      }
+    } catch {}
+  };
+
   const handleViewSingleReport = async (runId) => {
     const idToFetch = runId || selectedReportId;
     if (!idToFetch) return;
@@ -1149,6 +1215,35 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
     setCompareCandidateId(cand);
     setReportMode('compare');
     setActiveNav('reports');
+  };
+
+  const handleDownloadPdf = async (runId, customProjectName = '') => {
+    const id = runId || selectedReportId || runHistory[0]?.run_id || runHistory[0]?.id;
+    if (!id) {
+      setReportError('Select a report before downloading PDF.');
+      return;
+    }
+    setReportError('');
+    try {
+      const response = await operatorFetch(`/api/reports/${encodeURIComponent(id)}/pdf`);
+      if (!response.ok) {
+        const err = await response.json().catch(() => null);
+        throw new Error(typeof err?.detail === 'string' ? err.detail : 'PDF report unavailable.');
+      }
+      const slug = String(customProjectName || projectName || 'project')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'project';
+      const url = URL.createObjectURL(await response.blob());
+      const download = document.createElement('a');
+      download.href = url;
+      download.download = `pusher-${slug}-${id}.pdf`;
+      download.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setReportError(error?.message || 'Could not download PDF report.');
+    }
   };
 
   const handleExportReport = async (runId) => {
@@ -1306,244 +1401,91 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
   };
 
   return (
-    <div data-appearance={appearance} className="pusher-workspace min-h-screen w-full bg-white text-black font-mono selection:bg-black selection:text-white flex flex-col antialiased">
-      {/* ========================================================================= */}
-      {/* TOP HEADER                                                                */}
-      {/* ========================================================================= */}
-      <header className="w-full h-16 border-b-2 border-black px-4 sm:px-6 flex items-center justify-between bg-white z-30 shrink-0">
-        <div className="flex items-center gap-3">
-          <div
-            onClick={() => setActiveNav('dashboard')}
-            className="border-2 border-black px-2.5 py-1 text-sm sm:text-base font-black tracking-widest bg-white cursor-pointer select-none"
-          >
-            PUSHER
-          </div>
-          <span className="hidden md:inline-block border border-black px-2 py-0.5 text-xs font-bold uppercase tracking-wider bg-white">
-            [ WIREFRAME v1.0 ]
-          </span>
-
-          {/* 1-Click UI Switcher: PRODUCTION vs WIREFRAME */}
-          <button
-            type="button"
-            onClick={() => setThemeMode(themeMode === 'production' ? 'wireframe' : 'production')}
-            className={`border-2 border-black px-2.5 py-0.5 text-xs font-black uppercase tracking-wider transition-colors cursor-pointer ${themeMode === 'production'
-              ? 'bg-teal-700 text-white hover:bg-teal-800'
-              : 'bg-white text-black hover:bg-black hover:text-white'
-              }`}
-            title="Toggle theme styling between Production color badges and strict monochrome wireframe"
-          >
-            UI: {themeMode.toUpperCase()}
-          </button>
-        </div>
-
-        {/* Center Live Engine Status & Telemetry Caps */}
-        <div className="hidden lg:flex items-center gap-6 border-2 border-black px-4 py-1.5 text-xs font-bold bg-white">
-          <div className="flex items-center gap-2">
-            <span className={`inline-block w-2.5 h-2.5 border-2 border-black ${testRunning
-              ? (themeMode === 'production' ? 'bg-emerald-500 animate-ping' : 'bg-black animate-ping')
-              : 'bg-black'
-              }`} />
-            <span>ENGINE: LOCAL ASYNC WORKER</span>
-          </div>
-          <span className="border-l-2 border-black h-3.5" />
-          <div>
-            <span>
-              {testRunning ? 'LIVE RAM' : 'EST. RAM'}:{' '}
-              {(testRunning ? (runStatus?.ram_mb ?? estimatedRam) : estimatedRam) != null
-                ? `${testRunning ? (runStatus?.ram_mb ?? estimatedRam) : estimatedRam} MB`
-                : 'Unavailable'}{' '}
-              / {ramLimitMb} MB MAX
-            </span>
-            <span className="text-[10px] ml-1.5 opacity-80">(4KB Chunk Discard Active)</span>
-          </div>
-          <span className="border-l-2 border-black h-3.5" />
-          <div>
-            <span>
-              FD CAP: {maxWorkerVus != null ? `${maxWorkerVus.toLocaleString()} VUs (${hardwareLimits?.fd_cap_pct ?? 70}% OS LIMIT)` : '70% OS LIMIT'}
-            </span>
-          </div>
-        </div>
-
-        {/* Right Action Area: User Profile Pill + Options Menu */}
-        <div className="flex items-center gap-2.5">
-          {/* User Profile Pill / Button */}
+    <div data-appearance={appearance} className="min-h-screen bg-canvas text-ink">
+      <header className="relative z-30 flex flex-wrap items-center justify-between gap-2 bg-nav px-4 py-3 text-nav-ink sm:px-7">
+        <button type="button" onClick={() => setActiveNav('dashboard')} className="inline-flex min-h-11 items-center gap-2 rounded-lg text-lg font-bold">
+          <Activity aria-hidden="true" className="h-5 w-5 text-accent" /> Pusher
+        </button>
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setActiveNav('profile')}
-            className={`border-2 border-black px-2.5 py-1 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center gap-2 ${activeNav === 'profile'
-              ? (themeMode === 'production' ? 'bg-teal-700 text-white' : 'bg-black text-white')
-              : 'bg-white text-black hover:bg-black hover:text-white'
-              }`}
-            title="View & Edit User Profile & Session"
+            className="flex min-h-11 items-center gap-2 rounded-xl border border-white/25 px-3 text-sm font-semibold hover:bg-white/10"
           >
-            <div className="w-5 h-5 border border-black bg-slate-900 text-white flex items-center justify-center text-[10px] font-black overflow-hidden shrink-0 select-none">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-accent text-[10px] font-bold text-accent-ink">
               {userProfile.avatar_url ? (
-                <img src={userProfile.avatar_url} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <span>{(userProfile.full_name || userProfile.username || 'PU').slice(0, 2).toUpperCase()}</span>
-              )}
-            </div>
-            <span className="font-mono truncate max-w-[220px]">
-              [ PROFILE: {userProfile.full_name || userProfile.username || userProfile.email || 'OPERATOR'} ]
+                <img src={userProfile.avatar_url} alt="" className="h-full w-full object-cover" />
+              ) : (userProfile.full_name || userProfile.username || 'PU').slice(0, 2).toUpperCase()}
             </span>
+            <span className="max-w-[9rem] truncate">{userProfile.full_name || userProfile.username || 'Profile'}</span>
           </button>
-
-          {/* Right Action Menu: ••• */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setMenuOpen(!menuOpen)}
-              className="border-2 border-black px-3 py-1 font-black text-sm tracking-widest hover:bg-black hover:text-white transition-colors cursor-pointer"
-              aria-label="Options Menu"
-            >
-              •••
-            </button>
-
-            {menuOpen && (
-              <div className="absolute right-0 mt-2 w-64 border-2 border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] z-50 text-xs">
-                <div className="p-3 border-b-2 border-black font-bold uppercase flex justify-between items-center">
-                  <span>Pusher Options</span>
-                  <span className="text-[10px] opacity-75">v1.0.0</span>
-                </div>
-                <div className="p-1 space-y-0.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setActiveNav('profile');
-                    }}
-                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>User Profile</span>
-                    <User className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      if (onNavigate) {
-                        onNavigate('waf-setup');
-                      } else {
-                        window.location.hash = '#/waf-setup';
-                      }
-                    }}
-                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>WAF Setup Guide</span>
-                    <Code className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setActiveNav('reports');
-                    }}
-                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
-                  >
-                    <span>Capacity Reports</span>
-                    <FileText className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setActiveNav('history');
-                    }}
-                    className="w-full text-left px-3 py-2 font-bold uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-between"
-                  >
-                    <span>Run History</span>
-                    <History className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          <details className="relative">
+            <summary className="flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-xl border border-white/25 hover:bg-white/10" aria-label="Options menu">
+              <MoreVertical aria-hidden="true" className="h-5 w-5" />
+            </summary>
+            <div className="absolute right-0 mt-2 grid w-52 gap-1 rounded-xl border border-line bg-surface p-2 text-sm text-ink shadow-lg">
+              <button type="button" className="rounded-lg px-3 py-2 text-left hover:bg-soft" onClick={event => {
+                event.currentTarget.closest('details').open = false;
+                if (onNavigate) onNavigate('waf-setup');
+                else window.location.hash = '#/waf-setup';
+              }}>WAF setup guide</button>
+              <button type="button" className="rounded-lg px-3 py-2 text-left hover:bg-soft" onClick={event => {
+                event.currentTarget.closest('details').open = false;
+                setThemeMode(themeMode === 'production' ? 'wireframe' : 'production');
+              }}>{themeMode === 'production' ? 'Monochrome metrics' : 'Color metrics'}</button>
+            </div>
+          </details>
         </div>
       </header>
 
-      {/* ========================================================================= */}
-      {/* 2-COLUMN MAIN LAYOUT: LEFT SIDEBAR + MAIN CONTENT AREA                   */}
-      {/* ========================================================================= */}
-      <div className="flex-1 flex flex-col md:flex-row bg-white">
-
-        {/* LEFT SIDEBAR: 6 DISTINCT VIEWS */}
-        <aside className="w-full md:w-64 border-b-2 md:border-b-0 md:border-r-2 border-black p-4 bg-white flex flex-col justify-between shrink-0 lg:sticky lg:top-4 self-start">
-          <div className="space-y-4">
-            <div className="text-xs font-black uppercase tracking-wider text-black/60 pb-1 border-b border-black">
-              [ NAVIGATION ]
-            </div>
-
-            <nav className="flex flex-col gap-1.5">
-              {[
-                { id: 'dashboard', label: '1. Dashboard', desc: 'Read-only 3-Box Overview' },
-                { id: 'verify', label: '2. Verify Target', desc: '48h Guard & SSRF Security' },
-                { id: 'traffic', label: '3. Traffic Setup', desc: 'Curve, Concurrency & Caps' },
-                { id: 'api', label: '4. API Builder', desc: 'Multi-Step Request Chains' },
-                { id: 'history', label: '5. Test History', desc: 'Searchable Runs Archive' },
-                { id: 'reports', label: '6. Reports', desc: 'Knee Curve & Comparison' },
-                { id: 'profile', label: '7. User Profile', desc: 'SQLite Profile & Defaults' },
-              ].map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setActiveNav(item.id)}
-                  className={`w-full text-left p-2.5 border-2 border-black text-xs font-bold uppercase transition-colors cursor-pointer ${activeNav === item.id
-                    ? (themeMode === 'production' ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                    : 'bg-white text-black hover:bg-black hover:text-white'
-                    }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span>{item.label}</span>
-                    {activeNav === item.id && <span>●</span>}
-                  </div>
-                  <div className="text-[10px] normal-case opacity-75 font-normal mt-0.5">
-                    {item.desc}
-                  </div>
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {/* Sidebar System Telemetry Footer */}
-          <div className="mt-6 pt-4 border-t-2 border-black space-y-2 text-xs">
-            <div className="flex justify-between items-center text-[10px] font-bold">
-              <span>ACTIVE TARGET:</span>
-              <span className={`px-1 text-[9px] uppercase border border-black ${isVerified
-                ? (themeMode === 'production' ? 'bg-emerald-600 text-white' : 'bg-black text-white')
-                : 'bg-white text-black'
-                }`}>
-                {isVerified ? 'VERIFIED' : 'UNVERIFIED'}
-              </span>
-            </div>
-            <div className="font-mono text-[10px] truncate border border-black p-1.5 bg-white">
-              {targetTemplate(targetUrl)}
-            </div>
-            <div className="flex justify-between items-center text-[10px]">
-              <span className="font-bold">GUARD TOKEN:</span>
-              <span className="font-mono font-bold">{isVerified ? guardToken : 'EXPIRED'}</span>
-            </div>
-            <div className="flex justify-between items-center text-[10px]">
-              <span className="font-bold">48H EXPIRY:</span>
-              <span className="font-mono font-bold">
-                {isVerified ? formatTimer(guardTimerSeconds) : '00:00:00'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center text-[10px]">
-              <span className="font-bold">GUARD QUOTA:</span>
-              <span className="font-mono font-bold">
-                {guardQuota.remaining} / {guardQuota.max || 3} left
-              </span>
-            </div>
+      <div className="flex min-h-[calc(100vh-4.25rem)] flex-col md:flex-row">
+        <aside className="shrink-0 bg-nav px-4 pb-3 text-nav-ink md:w-56 md:pb-6 md:pt-7">
+          <nav aria-label="Main navigation" className="flex gap-1.5 overflow-x-auto py-1 md:flex-col">
+            {workspaceNav.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                aria-current={activeNav === id ? 'page' : undefined}
+                onClick={() => setActiveNav(id)}
+                className="ui-nav-item text-left"
+              >
+                <Icon aria-hidden="true" className="h-[18px] w-[18px] shrink-0" />
+                {label}
+              </button>
+            ))}
+          </nav>
+          <div className="mt-8 hidden border-t border-white/20 pt-5 text-xs md:block">
+            <p className="font-semibold">{testRunning ? 'Test running' : 'Load engine idle'}</p>
+            <p className="mt-1 break-all text-nav-ink/80">{targetTemplate(targetUrl) || 'No target selected'}</p>
+            <dl className="mt-4 grid gap-2.5">
+              <div className="flex justify-between gap-2"><dt>Target</dt><dd>{isVerified ? 'Verified' : 'Unverified'}</dd></div>
+              <div className="flex justify-between gap-2"><dt>Guard expires in</dt><dd className="tabular-nums">{isVerified ? formatTimer(guardTimerSeconds) : '—'}</dd></div>
+              <div className="flex justify-between gap-2"><dt>Guard quota</dt><dd>{guardQuota.remaining} / {guardQuota.max || 3}</dd></div>
+            </dl>
           </div>
         </aside>
-
-        {/* MAIN CONTENT AREA */}
-        <main className="flex-1 p-4 sm:p-6 space-y-6 bg-white pb-24">
+        <main className="mx-auto w-full min-w-0 max-w-[88rem] flex-1 space-y-6 px-4 pb-12 pt-6 sm:px-8 md:py-9">
+          {activeNav === 'dashboard' && (
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h1 className="ui-page-title">Dashboard</h1>
+                <p className="mt-1 text-sm text-muted">Target readiness, run status, and live performance.</p>
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-xl border border-line bg-surface px-4 py-2 text-xs font-medium text-muted">
+                <span>{testRunning ? 'Live RAM' : 'Est. RAM'}: {(testRunning ? (runStatus?.ram_mb ?? estimatedRam) : estimatedRam) ?? 'Unavailable'} / {ramLimitMb} MB</span>
+                <span>Worker limit: {maxWorkerVus?.toLocaleString() ?? 'Unavailable'}</span>
+              </div>
+            </div>
+          )}
 
           {/* VIEW 1: `1. Dashboard` (READ-ONLY 3-BOX SUMMARY SCREEN) */}
           {activeNav === 'dashboard' && (
             <OverviewBoxes
               targetUrl={targetTemplate(targetUrl)}
+              projectName={projectName}
+              setProjectName={handleProjectNameChange}
+              projectNameSource={projectNameSource}
+              onSaveProjectName={handleSaveProjectName}
               isVerified={isVerified}
               guardToken={guardToken}
               guardTimerSeconds={guardTimerSeconds}
@@ -1551,6 +1493,9 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               ssrfCheck={ssrfCheck}
               latestScorecard={latestScorecard}
               latestRunSummary={latestRunSummary}
+              failureBreakdown={failureBreakdown}
+              crashSummary={crashSummary}
+              timelinePoints={timelinePoints}
               modeLabel={modeLabel}
               vus={vus}
               duration={duration}
@@ -1569,6 +1514,8 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
                 /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\]|::1|0\.0\.0\.0)(:|\/|$)/i.test((targetUrl || '').trim())
               )}
               loopbackAdvisory={runStatus?.advisory || lastStartAdvisory.advisory || ''}
+              cdnCacheWarning={testRunning ? Boolean(runStatus?.cdn_cache_warning) : Boolean(runStatus?.cdn_cache_warning ?? latestRunSummary?.cdn_cache_warning)}
+              cacheHitPct={testRunning ? Number(runStatus?.cache_hit_pct ?? 0) : Number(runStatus?.cache_hit_pct ?? latestRunSummary?.cache_hit_pct ?? 0)}
               testRunning={testRunning}
               canStart={canStart}
               statusUnavailable={statusUnavailable}
@@ -1596,6 +1543,10 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
           {activeNav === 'verify' && (
             <VerifyTargetView
               targetUrl={targetUrl}
+              projectName={projectName}
+              setProjectName={handleProjectNameChange}
+              projectNameSource={projectNameSource}
+              onSaveProjectName={handleSaveProjectName}
               requiresTargetQuery={requiresTargetQuery}
               setTargetUrl={setTargetUrl}
               sandboxMode={sandboxMode}
@@ -1630,6 +1581,10 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
           {/* VIEW 3: `3. Traffic Setup` */}
           {activeNav === 'traffic' && (
             <TrafficSetupView
+              projectName={projectName}
+              setProjectName={handleProjectNameChange}
+              projectNameSource={projectNameSource}
+              onSaveProjectName={handleSaveProjectName}
               trafficMode={trafficMode}
               setTrafficMode={handleUpdateTrafficMode}
               ramLimitMb={ramLimitMb}
@@ -1731,6 +1686,10 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               handleClearArchive={handleClearArchive}
               handleViewSingleReport={handleViewSingleReport}
               handleCloneRun={handleCloneRun}
+              expandedRunId={expandedHistoryRunId}
+              expandedRunDetail={expandedHistoryRunDetail}
+              onToggleExpandRun={handleToggleExpandHistoryRun}
+              handleDownloadPdf={handleDownloadPdf}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1753,6 +1712,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
               handleViewSingleReport={handleViewSingleReport}
               handleCompareRuns={handleCompareRuns}
               handleExportReport={handleExportReport}
+              handleDownloadPdf={handleDownloadPdf}
               setActiveNav={setActiveNav}
               themeMode={themeMode}
             />
@@ -1781,35 +1741,35 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
       {/* WAF & MIDDLEWARE FULL GUIDE MODAL DRAWER                                  */}
       {/* ========================================================================= */}
       {wafModalOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white border-2 border-black max-w-2xl w-full p-6 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center border-b-2 border-black pb-3">
+        <div className="fixed inset-0 bg-primary/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-surface border border-line max-w-2xl w-full p-6 shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center border-b border-line pb-3">
               <h3 className="text-base font-black uppercase">
                 GUARD &amp; EDGE DIAGNOSTICS
               </h3>
               <button
                 type="button"
                 onClick={() => setWafModalOpen(false)}
-                className="border-2 border-black px-2 py-1 text-xs font-black hover:bg-black hover:text-white cursor-pointer"
+                className="border border-line px-2 py-1 text-xs font-black hover:bg-primary hover:text-white cursor-pointer"
               >
                 ✕ CLOSE
               </button>
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="border border-black p-3">
+              <div className="border border-line p-3">
                 <span className="font-bold block uppercase mb-1">1. How Pusher Guard Works:</span>
                 <p>
                   Pusher Guard serves an ownership challenge. Test requests use the target app’s normal authentication and traffic controls.
                 </p>
               </div>
 
-              <div className="border border-black p-3">
+              <div className="border border-line p-3">
                 <span className="font-bold block uppercase mb-1">2. Investigate Blocks</span>
                 <p>Check the app and edge provider’s event logs for 403 and 429 responses.</p>
               </div>
 
-              <div className="border border-black p-3">
+              <div className="border border-line p-3">
                 <span className="font-bold block uppercase mb-1">3. Automated Token Expiry &amp; Rate Limits:</span>
                 <p>
                   Tokens are valid for exactly 48 hours ({formatTimer(guardTimerSeconds)} remaining). Once expired, all tests immediately lock until re-verification occurs. Generation is rate-limited to 3 downloads per rolling 24 hours.
@@ -1820,7 +1780,7 @@ export default function DashboardPage({ operator, onLogout, onNavigate, appearan
             <button
               type="button"
               onClick={() => setWafModalOpen(false)}
-              className="w-full border-2 border-black py-2 text-xs font-bold uppercase bg-black text-white hover:bg-white hover:text-black transition-colors cursor-pointer"
+              className="w-full border border-line py-2 text-xs font-bold uppercase bg-primary text-white hover:bg-surface hover:text-ink transition-colors cursor-pointer"
             >
               ACKNOWLEDGE &amp; RETURN
             </button>

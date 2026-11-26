@@ -3,11 +3,15 @@ Pusher Backend Application Entry Point
 FastAPI application with strict CORS, security headers, exception masking, and Supabase auth.
 """
 
+from contextlib import asynccontextmanager
+import os
 from fastapi import FastAPI, Request, status, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from backend.core.config import settings
 from backend.core.jwks_verifier import AuthError
+from backend.core.load_engine import load_engine
+from backend.core.run_manager import run_manager
 from backend.api.auth_router import router as auth_router
 from backend.api.auth_deps import require_operator
 from backend.api.system_router import router as system_router
@@ -17,10 +21,20 @@ from backend.api.journey_router import router as journey_router
 from backend.api.report_router import router as report_router
 from backend.api.profile_router import router as profile_router
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await run_manager.stop_all(reason="ENGINE_SHUTDOWN")
+
+
 app = FastAPI(
     title="Pusher Load Testing API",
     description="High-performance asynchronous load testing engine with hardened Supabase authentication.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # 1. Strict CORS Middleware
@@ -29,7 +43,7 @@ app.add_middleware(
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "apikey", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "apikey", "X-Requested-With", "X-Pusher-Device-ID"],
 )
 
 # 2. Security Headers Middleware
@@ -94,4 +108,5 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host=settings.host, port=settings.port, reload=True)
+    dev_reload = os.environ.get("PUSHER_DEV_RELOAD", "").lower() in {"1", "true", "yes"}
+    uvicorn.run("backend.main:app", host=settings.host, port=settings.port, reload=dev_reload)

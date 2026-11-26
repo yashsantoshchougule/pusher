@@ -12,7 +12,14 @@ export function loadView(name) {
   const source = readFileSync(file, 'utf8');
   const { code } = transformSync(source, { loader: 'jsx', format: 'cjs' });
   const module = { exports: {} };
-  new Function('module', 'require', code)(module, require);
+  const localRequire = (specifier) => {
+    if (specifier.startsWith('./')) {
+      const target = specifier.slice(2).replace(/\.jsx$/, '');
+      return { __esModule: true, default: loadView(target) };
+    }
+    return require(specifier);
+  };
+  new Function('module', 'require', code)(module, localRequire);
   return module.exports.default;
 }
 

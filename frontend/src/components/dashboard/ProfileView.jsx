@@ -47,6 +47,7 @@ export default function ProfileView({
 
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [avatarError, setAvatarError] = useState(false);
   const [signOutError, setSignOutError] = useState('');
   const signedIn = operator && !operator.offline;
@@ -73,9 +74,10 @@ export default function ProfileView({
     const { name, value, type } = e.target;
     setFormData((prev) => ({
       ...prev,
-      [name]: type === 'number' ? (parseInt(value, 10) || 50) : value,
+      [name]: (type === 'number' || type === 'range') ? (parseInt(value, 10) || 50) : value,
     }));
     setSaveSuccess(false);
+    setSaveError('');
   };
 
   const handleReset = () => {
@@ -92,6 +94,7 @@ export default function ProfileView({
         default_ram_ceiling_mb: profile.default_ram_ceiling_mb || 500,
       });
       setSaveSuccess(false);
+      setSaveError('');
       setAvatarError(false);
     }
   };
@@ -100,10 +103,13 @@ export default function ProfileView({
     e.preventDefault();
     setSaving(true);
     setSaveSuccess(false);
+    setSaveError('');
     try {
       await onSaveProfile(formData);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3500);
+    } catch (error) {
+      setSaveError(error?.message || 'Failed to save profile.');
     } finally {
       setSaving(false);
     }
@@ -144,23 +150,10 @@ export default function ProfileView({
   return (
     <div className="space-y-6">
       {/* View Header Banner */}
-      <div className="border-2 border-black p-4 sm:p-5 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col justify-between gap-4 border-b border-line pb-5 md:flex-row md:items-center">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-black uppercase tracking-wider text-black/60">
-              [ USER PROFILE & PREFERENCES ]
-            </span>
-            <span className="border border-black px-1.5 py-0.2 text-[10px] font-bold uppercase bg-white">
-              SQLite Persistent
-            </span>
-          </div>
-          <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight mt-1">
-            Operator Profile & Hardware Defaults
-          </h1>
-          <p className="text-xs text-black/80 mt-1 max-w-2xl font-normal">
-            Manage your developer identity, default concurrency caps, and workstation defaults.
-            All attributes persist across application reloads in <span className="font-bold">backend/pusher_runs.db</span>.
-          </p>
+          <h1 className="ui-page-title">Profile</h1>
+          <p className="mt-1 text-sm text-muted">Manage your account, appearance, and default run settings.</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 md:shrink-0">
@@ -169,18 +162,18 @@ export default function ProfileView({
             role="switch"
             aria-checked={darkAppearance}
             onClick={() => onAppearanceChange(darkAppearance ? 'light' : 'dark')}
-            className="inline-flex items-center gap-2 border-2 border-black px-3 py-1.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+            className="inline-flex items-center gap-2 border border-line px-3 py-1.5 text-xs font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
           >
             <Moon aria-hidden="true" className="h-3.5 w-3.5" />
             <span>Dark mode</span>
-            <span aria-hidden="true" className={`relative h-4 w-8 rounded-full ${darkAppearance ? 'bg-teal-700' : 'bg-slate-200'}`}>
+            <span aria-hidden="true" className={`relative h-4 w-8 rounded-full ${darkAppearance ? 'bg-primary' : 'bg-soft'}`}>
               <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-[#fff] shadow-sm transition-transform motion-reduce:transition-none ${darkAppearance ? 'translate-x-4' : ''}`} />
             </span>
           </button>
           <button
             type="button"
             onClick={() => setActiveNav && setActiveNav('dashboard')}
-            className="border-2 border-black px-3 py-1.5 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+            className="border border-line px-3 py-1.5 text-xs font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
           >
             ← Back to Dashboard
           </button>
@@ -189,7 +182,7 @@ export default function ProfileView({
 
       {/* Success Notification Banner */}
       {saveSuccess && (
-        <div className="border-2 border-black p-3.5 bg-emerald-100 text-emerald-950 font-bold text-xs uppercase flex items-center justify-between shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] animate-fade-in">
+        <div className="border border-line p-3.5 bg-emerald-100 text-emerald-950 font-bold text-xs uppercase flex items-center justify-between shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] animate-fade-in">
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-700" />
             <span>Profile successfully persisted to SQLite database!</span>
@@ -205,10 +198,10 @@ export default function ProfileView({
         <div className="lg:col-span-4 space-y-6">
 
           {/* Profile Card */}
-          <div className="border-2 border-black p-5 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-5">
+          <div className="ui-outline border border-line p-5 bg-surface shadow-lg space-y-5">
             <div className="flex items-start gap-4">
               {/* Avatar Image or Fallback Initials */}
-              <div className="w-16 h-16 border-2 border-black rounded-none shrink-0 overflow-hidden bg-slate-900 text-white flex items-center justify-center font-black text-xl select-none shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+              <div className="w-16 h-16 border border-line rounded-none shrink-0 overflow-hidden bg-primary text-white flex items-center justify-center font-black text-xl select-none shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
                 {formData.avatar_url && !avatarError ? (
                   <img
                     src={formData.avatar_url}
@@ -225,29 +218,29 @@ export default function ProfileView({
                 <h2 className="text-base font-black uppercase truncate">
                   {formData.full_name || 'Anonymous Architect'}
                 </h2>
-                <div className="text-xs text-black/70 font-bold truncate">
+                <div className="text-xs text-muted font-bold truncate">
                   @{formData.username || 'pusher_operator'}
                 </div>
-                <div className="mt-1 inline-block border border-black px-1.5 py-0.5 text-[10px] font-bold uppercase bg-slate-100 truncate max-w-full">
+                <div className="mt-1 inline-block border border-line px-1.5 py-0.5 text-[10px] font-bold uppercase bg-soft truncate max-w-full">
                   {formData.role_title || 'Load Test Engineer'}
                 </div>
               </div>
             </div>
 
             {/* Bio / Hardware Notes */}
-            <div className="border-t border-black pt-3">
-              <span className="text-[10px] font-bold uppercase text-black/60 block mb-1">
+            <div className="border-t border-line pt-3">
+              <span className="text-[10px] font-bold uppercase text-muted block mb-1">
                 ENGINEER BIO / SPECS:
               </span>
-              <p className="text-xs text-black/80 font-normal leading-relaxed whitespace-pre-wrap bg-slate-50 p-2.5 border border-black/40 min-h-[60px]">
+              <p className="text-xs text-muted font-normal leading-relaxed whitespace-pre-wrap bg-field p-2.5 border border-line/40 min-h-[60px]">
                 {formData.bio_notes || 'No operator bio provided.'}
               </p>
             </div>
 
             {/* Quick Metadata List */}
-            <div className="border-t border-black pt-3 space-y-2 text-xs">
+            <div className="border-t border-line pt-3 space-y-2 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-black/70 flex items-center gap-1.5 font-bold">
+                <span className="text-muted flex items-center gap-1.5 font-bold">
                   <Mail className="w-3.5 h-3.5" /> Email:
                 </span>
                 <span className="font-mono truncate max-w-[160px] text-right font-bold" title={formData.email}>
@@ -256,7 +249,7 @@ export default function ProfileView({
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-black/70 flex items-center gap-1.5 font-bold">
+                <span className="text-muted flex items-center gap-1.5 font-bold">
                   <Building className="w-3.5 h-3.5" /> Org:
                 </span>
                 <span className="font-mono truncate max-w-[160px] text-right font-bold">
@@ -265,7 +258,7 @@ export default function ProfileView({
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-black/70 flex items-center gap-1.5 font-bold">
+                <span className="text-muted flex items-center gap-1.5 font-bold">
                   <Github className="w-3.5 h-3.5" /> GitHub:
                 </span>
                 {formData.github_username ? (
@@ -279,23 +272,23 @@ export default function ProfileView({
                     <ExternalLink className="w-3 h-3" />
                   </a>
                 ) : (
-                  <span className="font-mono text-black/50">None</span>
+                  <span className="font-mono text-muted">None</span>
                 )}
               </div>
             </div>
 
             {/* Telemetry Hardware Badges */}
-            <div className="border-t border-black pt-3 space-y-2">
-              <div className="border border-black p-2 bg-slate-50 flex items-center justify-between text-xs">
+            <div className="border-t border-line pt-3 space-y-2">
+              <div className="border border-line p-2 bg-field flex items-center justify-between text-xs">
                 <span className="font-bold flex items-center gap-1.5">
                   <HardDrive className="w-3.5 h-3.5" /> Default RAM Limit:
                 </span>
-                <span className="font-mono font-black text-sm bg-black text-white px-2 py-0.5">
+                <span className="font-mono font-black text-sm bg-primary text-white px-2 py-0.5">
                   {formData.default_ram_ceiling_mb} MB
                 </span>
               </div>
 
-              <div className="border border-black p-2 bg-slate-50 flex items-center justify-between text-xs">
+              <div className="border border-line p-2 bg-field flex items-center justify-between text-xs">
                 <span className="font-bold flex items-center gap-1.5">
                   <Fingerprint className="w-3.5 h-3.5" /> Device Lock:
                 </span>
@@ -305,7 +298,7 @@ export default function ProfileView({
               </div>
 
               {profile?.updated_at && (
-                <div className="text-[10px] text-black/60 font-mono text-right">
+                <div className="text-[10px] text-muted font-mono text-right">
                   Synced: {profile.updated_at}
                 </div>
               )}
@@ -313,22 +306,22 @@ export default function ProfileView({
           </div>
 
           {/* Dedicated ACCOUNT SESSION & ACCESS Card */}
-          <div className="border-2 border-black p-4 sm:p-5 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-4">
-            <div className="flex items-center justify-between border-b-2 border-black pb-2.5">
+          <div className="ui-outline border border-line p-4 sm:p-5 bg-surface shadow-lg space-y-4">
+            <div className="flex items-center justify-between border-b border-line pb-2.5">
               <div className="flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-black" />
-                <span className="text-xs font-black uppercase tracking-wider text-black">
+                <KeyRound className="w-4 h-4 text-ink" />
+                <span className="text-xs font-black uppercase tracking-wider text-ink">
                   ACCOUNT SESSION &amp; ACCESS
                 </span>
               </div>
               {signedIn ? (
-                <span className={`px-2 py-0.5 text-[10px] font-black uppercase border border-black ${
-                  themeMode === 'production' ? 'bg-emerald-600 text-white' : 'bg-black text-white'
+                <span className={`px-2 py-0.5 text-[10px] font-black uppercase border border-line ${
+                  themeMode === 'production' ? 'bg-emerald-600 text-white' : 'bg-primary text-white'
                 }`}>
                   SESSION: AUTHENTICATED
                 </span>
               ) : (
-                <span className="px-2 py-0.5 text-[10px] font-bold uppercase border border-black bg-slate-100 text-black">
+                <span className="px-2 py-0.5 text-[10px] font-bold uppercase border border-line bg-soft text-ink">
                   SESSION: NOT SIGNED IN
                 </span>
               )}
@@ -336,15 +329,15 @@ export default function ProfileView({
 
             {signedIn ? (
               <div className="space-y-3">
-                <div className="bg-slate-50 border border-black/40 p-2.5 text-xs space-y-1">
+                <div className="bg-field border border-line/40 p-2.5 text-xs space-y-1">
                   <div className="flex justify-between items-center">
-                    <span className="font-bold text-black/70">SIGNED IN AS:</span>
+                    <span className="font-bold text-muted">SIGNED IN AS:</span>
                     <span className="font-mono font-bold truncate max-w-[170px]" title={operator.email || formData.email}>
                       {operator.email || formData.email || 'operator@pusher.internal'}
                     </span>
                   </div>
                   <div className="flex justify-between items-center text-[11px]">
-                    <span className="font-bold text-black/70">USER ID:</span>
+                    <span className="font-bold text-muted">USER ID:</span>
                     <span className="font-mono opacity-80 truncate max-w-[170px]" title={profile?.user_key}>
                       {profile?.user_key || 'default_user'}
                     </span>
@@ -356,7 +349,7 @@ export default function ProfileView({
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    className="w-full border-2 border-black px-3 py-2 text-xs font-black uppercase bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                    className="w-full border border-line px-3 py-2 text-xs font-black uppercase bg-red-600 text-white hover:bg-red-700 transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
                   >
                     <LogOut className="w-3.5 h-3.5" />
                     <span>[ SIGN OUT ]</span>
@@ -365,7 +358,7 @@ export default function ProfileView({
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    className="w-full border-2 border-black px-3 py-2 text-xs font-black uppercase bg-white text-black hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                    className="w-full ui-outline border border-line px-3 py-2 text-xs font-black uppercase bg-surface text-ink hover:bg-primary hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
                   >
                     <span>[ LOG IN WITH ANOTHER ACCOUNT → ]</span>
                   </button>
@@ -373,14 +366,14 @@ export default function ProfileView({
               </div>
             ) : (
               <div className="space-y-3">
-                <p className="text-xs text-black/80 font-normal leading-relaxed bg-slate-50 p-2.5 border border-black/40">
+                <p className="text-xs text-muted font-normal leading-relaxed bg-field p-2.5 border border-line/40">
                   Operating in local workstation mode with default system privileges. Sign in to synchronize test runs and multi-account configs.
                 </p>
                 <button
                   type="button"
                   onClick={handleLogIn}
-                  className={`w-full border-2 border-black px-4 py-2.5 text-xs font-black uppercase transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
-                    themeMode === 'production' ? 'bg-teal-700 text-white hover:bg-teal-800' : 'bg-black text-white hover:bg-slate-800'
+                  className={`w-full border border-line px-4 py-2.5 text-xs font-black uppercase transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
+                    themeMode === 'production' ? 'bg-primary text-white hover:bg-primary-hover' : 'bg-primary text-white hover:bg-primary-hover'
                   }`}
                 >
                   <span>[ LOG IN / SIGN UP → ]</span>
@@ -390,11 +383,11 @@ export default function ProfileView({
           </div>
 
           {/* Platform Invariants Notice Card */}
-          <div className="border-2 border-black p-4 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-2 text-xs">
-            <div className="font-black uppercase flex items-center gap-1.5 text-black">
+          <div className="ui-outline border border-line p-4 bg-surface shadow-lg space-y-2 text-xs">
+            <div className="font-black uppercase flex items-center gap-1.5 text-ink">
               <Shield className="w-4 h-4" /> Hardened Invariants
             </div>
-            <ul className="text-[11px] text-black/80 space-y-1 list-disc list-inside font-normal">
+            <ul className="text-[11px] text-muted space-y-1 list-disc list-inside font-normal">
               <li>RAM Base Overhead: <span className="font-bold">50 MB</span></li>
               <li>Virtual User Cost: <span className="font-bold">0.20 MB / VU</span></li>
               <li>Rate Limit Bypass: <span className="font-bold">HMAC-SHA256 Signed</span></li>
@@ -407,16 +400,16 @@ export default function ProfileView({
         <div className="lg:col-span-8">
           <form
             onSubmit={handleSubmit}
-            className="border-2 border-black p-5 sm:p-6 bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-5"
+            className="ui-outline border border-line p-5 sm:p-6 bg-surface shadow-lg space-y-5"
           >
-            <div className="flex items-center justify-between border-b-2 border-black pb-3">
+            <div className="flex items-center justify-between border-b border-line pb-3">
               <div className="flex items-center gap-2">
                 <User className="w-5 h-5" />
                 <h2 className="text-base sm:text-lg font-black uppercase tracking-tight">
                   Edit Profile Information
                 </h2>
               </div>
-              <span className="text-[11px] font-bold text-black/60 uppercase">
+              <span className="text-[11px] font-bold text-muted uppercase">
                 * All changes saved to SQLite
               </span>
             </div>
@@ -433,7 +426,7 @@ export default function ProfileView({
                   value={formData.full_name}
                   onChange={handleChange}
                   placeholder="e.g. Yash Chougule"
-                  className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                  className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
                 />
               </div>
 
@@ -447,7 +440,7 @@ export default function ProfileView({
                   value={formData.username}
                   onChange={handleChange}
                   placeholder="e.g. pusher_lead"
-                  className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                  className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
                 />
               </div>
             </div>
@@ -464,7 +457,7 @@ export default function ProfileView({
                   value={formData.email}
                   onChange={handleChange}
                   placeholder="e.g. engineer@pusher.internal"
-                  className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                  className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
                 />
               </div>
 
@@ -478,7 +471,7 @@ export default function ProfileView({
                   value={formData.role_title}
                   onChange={handleChange}
                   placeholder="e.g. Principal Performance Architect"
-                  className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                  className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
                 />
               </div>
             </div>
@@ -495,7 +488,7 @@ export default function ProfileView({
                   value={formData.organization}
                   onChange={handleChange}
                   placeholder="e.g. Pusher Ops Core"
-                  className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                  className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
                 />
               </div>
 
@@ -504,7 +497,7 @@ export default function ProfileView({
                   GitHub Handle:
                 </label>
                 <div className="relative">
-                  <span className="absolute left-3 top-2.5 text-xs font-mono text-black/50 select-none">
+                  <span className="absolute left-3 top-2.5 text-xs font-mono text-muted select-none">
                     @
                   </span>
                   <input
@@ -513,7 +506,7 @@ export default function ProfileView({
                     value={formData.github_username.replace(/^@/, '')}
                     onChange={handleChange}
                     placeholder="github-username"
-                    className="w-full border-2 border-black p-2.5 pl-7 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                    className="w-full ui-outline border border-line p-2.5 pl-7 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
                   />
                 </div>
               </div>
@@ -523,7 +516,7 @@ export default function ProfileView({
             <div className="space-y-1.5">
               <label className="text-xs font-black uppercase tracking-wider block flex items-center justify-between">
                 <span>Avatar Image URL:</span>
-                <span className="text-[10px] font-normal normal-case text-black/60">
+                <span className="text-[10px] font-normal normal-case text-muted">
                   (HTTPS image or leave blank for initials)
                 </span>
               </label>
@@ -533,20 +526,20 @@ export default function ProfileView({
                 value={formData.avatar_url}
                 onChange={handleChange}
                 placeholder="https://images.unsplash.com/... or https://github.com/username.png"
-                className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
               />
             </div>
 
             {/* Row 5: Hardware Default RAM Ceiling Slider / Input */}
-            <div className="border-2 border-black p-4 bg-slate-50 space-y-3">
+            <div className="border border-line p-4 bg-field space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-black" />
+                  <Sliders className="w-4 h-4 text-ink" />
                   <label className="text-xs font-black uppercase tracking-wider">
                     Default RAM Limit Ceiling (MB):
                   </label>
                 </div>
-                <span className="font-mono text-xs font-black bg-black text-white px-2.5 py-0.5">
+                <span className="font-mono text-xs font-black bg-primary text-white px-2.5 py-0.5">
                   {formData.default_ram_ceiling_mb} MB
                 </span>
               </div>
@@ -554,21 +547,21 @@ export default function ProfileView({
               <input
                 type="range"
                 name="default_ram_ceiling_mb"
-                min="50"
+                min="51"
                 max="4096"
                 step="1"
                 value={formData.default_ram_ceiling_mb}
                 onChange={handleChange}
-                className="w-full accent-black cursor-pointer"
+                className="w-full accent-primary cursor-pointer"
               />
 
-              <div className="flex justify-between text-[10px] font-bold text-black/60 uppercase">
-                <span>50 MB (Micro)</span>
+              <div className="flex justify-between text-[10px] font-bold text-muted uppercase">
+                <span>51 MB (Micro)</span>
                 <span>500 MB (Standard)</span>
                 <span>1000 MB (Heavy)</span>
                 <span>4 GB (4,096 MB)</span>
               </div>
-              <p className="text-[11px] text-black/70 font-normal">
+              <p className="text-[11px] text-muted font-normal">
                 Sets your workstation default concurrency memory ceiling when initiating new ramp-up load tests.
               </p>
             </div>
@@ -584,16 +577,23 @@ export default function ProfileView({
                 value={formData.bio_notes}
                 onChange={handleChange}
                 placeholder="Notes on testing environment, target cluster setups, or hardware limits..."
-                className="w-full border-2 border-black p-2.5 text-xs font-mono bg-white focus:outline-none focus:bg-slate-50 transition-colors shadow-inner"
+                className="w-full ui-outline border border-line p-2.5 text-xs font-mono bg-surface focus:outline-none focus:bg-field transition-colors shadow-inner"
               />
             </div>
 
+            {/* Error Banner */}
+            {saveError && (
+              <p role="alert" className="text-xs font-bold text-rose-700">
+                {saveError}
+              </p>
+            )}
+
             {/* Footer Buttons */}
-            <div className="pt-3 border-t-2 border-black flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="pt-3 border-t border-line flex flex-col sm:flex-row items-center justify-between gap-3">
               <button
                 type="button"
                 onClick={handleReset}
-                className="w-full sm:w-auto border-2 border-black px-4 py-2 text-xs font-black uppercase hover:bg-black hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                className="w-full sm:w-auto border border-line px-4 py-2 text-xs font-black uppercase hover:bg-primary hover:text-white transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Revert Changes</span>
@@ -602,12 +602,12 @@ export default function ProfileView({
               <button
                 type="submit"
                 disabled={saving}
-                className={`w-full sm:w-auto border-2 border-black px-6 py-2.5 text-xs font-black uppercase transition-all flex items-center justify-center gap-2 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
+                className={`w-full sm:w-auto border border-line px-6 py-2.5 text-xs font-black uppercase transition-all flex items-center justify-center gap-2 cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] ${
                   saving
-                    ? 'bg-slate-200 text-black cursor-wait'
+                    ? 'bg-soft text-ink cursor-wait'
                     : (themeMode === 'production'
-                        ? 'bg-teal-700 text-white hover:bg-teal-800'
-                        : 'bg-black text-white hover:bg-slate-800')
+                        ? 'bg-primary text-white hover:bg-primary-hover'
+                        : 'bg-primary text-white hover:bg-primary-hover')
                 }`}
               >
                 <Save className="w-4 h-4" />

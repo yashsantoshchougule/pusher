@@ -4,6 +4,8 @@ import {
   Square,
   Trash2,
 } from 'lucide-react';
+import FailureDiagnosisCard from './FailureDiagnosisCard';
+import ProjectHealthChart from './ProjectHealthChart';
 
 export default function TestHistoryView({
   runHistory,
@@ -25,6 +27,10 @@ export default function TestHistoryView({
   handleClearArchive,
   handleViewSingleReport,
   handleCloneRun,
+  expandedRunId = null,
+  expandedRunDetail = null,
+  onToggleExpandRun,
+  handleDownloadPdf,
   setActiveNav,
   themeMode = 'production',
 }) {
@@ -33,10 +39,10 @@ export default function TestHistoryView({
   return (
     <div className="space-y-6">
       {/* View Header */}
-      <div className="border-b-2 border-black pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      <div className="border-b border-line pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-black uppercase tracking-wider">
-            TEST RUN ARCHIVE &amp; COMPARISON STAGING
+          <h1 className="ui-page-title">
+            Test history
           </h1>
           <p className="text-xs opacity-75">
             Historical record of completed, aborted, and circuit-broken load test executions.
@@ -45,14 +51,14 @@ export default function TestHistoryView({
         <button
           type="button"
           onClick={() => setActiveNav('dashboard')}
-          className="border-2 border-black px-3 py-1 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+          className="border border-line px-3 py-1 text-xs font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
         >
           ← Back to Dashboard
         </button>
       </div>
 
       {/* 1. Top Summary & Filter Bar */}
-      <div className={`border-2 border-black p-4 bg-white space-y-3 ${isProd ? 'shadow-sm' : ''}`}>
+      <div className={`ui-outline border border-line p-4 bg-surface space-y-3 ${isProd ? 'shadow-sm' : ''}`}>
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
           {/* Search Input */}
           <div className="md:col-span-4 relative">
@@ -61,7 +67,7 @@ export default function TestHistoryView({
               value={historySearch}
               onChange={(e) => setHistorySearch(e.target.value)}
               placeholder="Search Run ID or Target..."
-              className="w-full border-2 border-black px-3 py-1.5 text-xs font-mono bg-white focus:outline-none focus:ring-1 focus:ring-black"
+              className="w-full ui-outline border border-line px-3 py-1.5 text-xs font-mono bg-surface focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
 
@@ -72,11 +78,10 @@ export default function TestHistoryView({
                 key={m}
                 type="button"
                 onClick={() => setHistoryModeFilter(m)}
-                className={`border border-black px-2 py-1 text-[11px] font-bold uppercase cursor-pointer ${
-                  historyModeFilter === m
-                    ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                    : 'bg-white text-black hover:bg-black/5'
-                }`}
+                className={`border border-line px-2 py-1 text-[11px] font-bold uppercase cursor-pointer ${historyModeFilter === m
+                  ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                  : 'bg-surface text-ink hover:bg-soft'
+                  }`}
               >
                 {m}
               </button>
@@ -88,7 +93,7 @@ export default function TestHistoryView({
             <select
               value={historyStatusFilter}
               onChange={(e) => setHistoryStatusFilter(e.target.value)}
-              className="w-full border-2 border-black px-2.5 py-1.5 text-xs font-mono bg-white focus:outline-none cursor-pointer"
+              className="w-full ui-outline border border-line px-2.5 py-1.5 text-xs font-mono bg-surface focus:outline-none cursor-pointer"
             >
               <option value="ALL">ALL VERDICTS</option>
               <option value="PASSED">PASSED</option>
@@ -100,12 +105,11 @@ export default function TestHistoryView({
         </div>
 
         {/* Compare Bar & Clear History Action */}
-        <div className="flex flex-col sm:flex-row items-center justify-between border-t border-black pt-3 gap-2">
+        <div className="flex flex-col sm:flex-row items-center justify-between border-t border-line pt-3 gap-2">
           <div className="flex items-center gap-2 text-xs">
             <span className="font-bold uppercase">Compare Staged:</span>
-            <span className={`border border-black px-2 py-0.5 font-bold ${
-              selectedForCompare.length === 2 && isProd ? 'bg-teal-50 border-teal-600 text-teal-900' : ''
-            }`}>
+            <span className={`border border-line px-2 py-0.5 font-bold ${selectedForCompare.length === 2 && isProd ? 'bg-teal-50 border-teal-600 text-teal-900' : ''
+              }`}>
               {selectedForCompare.length} / 2 Selected
             </span>
             <span className="text-[11px] opacity-75">
@@ -118,20 +122,18 @@ export default function TestHistoryView({
               type="button"
               disabled={selectedForCompare.length < 2}
               onClick={() => handleCompareRuns(selectedForCompare[0], selectedForCompare[1])}
-              className={`border-2 border-black px-3 py-1.5 text-xs font-bold uppercase transition-colors ${
-                selectedForCompare.length === 2
-                  ? (isProd ? 'bg-teal-700 text-white hover:bg-teal-800 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
-                  : 'bg-white text-black opacity-40 cursor-not-allowed'
-              }`}
+              className={`border border-line px-3 py-1.5 text-xs font-bold uppercase transition-colors ${selectedForCompare.length === 2
+                ? (isProd ? 'bg-primary text-white hover:bg-primary-hover cursor-pointer' : 'bg-primary text-white hover:bg-surface hover:text-ink cursor-pointer')
+                : 'bg-surface text-ink opacity-40 cursor-not-allowed'
+                }`}
             >
               COMPARE SELECTED (2/2) IN REPORTS →
             </button>
             <button
               type="button"
               onClick={handleClearArchive}
-              className={`border-2 border-black px-2.5 py-1.5 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center gap-1 ${
-                isProd ? 'bg-rose-50 text-rose-800 border-rose-400 hover:bg-rose-100' : 'bg-white text-black hover:bg-black hover:text-white'
-              }`}
+              className={`border border-line px-2.5 py-1.5 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center gap-1 ${isProd ? 'bg-rose-50 text-rose-800 border-rose-400 hover:bg-rose-100' : 'bg-surface text-ink hover:bg-primary hover:text-white'
+                }`}
               title="Confirm and clear all saved test runs from database"
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -142,10 +144,10 @@ export default function TestHistoryView({
       </div>
 
       {/* 2. Interactive Runs Table */}
-      <div className={`border-2 border-black bg-white overflow-x-auto ${isProd ? 'shadow-sm' : ''}`}>
+      <div className={`ui-outline border border-line bg-surface overflow-x-auto ${isProd ? 'shadow-sm' : ''}`}>
         <table className="w-full text-left border-collapse text-xs">
           <thead>
-            <tr className="border-b-2 border-black bg-white">
+            <tr className="border-b border-line bg-surface">
               <th className="py-2.5 px-3 w-10 text-center">COMPARE</th>
               <th className="py-2.5 px-3">RUN ID</th>
               <th className="py-2.5 px-3">TIMESTAMP</th>
@@ -182,12 +184,12 @@ export default function TestHistoryView({
                 const pillLabel = isPassed
                   ? 'PASSED'
                   : isTripped
-                  ? 'CIRCUIT BREAKER'
-                  : isFailed
-                  ? 'FAILED'
-                  : (category === 'MANUAL_ABORT' || lowerVerdict.includes('abort'))
-                  ? 'MANUAL ABORT'
-                  : fullVerdict;
+                    ? 'CIRCUIT BREAKER'
+                    : isFailed
+                      ? 'FAILED'
+                      : (category === 'MANUAL_ABORT' || lowerVerdict.includes('abort'))
+                        ? 'MANUAL ABORT'
+                        : fullVerdict;
 
                 const peakVus = run.peakVus ?? run.peak_vus;
                 const targetVus = run.target_vus;
@@ -195,7 +197,7 @@ export default function TestHistoryView({
                 const plannedDur = run.duration_sec ?? run.duration;
 
                 return (
-                  <tr key={runId} className="border-b border-black/30 hover:bg-black/5">
+                  <tr key={runId} className="border-b border-line/30 hover:bg-soft">
                     <td className="py-2 px-3 text-center">
                       <button
                         type="button"
@@ -203,9 +205,9 @@ export default function TestHistoryView({
                         className="cursor-pointer"
                       >
                         {isSelected ? (
-                          <CheckSquare className={`w-4 h-4 ${isProd ? 'text-teal-700' : 'text-black'}`} />
+                          <CheckSquare className={`w-4 h-4 ${isProd ? 'text-teal-700' : 'text-ink'}`} />
                         ) : (
-                          <Square className="w-4 h-4 text-black/40 hover:text-black" />
+                          <Square className="w-4 h-4 text-muted hover:text-ink" />
                         )}
                       </button>
                     </td>
@@ -220,7 +222,10 @@ export default function TestHistoryView({
                     </td>
                     <td className="py-2 px-3 text-[11px] opacity-80">{run.timestamp}</td>
                     <td className="py-2 px-3 font-mono text-[11px] truncate max-w-[160px]" title={run.target_url || run.target}>
-                      {run.target || run.target_url}
+                      {run.project_name && (
+                        <div className="font-sans font-bold text-ink truncate">{run.project_name}</div>
+                      )}
+                      <div className="truncate opacity-80">{run.target || run.target_url}</div>
                     </td>
                     <td className="py-2 px-3 font-bold uppercase text-[11px]">{run.mode}</td>
                     <td className="py-2 px-3 text-right font-bold">
@@ -243,31 +248,52 @@ export default function TestHistoryView({
                     <td className="py-2 px-3">
                       <span
                         title={fullVerdict}
-                        className={`border px-1.5 py-0.5 text-[10px] font-bold uppercase whitespace-nowrap ${
-                          isPassed
-                            ? (isProd ? 'bg-emerald-50 text-emerald-800 border-emerald-400' : 'bg-black text-white border-black')
-                            : (isTripped || isFailed)
-                            ? (isProd ? 'bg-rose-50 text-rose-800 border-rose-400' : 'bg-black text-white border-black')
-                            : (isProd ? 'bg-amber-50 text-amber-800 border-amber-400' : 'bg-white text-black border-black')
-                        }`}
+                        className={`border px-1.5 py-0.5 text-[10px] font-bold uppercase whitespace-nowrap ${isPassed
+                          ? (isProd ? 'bg-emerald-50 text-emerald-800 border-emerald-400' : 'bg-primary text-white border-line')
+                          : (isTripped || isFailed)
+                            ? (isProd ? 'bg-rose-50 text-rose-800 border-rose-400' : 'bg-primary text-white border-line')
+                            : (isProd ? 'bg-amber-50 text-amber-800 border-amber-400' : 'bg-surface text-ink border-line')
+                          }`}
                       >
                         {pillLabel}
                       </span>
                     </td>
                     <td className="py-2 px-3 text-center">
                       <div className="flex items-center justify-center gap-1.5">
+                        {onToggleExpandRun && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleExpandRun(runId)}
+                            className={`border border-line px-1.5 py-0.5 text-[10px] font-bold uppercase transition-colors cursor-pointer ${expandedRunId === runId ? 'bg-primary text-white' : 'hover:bg-primary hover:text-white'
+                              }`}
+                            title="Show Health Graph & Failure Diagnosis Inline"
+                          >
+                            {expandedRunId === runId ? 'Hide' : 'Graph'}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleViewSingleReport(runId)}
-                          className="border border-black px-1.5 py-0.5 text-[10px] font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+                          className="border border-line px-1.5 py-0.5 text-[10px] font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
                           title="Inspect Report & Knee Breakdown"
                         >
                           Report
                         </button>
+                        {handleDownloadPdf && (
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadPdf(runId, run.project_name)}
+                            className={`border border-line px-1.5 py-0.5 text-[10px] font-bold uppercase transition-colors cursor-pointer ${isProd ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'hover:bg-primary hover:text-white'
+                              }`}
+                            title="Download Vector PDF Report"
+                          >
+                            PDF
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleCloneRun(run)}
-                          className="border border-black px-1.5 py-0.5 text-[10px] font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+                          className="border border-line px-1.5 py-0.5 text-[10px] font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
                           title="Clone Run Settings to Traffic Setup"
                         >
                           Clone
@@ -281,10 +307,47 @@ export default function TestHistoryView({
           </tbody>
         </table>
       </div>
+      {expandedRunId && (
+        <div className="border border-line bg-field p-4 space-y-3">
+          {expandedRunDetail && (expandedRunDetail.run_id === expandedRunId || expandedRunDetail.id === expandedRunId) ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2">
+                <div className="text-xs font-black uppercase">
+                  {expandedRunDetail.project_name || expandedRunDetail.target_url} — Run {expandedRunId}
+                </div>
+                {handleDownloadPdf && (
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadPdf(expandedRunId, expandedRunDetail.project_name)}
+                    className={`border border-line px-3 py-1 text-xs font-black uppercase transition-colors cursor-pointer ${isProd ? 'bg-emerald-700 text-white hover:bg-emerald-800' : 'bg-primary text-white hover:bg-surface hover:text-ink'
+                      }`}
+                  >
+                    [ DOWNLOAD PDF REPORT ]
+                  </button>
+                )}
+              </div>
+              <ProjectHealthChart
+                timelinePoints={expandedRunDetail.timeline_points || expandedRunDetail.timeseries || []}
+                crashSummary={expandedRunDetail.crash_summary || null}
+                projectName={expandedRunDetail.project_name || ''}
+                themeMode={themeMode}
+              />
+              <FailureDiagnosisCard
+                failureBreakdown={expandedRunDetail.failure_breakdown || []}
+                crashSummary={expandedRunDetail.crash_summary || null}
+                themeMode={themeMode}
+                compact
+              />
+            </div>
+          ) : (
+            <div className="text-xs font-mono opacity-75">Loading run health graph &amp; crash diagnosis…</div>
+          )}
+        </div>
+      )}
       {historyError && <p role="alert" className="text-sm text-red-700">{historyError}</p>}
       {hasMoreHistory && (
         <button type="button" disabled={historyLoading} onClick={onLoadMore}
-          className="border border-black px-3 py-2 text-sm font-bold disabled:opacity-50">
+          className="border border-line px-3 py-2 text-sm font-bold disabled:opacity-50">
           {historyLoading ? 'Loading…' : 'Load more runs'}
         </button>
       )}

@@ -2,8 +2,8 @@ import React from 'react';
 
 export default function TermsPage() {
   return (
-    <main className="mx-auto w-[min(90%,42rem)] space-y-4 py-8">
-      <h1 className="text-2xl font-bold">Pusher Terms &amp; Conditions</h1>
+    <main className="mx-auto my-6 w-[min(92%,46rem)] space-y-6 rounded-[1.5rem] border border-line bg-surface p-5 leading-relaxed sm:my-10 sm:p-9">
+      <h1 className="ui-page-title">Pusher Terms &amp; Conditions</h1>
       <section className="space-y-1">
         <h2 className="text-lg font-semibold">Authorized use</h2>
         <p>Use Pusher only on systems you own or have explicit written permission to test. Stay within the authorized targets, time windows, traffic limits, and credentials.</p>
@@ -20,7 +20,7 @@ export default function TermsPage() {
         <h2 className="text-lg font-semibold">Interpreting results</h2>
         <p>Results describe the measured workload and environment. They can vary with the host, network, configuration, and target behavior.</p>
       </section>
-      <a className="underline" href="/">Return to Pusher</a>
+      <a className="inline-flex min-h-11 items-center rounded-xl border border-control px-4 text-sm font-semibold hover:bg-soft" href="/">Return to Pusher</a>
     </main>
   );
 }

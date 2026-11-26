@@ -67,3 +67,9 @@ Passed on 24 November 2026. GitHub `main` pointed to `586f10461f894c759291ea895c
 - `npm run build --prefix frontend` passed without provider settings. `check_local_sandbox.py` passed through finalized report export with a disposable database.
 - Pytest reported 11 existing deprecation warnings. npm reported one uncovered esbuild install script. The toolchain passed the build with the current script policy.
 - The Terms and published release-candidate tasks are complete. Hosted verification remains separate. GitHub listed zero public deployments for this commit during verification.
+
+## Next candidate — Redesigned UI and scaling changes
+
+The previous published verification applies to commit `586f104`. The newer combined candidate passed the [locked install](RL-05-refresh-python-lockfile.md) and [real local browser flow](RL-06-combined-ui-backend-check.md). Its GitHub release verification is pending.
+
+Execution prompt: the project owner reviews the working tree, including untracked source, tests, and the regenerated `uv.lock`, then publishes the intended release commit. After publication, verify that exact revision from a clean clone without environment files or databases. Run locked Python and Node installs, all regression suites, the production build, and the offline browser flow through report export. Record results against that revision. Use authorized staging and separately scoped tests for hosted authentication, the proxy and Guard, and capacity.

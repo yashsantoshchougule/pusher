@@ -13,7 +13,7 @@ def sanitize_profile_data(data: Dict[str, Any]) -> Dict[str, Any]:
     ram_mb = data.get("default_ram_ceiling_mb", 500)
     try:
         ram_mb = int(ram_mb)
-        ram_mb = max(50, min(ram_mb, MAX_RAM_BUDGET_MB))
+        ram_mb = max(51, min(ram_mb, MAX_RAM_BUDGET_MB))
     except (ValueError, TypeError):
         ram_mb = 500
 

@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 
 export default function TrafficSetupView({
+  projectName = '',
+  setProjectName,
+  projectNameSource = '',
+  onSaveProjectName,
   trafficMode,
   setTrafficMode,
   ramLimitMb,
@@ -103,10 +107,10 @@ export default function TrafficSetupView({
   return (
     <div className="space-y-6">
       {/* View Header */}
-      <div className="border-b-2 border-black pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      <div className="border-b border-line pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-black uppercase tracking-wider">
-            TRAFFIC SETUP &amp; SAFETY CONTROLS
+          <h1 className="ui-page-title">
+            Traffic setup
           </h1>
           <p className="text-xs opacity-75">
             Configure virtual user progression curves, safety limits, and resource budgeting.
@@ -115,13 +119,13 @@ export default function TrafficSetupView({
         <button
           type="button"
           onClick={() => setActiveNav('dashboard')}
-          className="border-2 border-black px-3 py-1 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+          className="border border-line px-3 py-1 text-xs font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
         >
           ← Back to Dashboard
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 border-2 border-black p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border border-line p-3">
         <span className="text-xs"><strong>Next run</strong> {runType}</span>
         <button
           type="button"
@@ -141,7 +145,7 @@ export default function TrafficSetupView({
 
       {targetIsLoopback && vus > 50 && (
         <div role="status" className={`border-2 p-3 text-xs font-mono ${
-          isProd ? 'border-amber-500 bg-amber-50 text-amber-900' : 'border-black bg-white'
+          isProd ? 'border-amber-500 bg-amber-50 text-amber-900' : 'border-line bg-surface'
         }`}>
           <strong>Loopback / single-host saturation warning:</strong>{' '}
           {loopbackAdvisory || `Running ${vus.toLocaleString()} VUs against a local/sandbox target shares the same host CPU and event loop and typically saturates above ~50 VUs.`}
@@ -150,12 +154,12 @@ export default function TrafficSetupView({
 
       <fieldset disabled={trafficSaving || trafficLoading} aria-label="Traffic settings" className="min-w-0 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Mode, Concurrency & Visual Curve */}
-        <div className={`lg:col-span-6 border-2 border-black p-5 bg-white space-y-4 ${
+        <div className={`lg:col-span-6 ui-outline border border-line p-5 bg-surface space-y-4 ${
           isProd ? 'shadow-sm' : ''
         }`}>
-          <div className="border-b-2 border-black pb-2">
+          <div className="border-b border-line pb-2">
             <h2 className="text-sm font-black uppercase">
-              1. TRAFFIC PROGRESSION PROFILE
+              Traffic progression
             </h2>
           </div>
 
@@ -172,10 +176,11 @@ export default function TrafficSetupView({
                   key={m.id}
                   type="button"
                   onClick={() => setTrafficMode(m.id)}
-                  className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
+                  aria-pressed={trafficMode === m.id}
+                  className={`rounded-xl border border-control min-h-12 px-2 text-sm font-semibold transition-colors ${
                     trafficMode === m.id
-                      ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                      : 'bg-white text-black hover:bg-black/5'
+                      ? 'border-transparent bg-accent text-accent-ink'
+                      : 'bg-field text-ink hover:bg-soft'
                   }`}
                 >
                   {m.label}
@@ -184,7 +189,7 @@ export default function TrafficSetupView({
             </div>
           </div>
 
-          <div className="border-2 border-black p-3 bg-white space-y-2">
+          <div className="ui-outline border border-line p-3 bg-surface space-y-2">
             <div className="text-[10px] font-bold uppercase tracking-wider flex justify-between">
               <span>Traffic schedule</span>
               <span>{modeLabel}</span>
@@ -222,11 +227,11 @@ export default function TrafficSetupView({
           </div>
 
           {/* Hardware RAM Scaling Selector */}
-          <div className="border-2 border-black p-3 bg-white space-y-2">
+          <div className="ui-outline border border-line p-3 bg-surface space-y-2">
             <div className="flex justify-between items-center text-xs font-bold uppercase">
               <span>RAM Budget &amp; Hardware Ceiling:</span>
-              <span className={`text-xs font-black border border-black px-2 py-0.5 ${
-                isProd ? 'bg-teal-700 text-white' : 'bg-black text-white'
+              <span className={`text-xs font-black border border-line px-2 py-0.5 ${
+                isProd ? 'bg-primary text-white' : 'bg-primary text-white'
               }`}>
                 {ramLimitMb} MB ({maxAllowedVus?.toLocaleString() ?? 'Unknown'} max VUs)
               </span>
@@ -238,10 +243,10 @@ export default function TrafficSetupView({
                   type="button"
                   disabled={maxHardwareSafeRamMb == null || limit > maxHardwareSafeRamMb}
                   onClick={() => handleSetRamLimit(limit)}
-                  className={`border-2 border-black py-1.5 px-1 text-[10px] font-bold uppercase transition-colors text-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`border border-line py-1.5 px-1 text-[10px] font-bold uppercase transition-colors text-center cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                     ramLimitMb === limit
-                      ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                      : 'bg-white text-black hover:bg-black/5'
+                      ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                      : 'bg-surface text-ink hover:bg-soft'
                   }`}
                 >
                   <div>{limit.toLocaleString()} MB</div>
@@ -272,7 +277,7 @@ export default function TrafficSetupView({
                   }
                 }}
                 onBlur={() => commitRam(ramDraft)}
-                className="w-24 border border-black px-2 py-1 text-xs font-mono font-bold bg-white text-black focus:outline-none focus:bg-black focus:text-white"
+                className="w-24 ui-outline border border-line px-2 py-1 text-xs font-mono font-bold bg-surface text-ink focus:outline-none focus:bg-primary focus:text-white"
               />
               <span className="text-[10px] font-bold">MB</span>
               <span className="text-[9px] opacity-75 ml-auto">
@@ -282,7 +287,7 @@ export default function TrafficSetupView({
           </div>
 
           {/* Concurrency Slider & Direct Numeric Input */}
-          <div className="border-2 border-black p-3 bg-white space-y-2">
+          <div className="ui-outline border border-line p-3 bg-surface space-y-2">
             <div className="flex justify-between items-center text-xs font-bold uppercase">
               <span>Virtual Users (Concurrency):</span>
               <div className="flex items-center gap-1.5">
@@ -302,10 +307,10 @@ export default function TrafficSetupView({
                     }
                   }}
                   onBlur={() => commitVus(vuDraft)}
-                  className="w-20 border-2 border-black px-1.5 py-0.5 text-xs font-mono font-black text-center bg-white text-black focus:outline-none focus:bg-black focus:text-white"
+                  className="w-20 ui-outline border border-line px-1.5 py-0.5 text-xs font-mono font-black text-center bg-surface text-ink focus:outline-none focus:bg-primary focus:text-white"
                 />
                 <span className="text-[10px] font-bold">VUs</span>
-                <span className="text-[10px] font-bold border border-black px-1.5 py-0.5 bg-black text-white">
+                <span className="text-[10px] font-bold border border-line px-1.5 py-0.5 bg-primary text-white">
                   Cap: {maxAllowedVus?.toLocaleString() ?? 'Unknown'}
                 </span>
               </div>
@@ -318,7 +323,7 @@ export default function TrafficSetupView({
               disabled={!canSetVus}
               value={canSetVus ? Math.min(vus, maxAllowedVus) : 1}
               onChange={(e) => setVus(Number(e.target.value))}
-              className="w-full accent-black cursor-pointer"
+              className="w-full accent-primary cursor-pointer"
             />
           </div>
 
@@ -337,10 +342,10 @@ export default function TrafficSetupView({
                   type="button"
                   aria-pressed={duration === d.sec}
                   onClick={() => setDuration(d.sec)}
-                  className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
+                  className={`border border-line py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
                     duration === d.sec
-                      ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                      : 'bg-white text-black hover:bg-black/5'
+                      ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                      : 'bg-surface text-ink hover:bg-soft'
                   }`}
                 >
                   {d.label}
@@ -364,7 +369,7 @@ export default function TrafficSetupView({
                   }
                 }}
                 onBlur={() => commitDuration(durationDraft)}
-                className="w-24 border border-black px-2 py-1 text-xs font-mono font-bold bg-white text-black focus:outline-none focus:bg-black focus:text-white"
+                className="w-24 ui-outline border border-line px-2 py-1 text-xs font-mono font-bold bg-surface text-ink focus:outline-none focus:bg-primary focus:text-white"
               />
               <span className="text-[10px] font-bold">sec (1–86,400)</span>
             </div>
@@ -372,10 +377,10 @@ export default function TrafficSetupView({
         </div>
 
         {/* Right: Circuit Breakers & Resource Budgeting */}
-        <div className={`lg:col-span-6 border-2 border-black p-5 bg-white space-y-4 ${
+        <div className={`lg:col-span-6 ui-outline border border-line p-5 bg-surface space-y-4 ${
           isProd ? 'shadow-sm' : ''
         }`}>
-          <div className="border-b-2 border-black pb-2">
+          <div className="border-b border-line pb-2">
             <h2 className="text-sm font-black uppercase">
               2. SAFETY CIRCUIT BREAKERS &amp; GUARDS
             </h2>
@@ -399,10 +404,10 @@ export default function TrafficSetupView({
                   key={t.val}
                   type="button"
                   onClick={() => setMax5xxThreshold(t.val)}
-                  className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
+                  className={`border border-line py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
                     effective5xx === t.val
-                      ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                      : 'bg-white text-black hover:bg-black/5'
+                      ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                      : 'bg-surface text-ink hover:bg-soft'
                   }`}
                 >
                   {t.label}
@@ -411,7 +416,7 @@ export default function TrafficSetupView({
             </div>
           </div>
 
-          <div className="border-2 border-black p-3 bg-white space-y-1">
+          <div className="ui-outline border border-line p-3 bg-surface space-y-1">
             <div className="text-xs font-bold uppercase">Automatic stops are always on</div>
             <p className="text-[10px] opacity-75">
               Pusher stops on a detected firewall block, 3 rate-limit responses in 3 seconds, 5 consecutive server errors, &gt;30% request timeouts, or rolling p95 ceiling breaches.
@@ -439,10 +444,10 @@ export default function TrafficSetupView({
                   disabled={maxP95Ceiling != null && p.ms > maxP95Ceiling}
                   aria-pressed={effectiveP95 === p.ms}
                   onClick={() => setP95Ceiling(p.ms)}
-                  className={`border-2 border-black py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                  className={`border border-line py-2 px-1 text-xs font-bold uppercase transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                     effectiveP95 === p.ms
-                      ? (isProd ? 'bg-slate-900 text-white' : 'bg-black text-white')
-                      : 'bg-white text-black hover:bg-black/5'
+                      ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                      : 'bg-surface text-ink hover:bg-soft'
                   }`}
                 >
                   {p.label}
@@ -452,7 +457,7 @@ export default function TrafficSetupView({
           </div>
 
           {/* Cache-Busting Nonce Toggle */}
-          <div className="border-2 border-black p-3 bg-white flex items-center justify-between">
+          <div className="ui-outline border border-line p-3 bg-surface flex items-center justify-between">
             <div>
               <div className="text-xs font-bold uppercase">Dynamic Cache-Busting</div>
               <div className="text-[10px] opacity-75">Append ?_cb=nonce to bypass CDN caches</div>
@@ -460,10 +465,10 @@ export default function TrafficSetupView({
             <button
               type="button"
               onClick={() => setCacheBusting(!cacheBusting)}
-              className={`border border-black px-3 py-1 text-xs font-bold uppercase cursor-pointer ${
+              className={`border border-line px-3 py-1 text-xs font-bold uppercase cursor-pointer ${
                 cacheBusting
-                  ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
-                  : 'bg-white text-black'
+                  ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-primary text-white')
+                  : 'bg-surface text-ink'
               }`}
             >
               {cacheBusting ? 'ENABLED' : 'DISABLED'}
@@ -471,8 +476,8 @@ export default function TrafficSetupView({
           </div>
 
           {/* Live Resource Estimator */}
-          <div className="border-2 border-black p-3 bg-white text-xs space-y-1">
-            <div className="font-bold uppercase border-b border-black pb-1 mb-1">
+          <div className="ui-outline border border-line p-3 bg-surface text-xs space-y-1">
+            <div className="font-bold uppercase border-b border-line pb-1 mb-1">
               Resource Consumption Estimate:
             </div>
             <div className="flex justify-between">
@@ -497,16 +502,39 @@ export default function TrafficSetupView({
         </div>
       </fieldset>
 
+      <div className="ui-outline border border-line p-3 bg-surface flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex-1 space-y-1">
+          <label htmlFor="traffic-project-name" className="text-xs font-bold uppercase flex items-center gap-2">
+            <span>Project Name Before Launch:</span>
+            {projectName && projectNameSource && (
+              <span className="border border-line px-1.5 py-0.2 text-[9px] font-bold uppercase bg-soft">
+                {projectNameSource === 'custom' ? 'Custom' : 'Auto-detected'}
+              </span>
+            )}
+          </label>
+          <input
+            id="traffic-project-name"
+            type="text"
+            maxLength={80}
+            value={projectName}
+            onChange={(e) => setProjectName?.(e.target.value)}
+            onBlur={() => onSaveProjectName?.()}
+            placeholder="e.g. Veribite API or My Web App"
+            className="w-full ui-outline border border-line px-2.5 py-1.5 text-xs font-mono bg-surface text-ink focus:outline-none"
+          />
+        </div>
+      </div>
+
       {/* Bottom Action Ribbon */}
       {trafficSaveError && <p role="alert" className="text-xs font-bold text-rose-800">{trafficSaveError}</p>}
       {launchError && <p role="alert" className="text-xs font-bold text-rose-800">{launchError}</p>}
       {trafficLaunchBlocker && <p role="status" className="text-xs font-bold">{trafficLaunchBlocker}</p>}
-      <div className="border-t-2 border-black pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="border-t border-line pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
         <button
           type="button"
           onClick={handleSaveTraffic}
           disabled={trafficSaving || trafficLoading}
-          className="border-2 border-black py-3 px-4 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer text-center"
+          className="border border-line py-3 px-4 text-xs font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer text-center"
         >
           SAVE PROFILE &amp; RETURN TO DASHBOARD
         </button>
@@ -514,10 +542,10 @@ export default function TrafficSetupView({
           type="button"
           onClick={handleStartTest}
           disabled={Boolean(trafficLaunchBlocker)}
-          className={`border-2 border-black py-3 px-4 text-xs font-black uppercase transition-colors text-center tracking-wider ${
+          className={`border border-line py-3 px-4 text-xs font-black uppercase transition-colors text-center tracking-wider ${
             !trafficLaunchBlocker
-              ? (isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
-              : 'bg-white text-black opacity-40 cursor-not-allowed'
+              ? (isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer' : 'bg-primary text-white hover:bg-surface hover:text-ink cursor-pointer')
+              : 'bg-surface text-ink opacity-40 cursor-not-allowed'
           }`}
         >
           SAVE &amp; LAUNCH LOAD TEST

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import AuthVisualPanel from '../components/auth/AuthVisualPanel';
+import { Activity, ArrowLeft } from 'lucide-react';
 import AuthFormPanel from '../components/auth/AuthFormPanel';
 import { supabase, supabaseConfigError } from '../lib/supabaseClient';
 import { authenticateEmail, authenticateProvider } from '../lib/signIn';
@@ -49,33 +49,7 @@ export default function LoginPage({
       || ((params.has('error') || fragment.has('error')) ? 'Provider sign-in was canceled or failed.' : null);
   });
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [scale, setScale] = useState(0.72);
   const [currentFrameData, setCurrentFrameData] = useState(() => getTimeBasedFrameData());
-
-  // Proportional 2.06:1 Card Scaling (1320px × 640px Base Canvas)
-  useEffect(() => {
-    const CARD_W = 1320;
-    const CARD_H = 640; // Exact 2.0625:1 wide ratio
-
-    const computeScale = () => {
-      if (typeof window === 'undefined') return 1;
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      // Fill 70% of screen width on PC & Laptop (slightly smaller than 77%),
-      // and 88% on narrower Tablets so text stays crisp while keeping the exact same ratio.
-      const widthFill = vw < 1024 ? 0.88 : 0.70;
-      const heightFill = 0.76;
-      return Math.min((vw * widthFill) / CARD_W, (vh * heightFill) / CARD_H);
-    };
-
-    const updateScale = () => {
-      setScale(Math.max(0.35, computeScale()));
-    };
-
-    updateScale();
-    window.addEventListener('resize', updateScale);
-    return () => window.removeEventListener('resize', updateScale);
-  }, []);
 
   useEffect(() => {
     const updateFrame = () => {
@@ -121,62 +95,39 @@ export default function LoginPage({
   };
 
   return (
-    <div className="h-screen min-h-screen w-full bg-[#EBEBD8] flex items-center justify-center overflow-hidden font-sans selection:bg-[#455230] selection:text-[#EBEBD8] relative p-0 m-0">
-      {/* Toast Notification in Deep Army Olive & Cream - Borderless */}
+    <main className="mx-auto w-full max-w-6xl px-4 pb-10 pt-5 sm:px-8 sm:pt-8">
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <button type="button" onClick={onBackToWebsite} className="inline-flex min-h-11 items-center gap-2 font-bold text-ink">
+          <Activity aria-hidden="true" className="h-5 w-5" /> Pusher
+        </button>
+        <button type="button" onClick={onBackToWebsite} className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-muted">
+          <ArrowLeft aria-hidden="true" className="h-4 w-4" /> Back to home
+        </button>
+      </header>
       {(sessionError || notification) && (
-        <div role={sessionError ? 'alert' : 'status'} className="fixed top-6 z-50 animate-bounce bg-[#455230] text-[#EBEBD8] px-5 py-2.5 rounded-full text-sm font-bold shadow-2xl">
+        <p role={sessionError ? 'alert' : 'status'} className="mb-4 rounded-xl border border-control bg-soft px-4 py-3 text-sm font-medium">
           {sessionError || notification}
+        </p>
+      )}
+      {canContinueOffline && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface px-4 py-2 text-sm">
+          <span className="text-muted">Local development session</span>
+          <button type="button" className="min-h-11 rounded-lg bg-accent px-4 font-semibold text-accent-ink" onClick={onContinueOffline}>
+            Continue offline
+          </button>
         </div>
       )}
-
-      {canContinueOffline && (
-        <button type="button" className="absolute z-10 top-4 right-4 rounded bg-[#455230] px-3 py-2 text-white" onClick={onContinueOffline}>
-          Continue offline
-        </button>
-      )}
-
-      {/* Main Canonical Fixed Dimension Login Card (1320px × 640px, Proportional 2.06:1 Ratio) */}
-      <div
-        id="login-card-container"
-        style={{
-          width: '1320px',
-          minWidth: '1320px',
-          maxWidth: '1320px',
-          height: '640px',
-          minHeight: '640px',
-          maxHeight: '640px',
-          flexShrink: 0,
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          borderRadius: '24px',
-          transform: `scale(${scale})`,
-          transformOrigin: 'center center',
-        }}
-        className="bg-[#9BA685] rounded-[24px] shadow-[0_20px_60px_-15px_rgba(69,82,48,0.35)] overflow-hidden grid grid-cols-2 shrink-0 select-none transition-transform duration-100 ease-out"
-      >
-        {/* Left Column (50% Width = 660px): Dynamic 100-Frame Synchronized Landscape */}
-        <div className="w-[660px] h-[640px] p-4 flex flex-col justify-center overflow-hidden">
-          <div className="relative w-full h-full overflow-hidden rounded-2xl bg-black/20">
-            <img
-              src={currentFrameData.src}
-              alt={currentFrameData.phase}
-              className="absolute inset-0 w-full h-full object-cover object-center select-none transition-all duration-700"
-              style={{
-                imageRendering: 'auto',
-              }}
-            />
-            {/* Soft atmospheric smoothing layer */}
-            <div className="absolute inset-0 bg-gradient-to-b from-amber-50/15 via-transparent to-black/20 pointer-events-none mix-blend-soft-light" />
-            {/* Subtle bottom-only vignette */}
-            <div className="absolute inset-x-0 bottom-0 h-1/4 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
-            <AuthVisualPanel />
+      <div id="login-card-container" className="grid overflow-hidden rounded-[1.5rem] border border-line bg-surface md:grid-cols-2">
+        <div className="relative flex min-h-40 items-end overflow-hidden bg-nav px-6 py-5 text-nav-ink sm:px-9 md:min-h-full md:pb-10">
+          <img src={currentFrameData.src} alt="" className="absolute inset-0 h-full w-full object-cover opacity-40" />
+          <div className="relative max-w-sm">
+            <Activity aria-hidden="true" className="mb-3 h-7 w-7 text-accent" />
+            <p className="text-2xl font-bold tracking-tight sm:text-4xl">Load testing with clear limits.</p>
           </div>
         </div>
-
-        {/* Right Column (50% Width = 660px): Fixed Form Panel */}
-        <div className="w-[660px] h-[640px] flex flex-col justify-center bg-[#9BA685] overflow-hidden">
+        <div className="min-w-0 px-5 py-6 sm:px-10 sm:py-9">
           {supabaseConfigError ? (
-            <p role="alert" className="px-14 text-lg font-semibold text-[#455230]">{supabaseConfigError}</p>
+            <p role="alert" className="rounded-xl border border-line bg-field p-4 text-sm font-semibold">{supabaseConfigError}</p>
           ) : <AuthFormPanel
             mode={authMode}
             onToggleMode={toggleAuthMode}
@@ -187,6 +138,6 @@ export default function LoginPage({
           />}
         </div>
       </div>
-    </div>
+    </main>
   );
 }

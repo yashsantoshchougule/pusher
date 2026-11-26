@@ -8,10 +8,12 @@ from backend.api.auth_deps import require_operator
 from backend.core.config import settings
 from backend.core.database import target_template
 from backend.core.load_engine import load_engine
+from backend.core.run_manager import run_manager
 from backend.core.request_owner import request_owner
 from pydantic import BaseModel, Field
 from backend.core.target_service import (
     validate_target_url,
+    detect_project_name,
     generate_pusher_guard_file,
     verify_target_handshake,
     probe_edge,
@@ -46,6 +48,9 @@ class WafProbeRequest(BaseModel):
     target_url: str = Field(..., description="Verified origin endpoint to probe with HEAD")
     is_sandbox: bool = Field(default=False, description="Simulate sandbox response")
 
+class ProjectNameRequest(BaseModel):
+    project_name: str = Field(..., max_length=80, description="Display name for the project under test")
+
 
 @router.post("/validate-url")
 async def validate_url_endpoint(payload: ValidateSsrfRequest):
@@ -54,7 +59,29 @@ async def validate_url_endpoint(payload: ValidateSsrfRequest):
     Returns structured validation object with status and typo suggestions.
     """
     result = await validate_target_url(payload.target_url, payload.is_sandbox)
-    return dict(result)
+    data = dict(result)
+    if data.get("ready"):
+        detected = await detect_project_name(payload.target_url, payload.is_sandbox)
+        data["detected_project_name"] = detected["project_name"]
+        data["detected_project_source"] = detected["source"]
+    else:
+        data["detected_project_name"] = ""
+        data["detected_project_source"] = ""
+    return data
+
+
+@router.post("/detect-name")
+async def detect_project_name_endpoint(payload: ValidateSsrfRequest):
+    """Auto-detect project display name safely within an 8 KB read budget."""
+    return await detect_project_name(payload.target_url, payload.is_sandbox)
+
+
+@router.put("/project-name")
+async def update_project_name_endpoint(payload: ProjectNameRequest):
+    """Save a custom or confirmed project name for the current operator's active target."""
+    target_store = active_target()
+    saved_name = target_store.set_project_name(payload.project_name)
+    return {"project_name": saved_name}
 
 
 @router.post("/validate-ssrf")
@@ -183,8 +210,10 @@ async def kill_target_endpoint(
     effective_device_id = (payload.device_id if payload else None) or x_device_id
     guard_id = target_store.guard_id
     success, msg = target_store.kill(device_id=effective_device_id)
-    if guard_id and load_engine.owner_id == request_owner.get() and load_engine.active_guard_id == guard_id:
-        await load_engine.stop(reason="GUARD_REVOKED")
+    if guard_id:
+        await run_manager.stop_guard_runs(
+            request_owner.get(), guard_id, primary_engine=load_engine, reason="GUARD_REVOKED"
+        )
 
     if not success:
         raise HTTPException(
@@ -223,6 +252,7 @@ async def get_target_status():
                                    and not target_store.expected_file_sha256)
     return {
         "target_url": target_store.target_url,
+        "project_name": getattr(target_store, "project_name", "") or "",
         "requires_target_query": target_store.requires_target_query,
         "is_sandbox": bool(target_store.is_sandbox),
         "sandbox_url": (

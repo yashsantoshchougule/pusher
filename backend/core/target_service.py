@@ -10,10 +10,12 @@ import base64
 import difflib
 import hashlib
 import hmac
+import html
 import json
 import re
 import secrets
 import time
+import urllib.parse
 import zlib
 import httpx
 from backend.core.request_owner import request_owner
@@ -25,6 +27,7 @@ from backend.core.target_policy import (
 from backend.core.database import (
     db_get_active_target,
     db_save_active_target,
+    db_update_active_project_name,
     db_record_guard_generation,
     db_get_daily_generations_count,
     db_burn_guard,
@@ -192,6 +195,7 @@ class ActiveTargetStore:
         self.creator_device_hash: str = hash_device_id("DEV-LOCAL-CREATOR")
         self._guard_id: str | None = None
         self.target_url: str | None = None
+        self.project_name: str = ""
         self.requires_target_query = False
         self.is_sandbox: bool = False
         self.bypass_secret: str | None = None
@@ -222,6 +226,7 @@ class ActiveTargetStore:
     def _load_from_db(self):
         state = db_get_active_target(self.owner_id)
         self.target_url = state.get("target_url") or None
+        self.project_name = str(state.get("project_name") or "").strip()[:80]
         self.requires_target_query = state["requires_target_query"]
         self.is_sandbox = bool(state.get("is_sandbox", False))
         self._guard_id = state.get("guard_id")
@@ -240,6 +245,7 @@ class ActiveTargetStore:
     def _save_to_db(self):
         db_save_active_target({
             "target_url": self.target_url or "",
+            "project_name": getattr(self, "project_name", "") or "",
             "requires_target_query": self.requires_target_query,
             "is_sandbox": getattr(self, "is_sandbox", False),
             "guard_id": self._guard_id,
@@ -274,6 +280,12 @@ class ActiveTargetStore:
         now = time.time()
         db_record_guard_generation(guard_id, self.creator_device_hash, now, self.owner_id)
         self.issued_guard_ids.add(guard_id)
+
+    def set_project_name(self, name: str) -> str:
+        clean = " ".join(str(name or "").split()).strip()[:80]
+        self.project_name = clean
+        db_update_active_project_name(clean, self.owner_id)
+        return clean
 
     def set_target(
         self,
@@ -438,6 +450,144 @@ async def validate_target_url(target_url: str, is_sandbox: bool = False) -> Vali
         message="Sandbox destination is configured." if is_sandbox else "DNS checked. Verify ownership with your Guard.",
         resolved_ip=addresses[0], suggestions=[],
     )
+
+
+_MAX_DETECT_BYTES = 8192
+_META_OG_SITE_RE = re.compile(
+    r"""<meta\b(?=[^>]*\bproperty\s*=\s*["']og:site_name["'])[^>]*\bcontent\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_OG_SITE_REV_RE = re.compile(
+    r"""<meta\b(?=[^>]*\bcontent\s*=\s*["']([^"']+)["'])[^>]*\bproperty\s*=\s*["']og:site_name["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_APP_NAME_RE = re.compile(
+    r"""<meta\b(?=[^>]*\bname\s*=\s*["']application-name["'])[^>]*\bcontent\s*=\s*["']([^"']+)["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_APP_NAME_REV_RE = re.compile(
+    r"""<meta\b(?=[^>]*\bcontent\s*=\s*["']([^"']+)["'])[^>]*\bname\s*=\s*["']application-name["']""",
+    re.IGNORECASE | re.DOTALL,
+)
+_TITLE_TAG_RE = re.compile(r"<title\b[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _clean_detected_title(raw: str, strip_suffix_over: int | None = None) -> str:
+    text = html.unescape(re.sub(r"\s+", " ", str(raw or "")).strip())
+    if not text:
+        return ""
+    if strip_suffix_over is not None and len(text) > strip_suffix_over:
+        for sep in (" | ", " — ", " – ", " - "):
+            if sep in text:
+                head = text.split(sep, 1)[0].strip()
+                if len(head) >= 2:
+                    text = head
+                    break
+    return text[:50].strip()
+
+
+def detect_hostname_fallback(target_url: str) -> str:
+    """Derive a readable Title-Cased project label directly from a URL hostname."""
+    raw = str(target_url or "").strip()
+    if not raw:
+        return "Unnamed Project"
+    try:
+        parsed = urllib.parse.urlsplit(raw if "://" in raw else f"https://{raw}")
+        host = (parsed.hostname or "").lower().strip(".")
+    except ValueError:
+        host = ""
+    if not host:
+        return "Unnamed Project"
+
+    for prefix in ("www.", "api."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+
+    for suffix in (".vercel.app", ".onrender.com", ".netlify.app", ".com", ".dev", ".io"):
+        if host.endswith(suffix):
+            host = host[: -len(suffix)]
+            break
+
+    tokens = [tok for tok in re.split(r"[-._]+", host) if tok]
+    if not tokens:
+        return "Unnamed Project"
+    label = " ".join(tok.capitalize() if not tok.isdigit() else tok for tok in tokens)
+    return label[:50].strip() or "Unnamed Project"
+
+
+def extract_project_name_from_html(html_text: str, target_url: str) -> tuple[str, str]:
+    """Extract (project_name, source) from HTML head snippet or fall back to hostname."""
+    if html_text:
+        for regex in (_META_OG_SITE_RE, _META_OG_SITE_REV_RE, _META_APP_NAME_RE, _META_APP_NAME_REV_RE):
+            m = regex.search(html_text)
+            if m:
+                cleaned = _clean_detected_title(m.group(1))
+                if cleaned:
+                    return cleaned, "meta"
+        title_match = _TITLE_TAG_RE.search(html_text)
+        if title_match:
+            cleaned = _clean_detected_title(title_match.group(1), strip_suffix_over=32)
+            if cleaned:
+                return cleaned, "title"
+    return detect_hostname_fallback(target_url), "hostname"
+
+
+async def detect_project_name(target_url: str, is_sandbox: bool = False) -> dict:
+    """Safely sniff at most 8 KB from target_url to detect a clean project name."""
+    if is_sandbox:
+        return {"project_name": "Pusher Sandbox", "source": "sandbox"}
+
+    raw_url = (target_url or "").strip()
+    try:
+        current = parse_target(raw_url)
+    except DestinationError:
+        return {"project_name": detect_hostname_fallback(raw_url), "source": "hostname"}
+
+    fallback = detect_hostname_fallback(str(current))
+    timeout = httpx.Timeout(3.0)
+    headers = {"User-Agent": "Pusher-LoadEngine/1.0 (Metadata-8KB)", "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
+
+    for _hop in range(4):
+        try:
+            async with target_client(current, False, timeout=timeout, connections=1) as client:
+                async with client.stream("GET", current, headers=headers) as response:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location:
+                            break
+                        next_url = str(current.join(location))
+                        current = parse_target(next_url)
+                        continue
+                    content_type = (response.headers.get("content-type") or "").lower()
+                    if response.status_code >= 400 or (
+                        content_type and "html" not in content_type and "xml" not in content_type
+                    ):
+                        return {"project_name": fallback, "source": "hostname"}
+
+                    collected = bytearray()
+                    byte_stream = response.aiter_bytes(chunk_size=4096)
+                    try:
+                        async for chunk in byte_stream:
+                            if not chunk:
+                                continue
+                            remaining = _MAX_DETECT_BYTES - len(collected)
+                            if remaining <= 0:
+                                break
+                            collected.extend(chunk[:remaining])
+                            if len(collected) >= _MAX_DETECT_BYTES:
+                                break
+                    finally:
+                        aclose = getattr(byte_stream, "aclose", None)
+                        if aclose is not None:
+                            await aclose()
+
+                    snippet = collected.decode("utf-8", errors="ignore")
+                    name, source = extract_project_name_from_html(snippet, str(current))
+                    return {"project_name": name, "source": source}
+        except (DestinationError, httpx.HTTPError, ValueError):
+            break
+
+    return {"project_name": fallback, "source": "hostname"}
 
 
 def verified_destination(value: str, is_sandbox: bool) -> httpx.URL:
@@ -637,8 +787,8 @@ async def verify_target_handshake(
             target_store.last_burn_reason = "DEVICE_MISMATCH_VIOLATION"
             try:
                 from backend.core.load_engine import load_engine
-                if load_engine.is_running and load_engine.owner_id == request_owner.get():
-                    load_engine.request_stop("STOPPED (GUARD_REVOKED)")
+                from backend.core.run_manager import run_manager
+                run_manager.request_stop_owner(request_owner.get(), "STOPPED (GUARD_REVOKED)", primary_engine=load_engine)
             except Exception:
                 pass
             return False, f"HTTP 403 Forbidden: DEVICE SECURITY VIOLATION: Guard ID {guard_id} is locked to its creator device. Cross-device access detected — Guard ID has been permanently killed, the 48h timer stopped, and this ID can never be used again.", 0

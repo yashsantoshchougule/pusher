@@ -123,6 +123,8 @@ def init_all_tables() -> None:
                 """)
             if "requires_target_query" not in ats_cols:
                 conn.execute("ALTER TABLE active_target_state ADD COLUMN requires_target_query INTEGER DEFAULT 0;")
+            if "project_name" not in ats_cols:
+                conn.execute("ALTER TABLE active_target_state ADD COLUMN project_name TEXT NOT NULL DEFAULT '';")
 
             # 2. Guard Generations (Multi-Row: 3/day rate limit tracking per user)
             conn.execute("""
@@ -322,6 +324,9 @@ def init_all_tables() -> None:
                     use_journey INTEGER,
                     is_sandbox INTEGER,
                     bytes_discarded_mb REAL NOT NULL,
+                    cache_hit_count INTEGER NOT NULL DEFAULT 0,
+                    cache_hit_pct REAL NOT NULL DEFAULT 0.0,
+                    cdn_cache_warning INTEGER NOT NULL DEFAULT 0,
                     ram_mb REAL NOT NULL,
                     verdict TEXT NOT NULL,
                     status_label TEXT NOT NULL,
@@ -372,6 +377,13 @@ def init_all_tables() -> None:
                 ("steps_json", "TEXT NOT NULL DEFAULT '[]'"),
                 ("started_at", "TEXT"),
                 ("ended_at_iso", "TEXT"),
+                ("project_name", "TEXT NOT NULL DEFAULT ''"),
+                ("failure_breakdown_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("crash_summary_json", "TEXT NOT NULL DEFAULT 'null'"),
+                ("timeline_points_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("cache_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("cache_hit_pct", "REAL NOT NULL DEFAULT 0.0"),
+                ("cdn_cache_warning", "INTEGER NOT NULL DEFAULT 0"),
             )
             for col_name, col_def in test_runs_migrations:
                 if col_name not in tr_cols:
@@ -511,6 +523,7 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
         if not row:
             return {
                 "target_url": "",
+                "project_name": "",
                 "requires_target_query": False,
                 "is_sandbox": False,
                 "guard_id": None,
@@ -524,8 +537,10 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
                 "is_verified": False,
                 "last_burn_reason": None,
             }
+        row_keys = set(row.keys())
         return {
             "target_url": target_template(row["target_url"] or ""),
+            "project_name": (row["project_name"] or "") if "project_name" in row_keys else "",
             "requires_target_query": bool(row["requires_target_query"])
             or bool((row["target_url"] or "").split("#", 1)[0].partition("?")[2]),
             "is_sandbox": bool(row["is_sandbox"]),
@@ -546,18 +561,20 @@ def db_get_active_target(user_id: str = "default_test_user") -> Dict[str, Any]:
 
 def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_user") -> None:
     url = state.get("target_url") or ""
+    clean_name = str(state.get("project_name") or "").strip()[:80]
     conn = get_db_connection()
     try:
         with conn:
             conn.execute(
                 """
                 INSERT INTO active_target_state (
-                    user_id, target_url, is_sandbox, guard_id, handshake_secret, expected_file_sha256,
+                    user_id, target_url, project_name, is_sandbox, guard_id, handshake_secret, expected_file_sha256,
                     creator_device_hash, bound_host_hash, issued_at, expires_at, active_guard_active,
                     is_verified, last_burn_reason, requires_target_query, id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(user_id) DO UPDATE SET
                     target_url = excluded.target_url,
+                    project_name = excluded.project_name,
                     is_sandbox = excluded.is_sandbox,
                     guard_id = excluded.guard_id,
                     handshake_secret = excluded.handshake_secret,
@@ -574,6 +591,7 @@ def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_us
                 (
                     user_id,
                     target_template(url),
+                    clean_name,
                     1 if state.get("is_sandbox") else 0,
                     state.get("guard_id"),
                     state.get("handshake_secret"),
@@ -590,6 +608,24 @@ def db_save_active_target(state: Dict[str, Any], user_id: str = "default_test_us
             )
     finally:
         conn.close()
+
+
+def db_update_active_project_name(project_name: str, user_id: str = "default_test_user") -> str:
+    clean_name = " ".join(str(project_name or "").split()).strip()[:80]
+    conn = get_db_connection()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO active_target_state (user_id, id, target_url, project_name, is_sandbox, active_guard_active, is_verified)
+                VALUES (?, 1, '', ?, 0, 0, 0)
+                ON CONFLICT(user_id) DO UPDATE SET project_name = excluded.project_name;
+                """,
+                (user_id, clean_name),
+            )
+    finally:
+        conn.close()
+    return clean_name
 
 
 # --- Guard Generations & Tombstone ---

@@ -53,6 +53,8 @@ def run_legacy_scenarios_as_one_operator(request, monkeypatch, tmp_path):
     database.init_all_tables()
     target_service.target_store.__init__()
     engine_module.load_engine.__init__()
+    from backend.core.run_manager import run_manager
+    run_manager.reset()
     monkeypatch.setattr(auth_deps, "resolve_operator", AsyncMock(return_value=AuthenticatedUser(
         user_id="default_test_user", email="fixture@example.invalid", email_confirmed=True,
     )))

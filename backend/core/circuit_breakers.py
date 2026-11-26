@@ -8,10 +8,13 @@ MAX_P95_CEILING_MS = 8000
 
 
 class CircuitBreakers:
-    def __init__(self, error_limit: float, latency_limit: float):
+    def __init__(self, error_limit: float, latency_limit: float, target_vus: int = 1):
         self.error_limit = min(error_limit, MAX_ERROR_PCT_CAP)
         self.latency_limit = min(latency_limit, MAX_P95_CEILING_MS)
+        self.target_vus = max(1, int(target_vus or 1))
+        self.conn_consecutive_limit = 5 if self.target_vus < 64 else min(40, max(10, self.target_vus // 40))
         self.consecutive_5xx = 0
+        self.consecutive_conn = 0
         self.responses = deque()
         self.window_5xx = 0
         self.rate_limits = deque()
@@ -21,10 +24,15 @@ class CircuitBreakers:
         return bool(WAF_HEADERS.intersection(headers))
 
     def observe_status(self, now, status, headers):
-        is_failure = (500 <= status < 600) or status == 0
-        self.consecutive_5xx = self.consecutive_5xx + 1 if is_failure else 0
+        is_5xx = 500 <= status < 600
+        is_conn = status == 0
+        is_failure = is_5xx or is_conn
+        self.consecutive_5xx = self.consecutive_5xx + 1 if is_5xx else 0
+        self.consecutive_conn = self.consecutive_conn + 1 if is_conn else 0
         if self.consecutive_5xx >= 5:
-            return "5 consecutive connection failures" if status == 0 else "5 consecutive server failures"
+            return "5 consecutive server failures"
+        if self.consecutive_conn >= self.conn_consecutive_limit:
+            return f"{self.conn_consecutive_limit} consecutive connection failures"
         self.responses.append((now, is_failure))
         self.window_5xx += is_failure
         while self.responses and now - self.responses[0][0] > 5:

@@ -6,6 +6,7 @@ Journey Service for Multi-Step Sequential API Testing:
 """
 
 import asyncio
+from dataclasses import dataclass
 import json
 import math
 import re
@@ -118,6 +119,119 @@ def build_journey_request(step, context, base, is_sandbox, cache_bust, vu_id, re
     if cache_bust:
         url = append_cache_buster(url, vu_id, req_seq)
     return url, headers, content
+
+
+def _has_template_vars(value) -> bool:
+    if isinstance(value, str):
+        return "{{" in value and "}}" in value
+    if isinstance(value, list):
+        return any(_has_template_vars(item) for item in value)
+    if isinstance(value, dict):
+        return any(_has_template_vars(k) or _has_template_vars(v) for k, v in value.items())
+    return False
+
+
+@dataclass(slots=True)
+class CompiledJourneyStep:
+    """Pre-validated, pre-encoded journey step eliminating static per-request allocations."""
+
+    method: str
+    raw_path: str
+    base: httpx.URL
+    is_sandbox: bool
+    has_dynamic_path: bool
+    static_url: str | None
+    static_cb_prefix: str | None
+    static_error: Exception | None
+    static_headers: dict[str, str]
+    dynamic_headers: tuple[tuple[str, str], ...]
+    has_dynamic_body: bool
+    static_body: bytes | None
+    raw_body: object
+    extract_key: str | None
+    expected_status: int
+
+    def build(
+        self,
+        context: dict[str, str],
+        cache_bust: bool,
+        vu_id: int,
+        req_seq: int,
+        run_epoch_ms: int,
+    ) -> tuple[str, dict[str, str], bytes | None]:
+        if self.static_error is not None:
+            raise self.static_error
+
+        if not self.has_dynamic_path and self.static_url is not None:
+            url = (
+                f"{self.static_cb_prefix}{run_epoch_ms}_{vu_id}_{req_seq}"
+                if cache_bust and self.static_cb_prefix is not None
+                else self.static_url
+            )
+        else:
+            path = render_journey_value(self.raw_path, context, url_component=True)
+            url = str(journey_target(path, self.base, self.is_sandbox))
+            if cache_bust:
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}_cb={run_epoch_ms}_{vu_id}_{req_seq}"
+
+        if not self.dynamic_headers and not self.has_dynamic_body:
+            return url, self.static_headers, self.static_body
+
+        headers = dict(self.static_headers)
+        for name, template in self.dynamic_headers:
+            headers[name] = render_journey_value(template, context)
+        content = encode_journey_body(self.raw_body, context, headers) if self.has_dynamic_body else self.static_body
+        return url, headers, content
+
+
+def compile_journey_step(step: dict, base: httpx.URL, is_sandbox: bool) -> CompiledJourneyStep:
+    """Compile a journey step once per run so static URLs, headers, and JSON bodies allocate zero per hit."""
+    method = step.get("method", "GET").upper()
+    raw_path = step.get("path", "")
+    has_dynamic_path = "{{" in raw_path and "}}" in raw_path
+    static_url: str | None = None
+    static_cb_prefix: str | None = None
+    static_error: Exception | None = None
+    if not has_dynamic_path:
+        try:
+            static_url = str(journey_target(raw_path, base, is_sandbox))
+            sep = "&" if "?" in static_url else "?"
+            static_cb_prefix = f"{static_url}{sep}_cb="
+        except DestinationError as exc:
+            static_error = exc
+
+    static_headers = journey_request_headers()
+    dynamic_headers_list: list[tuple[str, str]] = []
+    for name, value in (step.get("headers") or {}).items():
+        if isinstance(value, str) and "{{" in value and "}}" in value:
+            dynamic_headers_list.append((name, value))
+        else:
+            static_headers[name] = value
+
+    raw_body = step.get("body")
+    has_dynamic_body = _has_template_vars(raw_body)
+    static_body: bytes | None = None
+    if not has_dynamic_body:
+        static_body = encode_journey_body(raw_body, {}, static_headers)
+
+    return CompiledJourneyStep(
+        method=method,
+        raw_path=raw_path,
+        base=base,
+        is_sandbox=is_sandbox,
+        has_dynamic_path=has_dynamic_path,
+        static_url=static_url,
+        static_cb_prefix=static_cb_prefix,
+        static_error=static_error,
+        static_headers=static_headers,
+        dynamic_headers=tuple(dynamic_headers_list),
+        has_dynamic_body=has_dynamic_body,
+        static_body=static_body,
+        raw_body=raw_body,
+        extract_key=step.get("extract_json_key"),
+        expected_status=int(step.get("expected_status", 200)),
+    )
 
 
 def extract_journey_value(key: str, preview: bytes) -> str:

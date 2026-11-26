@@ -16,7 +16,7 @@ CAPACITY_UNAVAILABLE = {
 }
 
 _SUMMARY_FIELDS = (
-    "run_id, timestamp, target_url, guard_id, mode, target_vus, peak_vus, duration_sec, "
+    "run_id, timestamp, target_url, project_name, guard_id, mode, target_vus, peak_vus, duration_sec, "
     "elapsed_sec, peak_rps, avg_rps, p95_ms, error_pct, total_requests, "
     "status_2xx, status_429, status_5xx, status_other, timeout_count, network_error_count, "
     "p95_ceiling_ms, max_error_pct, effective_p95_ceiling_ms, "
@@ -67,6 +67,35 @@ def _opt_bool_int(value) -> int | None:
     if value is None:
         return None
     return 1 if bool(value) else 0
+
+
+def _downsample_timeline_points(raw_points: list | None, fallback_ts: list | None = None, max_points: int = 600) -> list[dict]:
+    """Normalize timeline samples to {t, vus, rps, p95_ms, error_pct} and cap at <= max_points."""
+    src = raw_points if isinstance(raw_points, list) and raw_points else (fallback_ts if isinstance(fallback_ts, list) else [])
+    cleaned = []
+    for item in src:
+        if not isinstance(item, dict):
+            continue
+        t_val = item.get("t", item.get("elapsed_sec", 0))
+        vus_val = item.get("vus", item.get("active_vus", 0))
+        rps_val = item.get("rps", item.get("live_rps", 0))
+        p95_val = item.get("p95_ms", 0.0)
+        err_val = item.get("error_pct", 0.0)
+        cleaned.append({
+            "t": max(0, int(round(float(t_val or 0)))),
+            "vus": max(0, int(round(float(vus_val or 0)))),
+            "rps": max(0, int(round(float(rps_val or 0)))),
+            "p95_ms": round(max(0.0, float(p95_val or 0.0)), 1),
+            "error_pct": round(max(0.0, float(err_val or 0.0)), 1),
+        })
+    n = len(cleaned)
+    if n <= max_points:
+        return cleaned
+    if max_points <= 2:
+        return [cleaned[0], cleaned[-1]][:max_points]
+    step = (n - 1) / (max_points - 1)
+    indices = [round(i * step) for i in range(max_points - 1)] + [n - 1]
+    return [cleaned[idx] for idx in indices]
 
 
 def _normalize_latency_breakdown(value) -> dict | None:
@@ -409,6 +438,8 @@ def _normalize_scorecard_row(row: sqlite3.Row | None) -> dict | None:
         d["p95_ms"] = round(float(d["p95_ms"]), 1)
     if d.get("error_pct") is not None:
         d["error_pct"] = round(float(d["error_pct"]), 1)
+    if "cdn_cache_warning" in d and d["cdn_cache_warning"] is not None:
+        d["cdn_cache_warning"] = bool(d["cdn_cache_warning"])
     return d
 
 
@@ -460,9 +491,9 @@ def get_all_runs(
             params.extend([verdict_norm, f"%{verdict.strip().lower().replace('_', ' ')}%"])
     if q and q.strip():
         term = f"%{q.strip().lower()}%"
-        where += """ AND (LOWER(run_id) LIKE ? OR LOWER(SUBSTR(target_url, 1,
+        where += """ AND (LOWER(run_id) LIKE ? OR LOWER(project_name) LIKE ? OR LOWER(SUBSTR(target_url, 1,
             MIN(INSTR(target_url || '?', '?'), INSTR(target_url || '#', '#')) - 1)) LIKE ?)"""
-        params.extend([term, term])
+        params.extend([term, term, term])
 
     order = " ORDER BY created_at DESC, run_id DESC"
     page = " AND (created_at, run_id) < (?, ?)" if after else ""
@@ -479,7 +510,7 @@ def get_all_runs(
             else _fetch_scorecard(conn, base_where, base_params)
         )
         latest_row = conn.execute(
-            f"SELECT {_SCORECARD_FIELDS}, mode, target_vus, peak_vus, total_requests, timestamp "
+            f"SELECT {_SCORECARD_FIELDS}, mode, target_vus, peak_vus, total_requests, timestamp, cache_hit_pct, cdn_cache_warning "
             f"FROM test_runs{base_where}{order} LIMIT 1",
             base_params,
         ).fetchone()
@@ -595,6 +626,34 @@ def save_run(data: dict) -> dict:
 
     steps_json = json.dumps(steps if isinstance(steps, list) else [])
 
+    failure_breakdown = data.get("failure_breakdown")
+    if not isinstance(failure_breakdown, list):
+        try:
+            parsed_fb = json.loads(data.get("failure_breakdown_json") or "[]")
+            failure_breakdown = parsed_fb if isinstance(parsed_fb, list) else []
+        except (ValueError, TypeError):
+            failure_breakdown = []
+    failure_breakdown_json = json.dumps(failure_breakdown)
+
+    crash_summary = data.get("crash_summary")
+    if not isinstance(crash_summary, dict):
+        try:
+            parsed_cs = json.loads(data.get("crash_summary_json") or "null")
+            crash_summary = parsed_cs if isinstance(parsed_cs, dict) else None
+        except (ValueError, TypeError):
+            crash_summary = None
+    crash_summary_json = json.dumps(crash_summary) if crash_summary is not None else "null"
+
+    raw_tp = data.get("timeline_points")
+    if not isinstance(raw_tp, list):
+        try:
+            parsed_tp = json.loads(data.get("timeline_points_json") or "[]")
+            raw_tp = parsed_tp if isinstance(parsed_tp, list) else []
+        except (ValueError, TypeError):
+            raw_tp = []
+    timeline_points = _downsample_timeline_points(raw_tp, fallback_ts=timeseries, max_points=600)
+    timeline_points_json = json.dumps(timeline_points)
+
     raw_p95 = data.get("p95_ms", 0.0)
     p95_ms_val = round(float(raw_p95), 1) if raw_p95 is not None else 0.0
     raw_err = data.get("error_pct", 0.0)
@@ -607,6 +666,7 @@ def save_run(data: dict) -> dict:
         "user_id": request_owner.get(),
         "timestamp": data.get("timestamp", time.strftime("%H:%M:%S")),
         "target_url": target_template(data.get("target_url", "https://api.myproject.dev")),
+        "project_name": str(data.get("project_name") or "").strip()[:80],
         "guard_id": data.get("guard_id", "PG-ACTIVE"),
         "mode": mode,
         "target_vus": target_vus,
@@ -638,6 +698,9 @@ def save_run(data: dict) -> dict:
         "use_journey": _opt_bool_int(data.get("use_journey")),
         "is_sandbox": _opt_bool_int(data.get("is_sandbox")),
         "bytes_discarded_mb": float(data.get("bytes_discarded_mb", 0.0)),
+        "cache_hit_count": int(data.get("cache_hit_count", 0) or 0),
+        "cache_hit_pct": float(data.get("cache_hit_pct", 0.0) or 0.0),
+        "cdn_cache_warning": _opt_bool_int(bool(data.get("cdn_cache_warning", False))),
         "ram_mb": float(data.get("ram_mb", 50.0)),
         "verdict": data.get("verdict", "PASSED"),
         "status_label": data.get("status_label", "PASSED (Completed)"),
@@ -656,6 +719,9 @@ def save_run(data: dict) -> dict:
         "capacity_checked": capacity_checked,
         "timeseries_json": timeseries_json,
         "step_metrics_json": step_metrics_json,
+        "failure_breakdown_json": failure_breakdown_json,
+        "crash_summary_json": crash_summary_json,
+        "timeline_points_json": timeline_points_json,
         "created_at": float(data.get("created_at", time.time())),
     }
 
@@ -665,29 +731,31 @@ def save_run(data: dict) -> dict:
             conn.execute(
                 """
                 INSERT INTO test_runs (
-                    run_id, user_id, timestamp, target_url, guard_id, mode,
+                    run_id, user_id, timestamp, target_url, project_name, guard_id, mode,
                     target_vus, peak_vus, duration_sec, elapsed_sec,
                     peak_rps, avg_rps, p95_ms, error_pct, total_requests,
                     status_2xx, status_3xx, status_4xx, status_429, status_5xx, status_other,
                     timeout_count, network_error_count, failed_requests,
                     p95_ceiling_ms, max_error_pct, effective_p95_ceiling_ms, effective_max_error_pct,
                     ram_limit_mb, request_timeout_sec, cache_bust, use_journey, is_sandbox,
-                    bytes_discarded_mb, ram_mb, verdict, status_label, knee_vus, knee_rps,
+                    bytes_discarded_mb, cache_hit_count, cache_hit_pct, cdn_cache_warning, ram_mb, verdict, status_label, knee_vus, knee_rps,
                     knee_p95_ms, bottleneck_summary, capacity_reason, linear_range, optimal_point, cliff_point,
                     latency_breakdown_json, steps_json, started_at, ended_at_iso,
-                    timeseries_json, step_metrics_json, created_at, metrics_scope, capacity_checked
+                    timeseries_json, step_metrics_json, failure_breakdown_json, crash_summary_json,
+                    timeline_points_json, created_at, metrics_scope, capacity_checked
                 ) VALUES (
-                    :run_id, :user_id, :timestamp, :target_url, :guard_id, :mode,
+                    :run_id, :user_id, :timestamp, :target_url, :project_name, :guard_id, :mode,
                     :target_vus, :peak_vus, :duration_sec, :elapsed_sec,
                     :peak_rps, :avg_rps, :p95_ms, :error_pct, :total_requests,
                     :status_2xx, :status_3xx, :status_4xx, :status_429, :status_5xx, :status_other,
                     :timeout_count, :network_error_count, :failed_requests,
                     :p95_ceiling_ms, :max_error_pct, :effective_p95_ceiling_ms, :effective_max_error_pct,
                     :ram_limit_mb, :request_timeout_sec, :cache_bust, :use_journey, :is_sandbox,
-                    :bytes_discarded_mb, :ram_mb, :verdict, :status_label, :knee_vus, :knee_rps,
+                    :bytes_discarded_mb, :cache_hit_count, :cache_hit_pct, :cdn_cache_warning, :ram_mb, :verdict, :status_label, :knee_vus, :knee_rps,
                     :knee_p95_ms, :bottleneck_summary, :capacity_reason, :linear_range, :optimal_point, :cliff_point,
                     :latency_breakdown_json, :steps_json, :started_at, :ended_at_iso,
-                    :timeseries_json, :step_metrics_json, :created_at, :metrics_scope, :capacity_checked
+                    :timeseries_json, :step_metrics_json, :failure_breakdown_json, :crash_summary_json,
+                    :timeline_points_json, :created_at, :metrics_scope, :capacity_checked
                 ) ON CONFLICT(run_id) DO NOTHING
                 """,
                 run_record,
@@ -723,7 +791,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         if "cliff_point" in d and not d["cliff_point"]:
             d["cliff_point"] = "Unavailable"
 
-    for field in ("timeseries", "step_metrics", "steps"):
+    for field in ("timeseries", "step_metrics", "steps", "failure_breakdown", "timeline_points"):
         key = field + "_json"
         if key in d:
             try:
@@ -731,6 +799,16 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
                 d[field] = parsed if isinstance(parsed, list) else []
             except (ValueError, TypeError):
                 d[field] = []
+
+    if "timeline_points" in d and not d["timeline_points"] and d.get("timeseries"):
+        d["timeline_points"] = _downsample_timeline_points([], fallback_ts=d["timeseries"], max_points=600)
+
+    if "crash_summary_json" in d:
+        try:
+            parsed_cs = json.loads(d["crash_summary_json"]) if d["crash_summary_json"] is not None else None
+        except (ValueError, TypeError):
+            parsed_cs = None
+        d["crash_summary"] = parsed_cs if isinstance(parsed_cs, dict) else None
 
     if "latency_breakdown_json" in d:
         try:
@@ -754,12 +832,17 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         )
         d["steps"] = derived_steps
 
-    for flag in ("cache_bust", "use_journey", "is_sandbox"):
+    for flag in ("cache_bust", "use_journey", "is_sandbox", "cdn_cache_warning"):
         if flag in d and d[flag] is not None:
             d[flag] = bool(d[flag])
 
     # Map frontend compatibility keys for wireframe UI table
     d["id"] = d["run_id"]
+    proj_val = str(d.get("project_name") or "").strip()
+    if proj_val or "timeseries_json" in d:
+        d["project_name"] = proj_val
+    else:
+        d.pop("project_name", None)
     d["target_url"] = d["target"] = target_template(d["target_url"])
     d["guardToken"] = d["guard_id"]
     d["peakVus"] = d["peak_vus"]

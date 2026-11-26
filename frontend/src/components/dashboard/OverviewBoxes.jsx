@@ -1,8 +1,14 @@
 import React from 'react';
 import { ArrowRight, Play, Square as StopSquare, Zap, Layers, AlertTriangle } from 'lucide-react';
+import FailureDiagnosisCard from './FailureDiagnosisCard';
+import ProjectHealthChart from './ProjectHealthChart';
 
 export default function OverviewBoxes({
   targetUrl,
+  projectName = '',
+  setProjectName,
+  projectNameSource = '',
+  onSaveProjectName,
   isVerified,
   guardToken,
   guardTimerSeconds,
@@ -10,6 +16,9 @@ export default function OverviewBoxes({
   ssrfCheck,
   latestScorecard,
   latestRunSummary = null,
+  failureBreakdown = [],
+  crashSummary = null,
+  timelinePoints = [],
   modeLabel,
   vus,
   duration,
@@ -23,6 +32,8 @@ export default function OverviewBoxes({
   journeySelectionKnown = true,
   sameProcessLoopback = false,
   loopbackAdvisory = '',
+  cdnCacheWarning = false,
+  cacheHitPct = 0,
   testRunning,
   canStart,
   statusUnavailable,
@@ -72,7 +83,7 @@ export default function OverviewBoxes({
       : isScAborted
       ? 'bg-amber-100 text-amber-900 border-amber-400'
       : 'bg-emerald-100 text-emerald-800 border-emerald-400')
-    : 'bg-white text-black border-black';
+    : 'bg-surface text-ink border-line';
 
   const headerBreakerSource = testRunning
     ? (telemetry?.circuitBreaker || 'ARMED')
@@ -92,7 +103,7 @@ export default function OverviewBoxes({
       : (latestRunSummary?.verdict || scVerdict) === 'PASSED'
       ? 'bg-emerald-100 text-emerald-800 border-emerald-400'
       : 'bg-amber-100 text-amber-900 border-amber-400')
-    : 'bg-white text-black';
+    : 'bg-surface text-ink';
 
   // Box 2 Staged Profile status
   const emptyJourneyBlocked = Boolean(useJourney && journeySelectionKnown && journeyStepsCount === 0);
@@ -151,51 +162,51 @@ export default function OverviewBoxes({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
         {/* BOX 1: ACTIVE TARGET & 48H GUARD STATUS (Top-Left Read-Only) */}
-        <div className={`lg:col-span-6 border-2 border-black p-4 sm:p-5 bg-white flex flex-col justify-between ${
+        <div className={`lg:col-span-6 ui-outline border border-line p-4 sm:p-5 bg-surface flex flex-col justify-between ${
           isProd ? 'shadow-sm' : ''
         }`}>
           <div>
-            <div className="flex items-center justify-between border-b-2 border-black pb-2 mb-4">
-              <h2 className="text-sm sm:text-base font-black uppercase tracking-wider">
-                BOX 1: ACTIVE TARGET STATUS
+            <div className="flex items-center justify-between border-b border-line pb-2 mb-4">
+              <h2 className="text-base font-bold tracking-tight">
+                Target status
               </h2>
               <span
-                className={`border border-black px-2 py-0.5 text-xs font-bold uppercase ${
+                className={`border border-line px-2 py-0.5 text-xs font-bold uppercase ${
                   isVerified
-                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
-                    : (isProd ? 'bg-rose-100 text-rose-800 border-rose-400' : 'bg-white text-black')
+                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-primary text-white')
+                    : (isProd ? 'bg-rose-100 text-rose-800 border-rose-400' : 'bg-surface text-ink')
                 }`}
               >
-                {isVerified ? 'VERIFIED' : 'EXPIRED / LOCKED'}
+                {isVerified ? 'Verified' : 'Unverified'}
               </span>
             </div>
 
             {/* Read-Only Details */}
             {!isVerified && !targetUrl ? (
-              <div className="border-2 border-dashed border-black p-4 text-center mb-4 bg-gray-50 flex flex-col items-center justify-center">
-                <div className="text-xs font-black uppercase tracking-wider text-black">
+              <div className="border-2 border-dashed border-line p-4 text-center mb-4 bg-field flex flex-col items-center justify-center">
+                <div className="text-xs font-black uppercase tracking-wider text-ink">
                   NO VERIFIED TARGET
                 </div>
                 <div className="text-[10px] opacity-75 mt-1 font-bold">
-                  GO TO 2. VERIFY TARGET TO CONFIGURE ORIGIN
+                  Choose a target in Verify Target to get started.
                 </div>
               </div>
             ) : (
               <div className="space-y-2 mb-4 text-xs font-mono">
-                <div className="border border-black p-2.5 bg-white flex justify-between items-center">
+                <div className="ui-outline border border-line p-2.5 bg-surface flex justify-between items-center">
                   <span className="font-bold uppercase">Active Domain:</span>
                   <span className="font-bold truncate max-w-[240px]">{targetUrl || 'NONE (UNCONFIGURED)'}</span>
                 </div>
-                <div className="border border-black p-2.5 bg-white flex justify-between items-center">
+                <div className="ui-outline border border-line p-2.5 bg-surface flex justify-between items-center">
                   <span className="font-bold uppercase">Guard Token:</span>
                   <span className="font-bold">{isVerified ? guardToken : 'NONE (REVOKED)'}</span>
                 </div>
-                <div className="border border-black p-2.5 bg-white flex justify-between items-center">
+                <div className="ui-outline border border-line p-2.5 bg-surface flex justify-between items-center">
                   <span className="font-bold uppercase">SSRF Check:</span>
-                  <span className={`font-bold border border-black px-1.5 py-0.5 text-[10px] ${
+                  <span className={`font-bold border border-line px-1.5 py-0.5 text-[10px] ${
                     ssrfCheck?.valid
-                      ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
-                      : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
+                      ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-primary text-white')
+                      : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-primary text-white')
                   }`}>
                     {ssrfCheck?.valid ? 'PASSED' : 'BLOCKED'}
                   </span>
@@ -204,30 +215,27 @@ export default function OverviewBoxes({
             )}
 
             {/* 48-Hour Live Countdown Banner */}
-            <div className={`border-2 border-black p-3 mb-4 bg-white ${
-              isProd && isVerified ? 'border-l-4 border-l-emerald-600' : ''
-            }`}>
+            <div className="ui-outline mb-4 border border-line bg-field p-3">
               <div className="text-[11px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-                <span>48-Hour Guard Expiry Countdown:</span>
-                <span className="text-[10px] font-bold">INTERVAL: 1s TICK</span>
+                <span>Guard expires in</span>
               </div>
               <div className={`text-2xl sm:text-3xl font-black tracking-widest ${
                 isProd && !isVerified ? 'text-rose-600' : ''
               }`}>
-                {isVerified ? (formatTimer ? formatTimer(guardTimerSeconds) : `${guardTimerSeconds ?? 0}s`) : '00:00:00 (EXPIRED)'}
+                {isVerified ? (formatTimer ? formatTimer(guardTimerSeconds) : `${guardTimerSeconds ?? 0}s`) : '—'}
               </div>
               <div className="text-[10px] opacity-75 mt-1">
-                Cryptographic DNS/HMAC probe armed. Re-verify in wizard when expired.
+                {isVerified ? 'Verify the target again after the Guard expires.' : 'Verify a target to start its Guard timer.'}
               </div>
             </div>
           </div>
 
           {/* Single Bottom Trigger Button */}
-          <div className="pt-2 border-t-2 border-black">
+          <div className="pt-2 border-t border-line">
             <button
               type="button"
               onClick={() => setActiveNav('verify')}
-              className="w-full border-2 border-black py-2.5 px-3 text-xs font-bold uppercase bg-white hover:bg-black hover:text-white transition-colors cursor-pointer flex items-center justify-center gap-2 tracking-wider"
+              className="w-full ui-outline border border-line py-2.5 px-3 text-xs font-bold uppercase bg-surface hover:bg-primary hover:text-white transition-colors cursor-pointer flex items-center justify-center gap-2 tracking-wider"
             >
               <span>MANAGE TARGET IN VERIFY WIZARD</span>
               <ArrowRight className="w-4 h-4" />
@@ -236,23 +244,23 @@ export default function OverviewBoxes({
         </div>
 
         {/* BOX 2: CAPACITY SCORECARD & STAGED PROFILE (Top-Right Read-Only) */}
-        <div className={`lg:col-span-6 border-2 border-black p-4 sm:p-5 bg-white flex flex-col justify-between ${
+        <div className={`lg:col-span-6 ui-outline border border-line p-4 sm:p-5 bg-surface flex flex-col justify-between ${
           isProd ? 'shadow-sm' : ''
         }`}>
           <div>
-            <div className="flex items-center justify-between border-b-2 border-black pb-2 mb-4 gap-2">
-              <h2 className="text-sm sm:text-base font-black uppercase tracking-wider">
-                BOX 2: CAPACITY SCORECARD &amp; STAGED PROFILE
+            <div className="flex items-center justify-between border-b border-line pb-2 mb-4 gap-2">
+              <h2 className="text-base font-bold tracking-tight">
+                Capacity and next run
               </h2>
-              <span className={`border border-black px-2 py-0.5 text-[10px] sm:text-xs font-bold uppercase shrink-0 ${headerBadgeClass}`}>
+              <span className={`border border-line px-2 py-0.5 text-[10px] sm:text-xs font-bold uppercase shrink-0 ${headerBadgeClass}`}>
                 {headerBadgeText}
               </span>
             </div>
 
             {/* 3 Read-Only KPI Mini-Boxes or Empty State */}
             {!latestScorecard ? (
-              <div className="border-2 border-dashed border-black p-5 text-center mb-4 bg-gray-50 flex flex-col items-center justify-center min-h-[90px]">
-                <div className="text-xs font-black uppercase tracking-wider text-black">
+              <div className="border-2 border-dashed border-line p-5 text-center mb-4 bg-field flex flex-col items-center justify-center min-h-[90px]">
+                <div className="text-xs font-black uppercase tracking-wider text-ink">
                   NO COMPLETED RUNS IN DATABASE
                 </div>
                 <div className="text-[10px] opacity-75 mt-1 font-bold">
@@ -262,7 +270,7 @@ export default function OverviewBoxes({
             ) : (
               <div className="space-y-2 mb-4">
                 <div className="grid grid-cols-3 gap-2 text-center">
-                  <div className={`border-2 border-black p-2.5 bg-white ${scTileBorder}`}>
+                  <div className={`ui-outline border border-line p-2.5 bg-surface ${scTileBorder}`}>
                     <div className="text-[10px] font-bold uppercase">RECOMMENDED LOAD</div>
                     <div className="text-lg sm:text-xl font-black mt-1">
                       {latestScorecard.knee_vus > 0 ? `${latestScorecard.knee_vus} VUs` : 'Capacity unavailable'}
@@ -271,14 +279,14 @@ export default function OverviewBoxes({
                       <div className="text-[9px] opacity-75 mt-0.5 leading-tight">{latestScorecard.capacity_reason}</div>
                     )}
                   </div>
-                  <div className={`border-2 border-black p-2.5 bg-white ${scTileBorder}`}>
+                  <div className={`ui-outline border border-line p-2.5 bg-surface ${scTileBorder}`}>
                     <div className="text-[10px] font-bold uppercase">PEAK RPS</div>
                     <div className="text-lg sm:text-xl font-black mt-1">
                       {Number(latestScorecard.peak_rps ?? 0).toLocaleString()} RPS
                     </div>
                     <div className="text-[9px] opacity-75">Max Throughput</div>
                   </div>
-                  <div className={`border-2 border-black p-2.5 bg-white ${scTileBorder}`}>
+                  <div className={`ui-outline border border-line p-2.5 bg-surface ${scTileBorder}`}>
                     <div className="text-[10px] font-bold uppercase">P95 LATENCY</div>
                     <div className="text-lg sm:text-xl font-black mt-1">
                       {scP95 == null ? 'Unavailable' : `${scP95} ms`}
@@ -292,7 +300,7 @@ export default function OverviewBoxes({
                 </div>
 
                 {(scVerdict || scErr != null || latestScorecard.elapsed_sec != null) && (
-                  <div className="border border-black px-2.5 py-1.5 bg-gray-50 flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
+                  <div className="border border-line px-2.5 py-1.5 bg-field flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
                     <div className="flex items-center gap-2">
                       {scVerdict && (
                         <span className={`border px-1.5 py-0.2 font-bold uppercase ${scVerdictBadgeClass}`}>
@@ -310,7 +318,7 @@ export default function OverviewBoxes({
 
                 {latestRunSummary?.run_id && latestRunSummary.run_id !== latestScorecard.run_id && latestRunSummary.verdict && latestRunSummary.verdict !== 'PASSED' && (
                   <div className={`border px-2.5 py-1.5 text-[10px] font-mono ${
-                    isProd ? 'border-rose-400 bg-rose-50 text-rose-900' : 'border-black bg-white'
+                    isProd ? 'border-rose-400 bg-rose-50 text-rose-900' : 'border-line bg-surface'
                   }`}>
                     Latest run <strong>{latestRunSummary.run_id}</strong> ended <strong>{latestRunSummary.verdict}</strong>
                     {latestRunSummary.error_pct != null ? ` (${latestRunSummary.error_pct}% err` : ''}
@@ -321,10 +329,10 @@ export default function OverviewBoxes({
             )}
 
             {/* Staged Config Summary Box */}
-            <div className="border-2 border-black p-3 mb-4 bg-white text-xs">
-              <div className="font-bold uppercase border-b border-black pb-1 mb-2 flex justify-between items-center">
+            <div className="ui-outline border border-line p-3 mb-4 bg-surface text-xs">
+              <div className="font-bold uppercase border-b border-line pb-1 mb-2 flex justify-between items-center">
                 <span>STAGED TRAFFIC PROFILE:</span>
-                <span className={`text-[10px] border border-black px-1.5 py-0.2 ${stagedStatusClass}`}>
+                <span className={`text-[10px] border border-line px-1.5 py-0.2 ${stagedStatusClass}`}>
                   {stagedStatus}
                 </span>
               </div>
@@ -343,7 +351,7 @@ export default function OverviewBoxes({
               </div>
               {sameProcessLoopback && vus > 50 && (
                 <div className={`mt-2 border p-1.5 text-[10px] font-mono ${
-                  isProd ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-black bg-white'
+                  isProd ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-line bg-surface'
                 }`}>
                   {loopbackAdvisory || `Loopback advisory: ${vus} VUs against a local/sandbox target competes for the same host CPU above ~50 VUs.`}
                 </div>
@@ -352,11 +360,11 @@ export default function OverviewBoxes({
           </div>
 
           {/* Staged Traffic Profile Action */}
-          <div className="pt-2 border-t-2 border-black flex gap-2">
+          <div className="pt-2 border-t border-line flex gap-2">
             <button
               type="button"
               onClick={() => setActiveNav('traffic')}
-              className="flex-1 border-2 border-black py-2.5 px-3 text-xs font-bold uppercase bg-white hover:bg-black hover:text-white transition-colors cursor-pointer flex items-center justify-center gap-1.5 tracking-wider"
+              className="flex-1 ui-outline border border-line py-2.5 px-3 text-xs font-bold uppercase bg-surface hover:bg-primary hover:text-white transition-colors cursor-pointer flex items-center justify-center gap-1.5 tracking-wider"
             >
               <span>ADJUST PROFILE IN TRAFFIC SETUP</span>
               <ArrowRight className="w-4 h-4" />
@@ -364,8 +372,8 @@ export default function OverviewBoxes({
             <button
               type="button"
               onClick={() => setActiveNav('reports')}
-              className={`border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer ${
-                isProd ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-black text-white hover:bg-white hover:text-black'
+              className={`border border-line py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer ${
+                isProd ? 'bg-primary text-white hover:bg-primary-hover' : 'bg-primary text-white hover:bg-surface hover:text-ink'
               }`}
             >
               REPORTS →
@@ -375,18 +383,18 @@ export default function OverviewBoxes({
       </div>
 
       {/* BOX 3: LIVE TELEMETRY STREAM & TELEMETRY CONTROLS (Full-Width Bottom Box) */}
-      <div className={`border-2 border-black p-4 sm:p-5 bg-white space-y-4 ${
+      <div className={`ui-outline border border-line p-4 sm:p-5 bg-surface space-y-4 ${
         isProd ? 'shadow-sm' : ''
       }`}>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b-2 border-black pb-3 gap-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-line pb-3 gap-2">
           <div>
-            <h2 className="text-base font-black uppercase tracking-wider flex items-center gap-2">
-              <span className={`inline-block w-3 h-3 border-2 border-black ${
+            <h2 className="flex items-center gap-2 text-lg font-bold tracking-tight">
+              <span aria-hidden="true" className={`inline-block w-2.5 h-2.5 rounded-full ${
                 testRunning
-                  ? (isProd ? 'bg-emerald-500 animate-ping' : 'bg-black animate-ping')
-                  : 'bg-white'
+                  ? (isProd ? 'bg-emerald-500 animate-ping' : 'bg-primary animate-ping')
+                  : 'bg-surface'
               }`} />
-              <span>BOX 3: LIVE TELEMETRY STREAM &amp; EXECUTION</span>
+              <span>Live telemetry</span>
             </h2>
             <p className="text-xs opacity-75">
               Real-time metrics sampled at 1s intervals. Circuit breaker monitors 429/5xx rates, rolling p95 ceiling, &gt;30% timeouts, WAF 403 blocks, RAM budget &amp; guard expiry.
@@ -395,7 +403,7 @@ export default function OverviewBoxes({
 
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold uppercase">Elapsed:</span>
-            <span className="border-2 border-black px-2.5 py-1 text-sm font-black bg-white">
+            <span className="ui-outline border border-line px-2.5 py-1 text-sm font-black bg-surface">
               {String(Math.floor(elapsed / 60)).padStart(2, '0')}:{String(elapsed % 60).padStart(2, '0')} / {String(Math.floor(duration / 60)).padStart(2, '0')}:{String(duration % 60).padStart(2, '0')}
             </span>
           </div>
@@ -403,21 +411,21 @@ export default function OverviewBoxes({
 
         {/* 6 Real-Time Telemetry KPI Tiles */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <div className="border-2 border-black p-3 bg-white text-center">
+          <div className="ui-outline border border-line p-3 bg-field text-left">
             <div className="text-[10px] font-bold uppercase">CURRENT VUs</div>
-            <div className="text-xl sm:text-2xl font-black mt-1">{telemetry.currentVus ?? 0}</div>
+            <div className="text-xl sm:text-2xl font-bold tabular-nums mt-1">{telemetry.currentVus ?? 0}</div>
             <div className="text-[9px] opacity-75">Target: {vus}</div>
           </div>
-          <div className="border-2 border-black p-3 bg-white text-center">
+          <div className="ui-outline border border-line p-3 bg-field text-left">
             <div className="text-[10px] font-bold uppercase">LIVE RPS</div>
-            <div className="text-xl sm:text-2xl font-black mt-1">
+            <div className="text-xl sm:text-2xl font-bold tabular-nums mt-1">
               {Number(telemetry.liveRps ?? 0).toLocaleString()}
             </div>
             <div className="text-[9px] opacity-75">Req/sec</div>
           </div>
-          <div className="border-2 border-black p-3 bg-white text-center">
+          <div className="ui-outline border border-line p-3 bg-field text-left">
             <div className="text-[10px] font-bold uppercase">P95 LATENCY</div>
-            <div className={`text-xl sm:text-2xl font-black mt-1 ${
+            <div className={`text-xl sm:text-2xl font-bold tabular-nums mt-1 ${
               isProd && (telemetry.p95Latency ?? 0) >= p95Cap
                 ? 'text-rose-600'
                 : isProd && (telemetry.p95Latency ?? 0) >= 0.8 * p95Cap
@@ -428,40 +436,49 @@ export default function OverviewBoxes({
             </div>
             <div className="text-[9px] opacity-75">Ceiling: {Number(p95Cap).toLocaleString()} ms</div>
           </div>
-          <div className="border-2 border-black p-3 bg-white text-center">
+          <div className="ui-outline border border-line p-3 bg-field text-left">
             <div className="text-[10px] font-bold uppercase">ERROR RATE</div>
-            <div className={`text-xl sm:text-2xl font-black mt-1 ${
+            <div className={`text-xl sm:text-2xl font-bold tabular-nums mt-1 ${
               (telemetry?.errorRate || 0) > 0
-                ? (isProd ? 'text-rose-600' : 'text-black')
-                : (isProd ? 'text-emerald-600' : 'text-black')
+                ? (isProd ? 'text-rose-600' : 'text-ink')
+                : (isProd ? 'text-emerald-600' : 'text-ink')
             }`}>
               {(Number(telemetry?.errorRate || 0)).toFixed(1)}%
             </div>
             <div className="text-[9px] opacity-75">5xx Limit: {errCap}% · All errors shown</div>
           </div>
-          <div className="border-2 border-black p-3 bg-white text-center">
+          <div className="ui-outline border border-line p-3 bg-field text-left">
             <div className="text-[10px] font-bold uppercase">CIRCUIT BREAKER</div>
-            <div className={`text-xs font-black mt-2 border border-black px-1 py-0.5 uppercase ${
+            <div className={`text-xs font-black mt-2 border border-line px-1 py-0.5 uppercase ${
               breakerAlert
-                ? (isProd ? 'bg-rose-600 text-white' : 'bg-black text-white')
+                ? (isProd ? 'bg-rose-600 text-white' : 'bg-primary text-white')
                 : breakerWarn
-                ? (isProd ? 'bg-amber-100 text-amber-900' : 'bg-white text-black')
-                : (isProd ? 'bg-emerald-100 text-emerald-800' : 'bg-white text-black')
+                ? (isProd ? 'bg-amber-100 text-amber-900' : 'bg-surface text-ink')
+                : (isProd ? 'bg-emerald-100 text-emerald-800' : 'bg-surface text-ink')
             }`}>
               {activeBreakerText}
             </div>
             <div className="text-[9px] opacity-75 mt-1">Automatic safety stops</div>
           </div>
-          <div className="border-2 border-black p-3 bg-white text-center">
+          <div className="ui-outline border border-line p-3 bg-field text-left">
             <div className="text-[10px] font-bold uppercase">DISCARDED STREAM</div>
-            <div className="text-xl sm:text-2xl font-black mt-1">{telemetry.bytesDiscardedMb ?? 0} MB</div>
+            <div className="text-xl sm:text-2xl font-bold tabular-nums mt-1">{telemetry.bytesDiscardedMb ?? 0} MB</div>
             <div className="text-[9px] opacity-75">4KB Chunk Discard</div>
           </div>
         </div>
 
+        {/* Unified Live Health Timeline Chart */}
+        <ProjectHealthChart
+          timelinePoints={timelinePoints}
+          crashSummary={crashSummary}
+          projectName={projectName}
+          live={testRunning}
+          themeMode={themeMode}
+        />
+
         {/* Compact Status Breakdown Bar */}
         {showStatusBreakdown && (
-          <div className="border border-black p-2.5 bg-gray-50 flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono">
+          <div className="border border-line p-2.5 bg-field flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono">
             <span className="font-bold uppercase">Request Breakdown:</span>
             <div className="flex flex-wrap items-center gap-3">
               <span>Total: <strong>{totalReqs.toLocaleString()}</strong></span>
@@ -477,10 +494,25 @@ export default function OverviewBoxes({
           </div>
         )}
 
+        {/* CDN Edge-Cache Warning Banner */}
+        {cdnCacheWarning && (
+          <div role="status" className={`border-2 p-3 flex flex-wrap items-center justify-between gap-2 text-xs font-mono ${
+            isProd ? 'border-amber-500 bg-amber-50 text-amber-950' : 'border-line bg-surface text-ink'
+          }`}>
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+              <span>
+                <strong>CDN Cache Detected ({Number(cacheHitPct || 0).toFixed(1)}% HIT):</strong>{' '}
+                Responses are being served by a CDN edge cache instead of reaching your origin server. Keep Cache Buster enabled in Traffic Setup or target an uncached origin route.
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Post-run tripped / aborted outcome banner */}
         {postRunBannerReason && (
           <div role="status" className={`border-2 p-3 flex flex-wrap items-center justify-between gap-2 text-xs font-mono ${
-            isProd ? 'border-rose-500 bg-rose-50 text-rose-900' : 'border-black bg-white text-black'
+            isProd ? 'border-rose-500 bg-rose-50 text-rose-900' : 'border-line bg-surface text-ink'
           }`}>
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -513,8 +545,30 @@ export default function OverviewBoxes({
         )}
 
         {/* Start / Stop & Fault Injection Controls */}
-        <div className="border-t-2 border-black pt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="border-t border-line pt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+            {!testRunning && (
+              <div className="flex flex-col min-w-[200px] sm:w-56">
+                <label htmlFor="overview-project-name" className="text-[10px] font-bold uppercase tracking-wider mb-0.5 flex items-center justify-between">
+                  <span>Project Name</span>
+                  {projectName && projectNameSource && (
+                    <span className="text-[9px] px-1 border border-line/40 bg-soft">
+                      {projectNameSource === 'custom' ? 'CUSTOM' : 'AUTO'}
+                    </span>
+                  )}
+                </label>
+                <input
+                  id="overview-project-name"
+                  type="text"
+                  maxLength={80}
+                  value={projectName}
+                  onChange={(e) => setProjectName?.(e.target.value)}
+                  onBlur={() => onSaveProjectName?.()}
+                  placeholder="Optional Project Name"
+                  className="ui-outline border border-line px-2 py-1.5 text-xs font-mono bg-surface text-ink focus:outline-none"
+                />
+              </div>
+            )}
             {!testRunning && !canStart ? (
               <p role="status" className="text-xs">
                 {launching ? 'Starting load test…' : statusUnavailable ? 'Run status unavailable. Retrying…' : 'Checking run status…'}
@@ -524,10 +578,10 @@ export default function OverviewBoxes({
                 type="button"
                 onClick={handleStartTest}
                 disabled={startDisabled}
-                className={`flex-1 sm:flex-none border-2 border-black px-6 py-2.5 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors ${
+                className={`flex-1 sm:flex-none border border-line px-6 py-2.5 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors ${
                   !startDisabled
-                    ? (isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
-                    : 'bg-white text-black opacity-40 cursor-not-allowed'
+                    ? (isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer' : 'bg-primary text-white hover:bg-surface hover:text-ink cursor-pointer')
+                    : 'bg-surface text-ink opacity-40 cursor-not-allowed'
                 }`}
               >
                 <Play className="w-4 h-4" />
@@ -538,8 +592,8 @@ export default function OverviewBoxes({
                 type="button"
                 onClick={handleStopTest}
                 disabled={stopping}
-                className={`flex-1 sm:flex-none border-2 border-black px-6 py-2.5 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer ${
-                  isProd ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-black text-white hover:bg-white hover:text-black'
+                className={`flex-1 sm:flex-none border border-line px-6 py-2.5 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                  isProd ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-primary text-white hover:bg-surface hover:text-ink'
                 }`}
               >
                 <StopSquare className="w-4 h-4" />
@@ -556,10 +610,10 @@ export default function OverviewBoxes({
               type="button"
               onClick={handleSimulateSpike}
               disabled={!testRunning}
-              className={`border-2 border-black px-4 py-2.5 text-xs font-bold uppercase transition-colors flex items-center gap-1.5 ${
+              className={`border border-line px-4 py-2.5 text-xs font-bold uppercase transition-colors flex items-center gap-1.5 ${
                 testRunning
-                  ? (isProd ? 'bg-amber-500 text-black hover:bg-amber-600 cursor-pointer' : 'bg-black text-white hover:bg-white hover:text-black cursor-pointer')
-                  : 'bg-white text-black opacity-40 cursor-not-allowed'
+                  ? (isProd ? 'bg-amber-500 text-ink hover:bg-amber-600 cursor-pointer' : 'bg-primary text-white hover:bg-surface hover:text-ink cursor-pointer')
+                  : 'bg-surface text-ink opacity-40 cursor-not-allowed'
               }`}
             >
               <Zap className="w-3.5 h-3.5" />
@@ -570,15 +624,15 @@ export default function OverviewBoxes({
 
         {/* Multi-Step Journey Step Telemetry Table */}
         {useJourney && (
-          <div className="border-2 border-black p-3.5 bg-white space-y-2 font-mono">
-            <div className="flex items-center justify-between border-b border-black pb-1.5">
+          <div className="ui-outline border border-line p-3.5 bg-surface space-y-2 font-mono">
+            <div className="flex items-center justify-between border-b border-line pb-1.5">
               <span className="font-bold text-xs uppercase tracking-wider flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5" />
                 <span>MULTI-STEP JOURNEY STEP TELEMETRY</span>
                 <span className="text-[10px] opacity-70 font-normal">(4 KB Chunk-Discard Enforced)</span>
               </span>
-              <span className={`border border-black px-1.5 py-0.5 text-[10px] font-bold ${
-                isProd && testRunning ? 'bg-emerald-600 text-white' : 'bg-black text-white'
+              <span className={`border border-line px-1.5 py-0.5 text-[10px] font-bold ${
+                isProd && testRunning ? 'bg-emerald-600 text-white' : 'bg-primary text-white'
               }`}>
                 {testRunning ? 'STREAMING' : 'CONFIGURED'}
               </span>
@@ -586,7 +640,7 @@ export default function OverviewBoxes({
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-[11px]">
                 <thead>
-                  <tr className="border-b-2 border-black">
+                  <tr className="border-b border-line">
                     <th className="py-1 px-1.5">STEP</th>
                     <th className="py-1 px-1.5">METHOD</th>
                     <th className="py-1 px-1.5">PATH</th>
@@ -606,13 +660,13 @@ export default function OverviewBoxes({
                     </tr>
                   ) : (
                     stepMetrics.map((sm, idx) => (
-                      <tr key={sm.step_id || idx} className="border-b border-black/30 hover:bg-black/5">
+                      <tr key={sm.step_id || idx} className="border-b border-line/30 hover:bg-soft">
                         <td className="py-1 px-1.5 font-bold">{sm.name || `Step ${idx + 1}`}</td>
                         <td className="py-1 px-1.5">
-                          <span className={`border border-black px-1 py-0.2 text-[9px] font-bold ${
+                          <span className={`border border-line px-1 py-0.2 text-[9px] font-bold ${
                             sm.method === 'POST'
-                              ? (isProd ? 'bg-teal-700 text-white' : 'bg-black text-white')
-                              : 'bg-white text-black'
+                              ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                              : 'bg-surface text-ink'
                           }`}>
                             {sm.method}
                           </span>
@@ -623,7 +677,7 @@ export default function OverviewBoxes({
                           {sm.passed ?? 'Unavailable'}
                         </td>
                         <td className={`py-1 px-1.5 text-right font-bold ${
-                          sm.failed > 0 ? (isProd ? 'text-rose-600' : 'text-black') : ''
+                          sm.failed > 0 ? (isProd ? 'text-rose-600' : 'text-ink') : ''
                         }`}>
                           {sm.failed ?? 'Unavailable'}
                         </td>
@@ -633,10 +687,10 @@ export default function OverviewBoxes({
                         <td className="py-1 px-1.5 text-center">
                           <span className={`border px-1.5 py-0.5 text-[9px] font-bold ${
                             !sm.last_status
-                              ? 'bg-gray-100 text-black/70 border-black/40'
+                              ? 'bg-field text-muted border-line'
                               : sm.last_status >= 200 && sm.last_status < 400
-                              ? (isProd ? 'bg-emerald-600 text-white border-black' : 'bg-black text-white border-black')
-                              : (isProd ? 'bg-rose-600 text-white border-black' : 'bg-white text-black border-black')
+                              ? (isProd ? 'bg-emerald-600 text-white border-line' : 'bg-primary text-white border-line')
+                              : (isProd ? 'bg-rose-600 text-white border-line' : 'bg-surface text-ink border-line')
                           }`}>
                             {sm.last_status || '---'}
                           </span>
@@ -648,6 +702,15 @@ export default function OverviewBoxes({
               </table>
             </div>
           </div>
+        )}
+
+        {(crashSummary || (failureBreakdown && failureBreakdown.length > 0)) && (
+          <FailureDiagnosisCard
+            failureBreakdown={failureBreakdown}
+            crashSummary={crashSummary}
+            themeMode={themeMode}
+            compact
+          />
         )}
       </div>
     </div>

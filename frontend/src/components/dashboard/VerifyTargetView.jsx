@@ -19,6 +19,10 @@ import {
 
 export default function VerifyTargetView({
   targetUrl,
+  projectName = '',
+  setProjectName,
+  projectNameSource = '',
+  onSaveProjectName,
   requiresTargetQuery,
   setTargetUrl,
   sandboxMode,
@@ -56,10 +60,10 @@ export default function VerifyTargetView({
   return (
     <div className="space-y-6">
       {/* View Header */}
-      <div className="border-b-2 border-black pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+      <div className="border-b border-line pb-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-black uppercase tracking-wider">
-            TARGET VERIFICATION
+          <h1 className="ui-page-title">
+            Verify target
           </h1>
           <p className="text-xs opacity-75">
             {sandboxMode ? 'Verify the local sandbox before starting a test.' : 'Verify target ownership with pusher_guard.py before starting a test.'}
@@ -68,31 +72,31 @@ export default function VerifyTargetView({
         <button
           type="button"
           onClick={() => setActiveNav('dashboard')}
-          className="border-2 border-black px-3 py-1 text-xs font-bold uppercase hover:bg-black hover:text-white transition-colors cursor-pointer"
+          className="border border-line px-3 py-1 text-xs font-bold uppercase hover:bg-primary hover:text-white transition-colors cursor-pointer"
         >
           ← Back to Dashboard
         </button>
       </div>
 
       {/* Quota & Device Lock Ribbon */}
-      <div className={`border-2 border-black p-3.5 bg-white flex flex-col md:flex-row items-start md:items-center justify-between gap-3 ${
-        isProd ? 'shadow-sm border-l-4 border-l-teal-700' : ''
+      <div className={`ui-outline border border-line p-3.5 bg-surface flex flex-col md:flex-row items-start md:items-center justify-between gap-3 ${
+        isProd ? 'shadow-sm' : ''
       }`}>
         <div className="flex flex-wrap items-center gap-3">
           {!sandboxMode && <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
             <Clock className="w-4 h-4" />
             <span>DAILY GUARD QUOTA:</span>
           </span>}
-          {!sandboxMode && <span className={`border-2 border-black px-2.5 py-0.5 text-xs font-black uppercase tracking-wider ${
+          {!sandboxMode && <span className={`border border-line px-2.5 py-0.5 text-xs font-black uppercase tracking-wider ${
             isQuotaDepleted
-              ? (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-black text-white')
-              : (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
+              ? (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-primary text-white')
+              : (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-primary text-white')
           }`}>
             {quotaRemaining} / {guardQuota.max || 3} REMAINING (24H LIMIT)
           </span>}
 
           {/* Hardware Device Lock Badge */}
-          <div className="flex items-center gap-1.5 border-2 border-black px-2.5 py-0.5 text-xs font-mono font-bold bg-white">
+          <div className="flex items-center gap-1.5 ui-outline border border-line px-2.5 py-0.5 text-xs font-mono font-bold bg-surface">
             <Laptop className="w-3.5 h-3.5 text-teal-700" />
             <span className="opacity-75 uppercase">DEVICE LOCK:</span>
             <span className="font-black text-teal-800">BOUND TO {deviceId}</span>
@@ -105,8 +109,8 @@ export default function VerifyTargetView({
               <Flame className={`w-3.5 h-3.5 ${isProd ? 'text-amber-600' : ''}`} />
               <span>BURN REGISTRY:</span>
             </span>
-            <span className={`border border-black px-2 py-0.5 text-[10px] font-bold ${
-              isProd ? 'bg-slate-100 text-slate-800' : 'bg-white'
+            <span className={`border border-line px-2 py-0.5 text-[10px] font-bold ${
+              isProd ? 'bg-soft text-ink' : 'bg-surface'
             }`}>
               {guardQuota.revokedCount} ID{guardQuota.revokedCount > 1 ? 's' : ''} BURNED (SQLITE)
             </span>
@@ -121,7 +125,7 @@ export default function VerifyTargetView({
 
       {/* Irreversible Burn Alert Banner */}
       {lastBurnReason && (
-        <div className="border-2 border-black p-3.5 bg-rose-50 border-l-8 border-l-rose-600 text-rose-950 font-mono text-xs space-y-1 shadow-sm">
+        <div className="space-y-1 rounded-xl border border-rose-600/50 bg-rose-50 p-3.5 text-sm text-rose-950">
           <div className="font-black flex items-center gap-2 text-rose-800 uppercase tracking-wider text-xs">
             <AlertOctagon className="w-4 h-4 shrink-0" />
             <span>
@@ -140,8 +144,8 @@ export default function VerifyTargetView({
 
       {/* Superseded Notification Banner */}
       {supersededNotice && (
-        <div className={`border-2 border-black p-3 text-xs font-bold flex items-center justify-between ${
-          isProd ? 'bg-amber-100 text-amber-950 border-amber-500' : 'bg-black text-white'
+        <div className={`border border-line p-3 text-xs font-bold flex items-center justify-between ${
+          isProd ? 'bg-amber-100 text-amber-950 border-amber-500' : 'bg-primary text-white'
         }`}>
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -152,8 +156,8 @@ export default function VerifyTargetView({
 
       {/* Quota Depleted Warning Banner */}
       {!sandboxMode && isQuotaDepleted && (
-        <div className={`border-2 border-black p-3 text-xs font-bold flex items-center gap-2 ${
-          isProd ? 'bg-rose-50 text-rose-900 border-rose-500' : 'bg-black text-white'
+        <div className={`border border-line p-3 text-xs font-bold flex items-center gap-2 ${
+          isProd ? 'bg-rose-50 text-rose-900 border-rose-500' : 'bg-primary text-white'
         }`}>
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span>
@@ -164,18 +168,18 @@ export default function VerifyTargetView({
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Full Interactive Verification Wizard */}
-        <div className={`lg:col-span-7 border-2 border-black p-5 bg-white space-y-4 ${
+        <div className={`lg:col-span-7 ui-outline border border-line p-5 bg-surface space-y-4 ${
           isProd ? 'shadow-sm' : ''
         }`}>
-          <div className="flex items-center justify-between border-b-2 border-black pb-2">
+          <div className="flex items-center justify-between border-b border-line pb-2">
             <h2 className="text-sm font-black uppercase">
               {sandboxMode ? 'LOCAL SANDBOX' : 'DOMAIN OWNERSHIP VERIFICATION'}
             </h2>
             <span
-              className={`border border-black px-2 py-0.5 text-xs font-bold uppercase ${
+              className={`border border-line px-2 py-0.5 text-xs font-bold uppercase ${
                 isVerified
-                  ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white')
-                  : (isProd ? 'bg-rose-100 text-rose-800 border-rose-400' : 'bg-white text-black')
+                  ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-primary text-white')
+                  : (isProd ? 'bg-rose-100 text-rose-800 border-rose-400' : 'bg-surface text-ink')
               }`}
             >
               {isVerified ? 'STATUS: VERIFIED' : 'STATUS: UNVERIFIED'}
@@ -194,7 +198,7 @@ export default function VerifyTargetView({
                 setVerificationError(null);
               }}
               placeholder={sandboxMode ? sandboxTargetUrl : 'https://your-deployed-app.com'}
-              className="w-full border-2 border-black p-2 text-xs font-mono bg-white text-black focus:outline-none focus:bg-black focus:text-white"
+              className="w-full ui-outline border border-line p-2 text-xs font-mono bg-surface text-ink focus:outline-none focus:bg-primary focus:text-white"
             />
             {verifiedOrigin && !isVerified && (
               <p className="text-[11px]">
@@ -203,14 +207,41 @@ export default function VerifyTargetView({
             )}
           </div>
 
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="verify-project-name" className="text-xs font-bold uppercase block">
+                Project Name:
+              </label>
+              {projectName && projectNameSource && (
+                <span className={`border border-line px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                  projectNameSource === 'custom'
+                    ? (isProd ? 'bg-primary text-white' : 'bg-primary text-white')
+                    : (isProd ? 'bg-emerald-100 text-emerald-900 border-emerald-500' : 'bg-surface text-ink')
+                }`}>
+                  {projectNameSource === 'custom' ? 'Custom' : 'Auto-detected'}
+                </span>
+              )}
+            </div>
+            <input
+              id="verify-project-name"
+              type="text"
+              maxLength={80}
+              value={projectName}
+              onChange={(e) => setProjectName?.(e.target.value)}
+              onBlur={() => onSaveProjectName?.()}
+              placeholder="e.g. Veribite API or My Web App"
+              className="w-full ui-outline border border-line p-2 text-xs font-mono bg-surface text-ink focus:outline-none focus:bg-field"
+            />
+          </div>
+
           {/* Real-time Dynamic URL Reachability, DNS & SSRF Diagnostic Ribbon */}
           <div
             className={`border-2 p-3 text-xs font-mono transition-all ${
               urlValidation.checking
-                ? 'bg-slate-100 border-slate-400 text-slate-800'
+                ? 'bg-soft border-slate-400 text-ink'
                 : urlValidation.ready
-                ? (isProd ? 'bg-emerald-50 border-emerald-500 text-emerald-900 shadow-sm' : 'bg-white text-black border-black')
-                : (isProd ? 'bg-rose-50 border-rose-500 text-rose-950 shadow-sm' : 'bg-black text-white border-black')
+                ? (isProd ? 'bg-emerald-50 border-emerald-500 text-emerald-900 shadow-sm' : 'bg-surface text-ink border-line')
+                : (isProd ? 'bg-rose-50 border-rose-500 text-rose-950 shadow-sm' : 'bg-primary text-white border-line')
             }`}
           >
             <div className="flex items-center justify-between gap-2">
@@ -231,10 +262,10 @@ export default function VerifyTargetView({
               <span
                 className={`text-[10px] font-black border px-1.5 py-0.5 uppercase tracking-wider shrink-0 ${
                   urlValidation.checking
-                    ? 'border-slate-500 bg-white text-slate-700'
+                    ? 'border-slate-500 bg-surface text-ink'
                     : urlValidation.ready
-                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-black text-white border-black')
-                    : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-black border-black')
+                    ? (isProd ? 'bg-emerald-600 text-white border-emerald-700' : 'bg-primary text-white border-line')
+                    : (isProd ? 'bg-rose-600 text-white border-rose-700' : 'bg-surface text-ink border-line')
                 }`}
               >
                 {urlValidation.checking
@@ -258,7 +289,7 @@ export default function VerifyTargetView({
                     onClick={() => {
                       setTargetUrl(suggestion);
                     }}
-                    className="px-2.5 py-1 bg-white hover:bg-teal-700 hover:text-white text-teal-900 border-2 border-teal-600 text-xs font-mono font-bold transition-colors cursor-pointer shadow-xs"
+                    className="px-2.5 py-1 bg-surface hover:bg-primary hover:text-white text-teal-900 border-2 border-teal-600 text-xs font-mono font-bold transition-colors cursor-pointer shadow-xs"
                     title={`Click to use ${suggestion}`}
                   >
                     {suggestion}
@@ -277,7 +308,7 @@ export default function VerifyTargetView({
               type="button"
               aria-pressed={sandboxMode}
               onClick={handleToggleSandbox}
-              className="w-full border-2 border-black p-3 bg-white flex items-center justify-between text-left cursor-pointer"
+              className="w-full ui-outline border border-line p-3 bg-surface flex items-center justify-between text-left cursor-pointer"
             >
               <span className="text-xs font-bold uppercase">Sandbox Simulation Target</span>
               {sandboxMode ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5" />}
@@ -285,10 +316,10 @@ export default function VerifyTargetView({
           )}
 
           {/* Step 2: Download Sealed pusher_guard.py */}
-          {!sandboxMode && <div className="border-2 border-black p-3.5 bg-white space-y-3">
+          {!sandboxMode && <div className="ui-outline border border-line p-3.5 bg-surface space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase">2. Install Ownership Guard</span>
-              <span className="text-[10px] font-bold border border-black px-1.5 py-0.5">
+              <span className="text-[10px] font-bold border border-line px-1.5 py-0.5">
                 ACTIVE ID: {guardToken || 'NONE'}
               </span>
             </div>
@@ -299,10 +330,10 @@ export default function VerifyTargetView({
               type="button"
               onClick={handleDownloadGuard}
               disabled={isQuotaDepleted || hasActiveGuard || (urlValidation.checking || !urlValidation.ready)}
-              className={`w-full border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors flex items-center justify-center gap-2 ${
+              className={`w-full border border-line py-2.5 px-3 text-xs font-bold uppercase transition-colors flex items-center justify-center gap-2 ${
                 isQuotaDepleted || hasActiveGuard || (urlValidation.checking || !urlValidation.ready)
-                  ? 'bg-slate-100 text-black/60 opacity-60 cursor-not-allowed border-black/40'
-                  : 'bg-white hover:bg-black hover:text-white cursor-pointer'
+                  ? 'bg-soft text-muted opacity-60 cursor-not-allowed border-line/40'
+                  : 'bg-surface hover:bg-primary hover:text-white cursor-pointer'
               }`}
             >
               <Download className="w-4 h-4" />
@@ -321,15 +352,15 @@ export default function VerifyTargetView({
           </div>}
 
           {/* Step 3: Run Challenge Handshake */}
-          <div className="border-2 border-black p-3.5 bg-white space-y-3">
+          <div className="ui-outline border border-line p-3.5 bg-surface space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase">
                 {sandboxMode ? 'Verify Local Sandbox' : '3. Execute Live Cryptographic Handshake'}
               </span>
-              <span className={`text-[10px] font-bold border border-black px-1.5 py-0.5 ${
+              <span className={`text-[10px] font-bold border border-line px-1.5 py-0.5 ${
                 isVerified
-                  ? (isProd ? 'bg-emerald-600 text-white' : 'bg-black text-white')
-                  : 'bg-white text-black'
+                  ? (isProd ? 'bg-emerald-600 text-white' : 'bg-primary text-white')
+                  : 'bg-surface text-ink'
               }`}>
                 {isVerified ? 'VERIFIED' : 'PENDING'}
               </span>
@@ -345,7 +376,7 @@ export default function VerifyTargetView({
 
             {verificationError && (
               <div className={`border p-2.5 text-xs font-bold flex items-center gap-2 ${
-                isProd ? 'bg-rose-50 border-rose-400 text-rose-800' : 'bg-black text-white border-black'
+                isProd ? 'bg-rose-50 border-rose-400 text-rose-800' : 'bg-primary text-white border-line'
               }`}>
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>{verificationError}</span>
@@ -357,8 +388,8 @@ export default function VerifyTargetView({
                 type="button"
                 onClick={handleVerifyTarget}
                 disabled={sandboxRequiresRevocation}
-                className={`flex-1 min-w-[160px] border-2 border-black py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
-                  isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-black text-white hover:bg-white hover:text-black'
+                className={`flex-1 min-w-[160px] border border-line py-2.5 px-3 text-xs font-black uppercase transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  isProd ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-primary text-white hover:bg-surface hover:text-ink'
                 }`}
               >
                 <Shield className="w-4 h-4" />
@@ -368,8 +399,8 @@ export default function VerifyTargetView({
                 <button
                   type="button"
                   onClick={handleKillGuard}
-                  className={`border-2 border-black py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
-                    isProd ? 'bg-rose-100 text-rose-800 border-rose-400 hover:bg-rose-200' : 'bg-white text-black hover:bg-black hover:text-white'
+                  className={`border border-line py-2.5 px-3 text-xs font-bold uppercase transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                    isProd ? 'bg-rose-100 text-rose-800 border-rose-400 hover:bg-rose-200' : 'bg-surface text-ink hover:bg-primary hover:text-white'
                   }`}
                 >
                   <Flame className="w-3.5 h-3.5" />
@@ -383,15 +414,15 @@ export default function VerifyTargetView({
         {/* Right: Technical Spec & WAF Mini-Screen Preview */}
         <div className="lg:col-span-5 space-y-4">
           {/* 48-Hour Live Countdown Card */}
-          <div className={`border-2 border-black p-4 bg-white ${
-            isProd ? 'shadow-sm border-l-4 border-l-emerald-600' : ''
+          <div className={`ui-outline border border-line p-4 bg-surface ${
+            isProd ? 'shadow-sm' : ''
           }`}>
             <div className="text-xs font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
               <span>48-Hour Active Session Timer:</span>
-              <span className={`text-[10px] font-bold border border-black px-1.5 py-0.5 ${
+              <span className={`text-[10px] font-bold border border-line px-1.5 py-0.5 ${
                 isGuardVerified
-                  ? (isProd ? 'bg-emerald-600 text-white' : 'bg-black text-white')
-                  : 'bg-white'
+                  ? (isProd ? 'bg-emerald-600 text-white' : 'bg-primary text-white')
+                  : 'bg-surface'
               }`}>
                 {isGuardVerified ? 'TICKING' : 'LOCKED'}
               </span>
@@ -404,7 +435,7 @@ export default function VerifyTargetView({
             </p>
           </div>
 
-          <div className="border-2 border-black p-4 bg-white space-y-2">
+          <div className="ui-outline border border-line p-4 bg-surface space-y-2">
             <h3 className="text-xs font-bold uppercase">Target verification</h3>
             {!sandboxMode && (
               <p className="text-[11px]">Install the current ownership Guard and verify it from Pusher. Target traffic keeps the app’s usual security checks.</p>
@@ -416,8 +447,8 @@ export default function VerifyTargetView({
           </div>
 
           {/* Locked Security Invariants */}
-          {!sandboxMode && <div className="border-2 border-black p-3.5 bg-white text-xs font-mono space-y-1.5">
-            <div className="font-bold uppercase border-b border-black pb-1">
+          {!sandboxMode && <div className="ui-outline border border-line p-3.5 bg-surface text-xs font-mono space-y-1.5">
+            <div className="font-bold uppercase border-b border-line pb-1">
               Enforced Security Invariants:
             </div>
             <ul className="text-[10px] opacity-80 space-y-1 list-disc list-inside">

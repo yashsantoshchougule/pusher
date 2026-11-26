@@ -26,7 +26,10 @@ from backend.core.load_engine import (
     DEFAULT_RAM_CEILING_MB,
     MAX_REQUESTED_VUS,
     CHUNK_SIZE_BYTES,
+    register_ws_watcher,
+    unregister_ws_watcher,
 )
+from backend.core.run_manager import run_manager
 from backend.core.target_policy import origin
 from backend.core.target_service import (
     active_target,
@@ -37,6 +40,7 @@ from backend.core.target_service import (
     is_guard_burned,
 )
 from backend.core.database import db_get_traffic_config, db_save_traffic_config
+from backend.core.db_async import run_db_read, run_db_write
 from backend.core.journey_service import journey_store, validate_journey_steps
 
 router = APIRouter(prefix="/api", tags=["Load Engine"])
@@ -56,22 +60,26 @@ class TrafficConfigRequest(BaseModel):
 @router.get("/traffic/config", dependencies=[Depends(require_operator)])
 async def get_traffic_config_endpoint():
     """Retrieve persisted traffic and guardrail configuration from SQLite."""
-    return db_get_traffic_config(request_owner.get())
+    return await run_db_read(db_get_traffic_config, request_owner.get())
 
 
 @router.post("/traffic/config", dependencies=[Depends(require_operator)])
 async def save_traffic_config_endpoint(cfg: TrafficConfigRequest):
     """Save traffic and guardrail configuration to SQLite."""
-    saved = db_save_traffic_config({
-        "mode": cfg.mode,
-        "ram_limit_mb": cfg.ram_limit_mb,
-        "virtual_users": cfg.virtual_users,
-        "duration_sec": cfg.duration_sec,
-        "max_error_pct": cfg.max_error_pct,
-        "p95_ceiling_ms": cfg.p95_ceiling_ms,
-        "request_timeout_sec": cfg.request_timeout_sec,
-        "cache_bust": 1 if cfg.cache_bust else 0,
-    }, request_owner.get())
+    saved = await run_db_write(
+        db_save_traffic_config,
+        {
+            "mode": cfg.mode,
+            "ram_limit_mb": cfg.ram_limit_mb,
+            "virtual_users": cfg.virtual_users,
+            "duration_sec": cfg.duration_sec,
+            "max_error_pct": cfg.max_error_pct,
+            "p95_ceiling_ms": cfg.p95_ceiling_ms,
+            "request_timeout_sec": cfg.request_timeout_sec,
+            "cache_bust": 1 if cfg.cache_bust else 0,
+        },
+        request_owner.get(),
+    )
     return saved
 
 
@@ -89,6 +97,7 @@ class LoadStartRequest(BaseModel):
     use_journey: bool = Field(False, description="Run sequential multi-step API journey")
     journey_steps: list[dict] | None = Field(None, description="Optional steps override")
     device_id: str | None = Field(None, description="Hardware bound device identifier")
+    project_name: str = Field("", max_length=80, description="Optional operator-chosen project display name")
 
 
 class LoadStopRequest(BaseModel):
@@ -122,10 +131,11 @@ async def start_load_test(
     req: LoadStartRequest,
     x_device_id: str | None = Header(None, alias="X-Pusher-Device-ID"),
 ):
-    if load_engine.is_running or (load_engine._master_task and not load_engine._master_task.done()):
+    owner = request_owner.get()
+    if run_manager.active_engine_for_owner(owner, primary_engine=load_engine) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A load test is already running. Stop the current run before starting a new one.",
+            detail="A load test is already running for your account. Stop the current run before starting a new one.",
         )
 
     # 1. Enforce the effective RAM limit for this host.
@@ -158,6 +168,17 @@ async def start_load_test(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=detail,
+        )
+
+    reserved_other_vus = run_manager.total_reserved_vus(exclude_owner=owner, primary_engine=load_engine)
+    if reserved_other_vus + req.target_vus > max_worker_vus:
+        available_vus = max(0, max_worker_vus - reserved_other_vus)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Concurrent runs currently reserve {reserved_other_vus}/{max_worker_vus} host workers "
+                f"({available_vus} VUs available)."
+            ),
         )
 
     # Authorize the destination before inspecting or mutating the active Guard.
@@ -224,8 +245,15 @@ async def start_load_test(
         else ""
     )
 
-    # 4. Launch Async Load Engine
-    run_id = await load_engine.start(
+    # 4. Launch Async Load Engine (allocated per concurrent operator/run)
+    resolved_project_name = (
+        (req.project_name or "").strip()[:80]
+        or (getattr(target_store, "project_name", "") or "").strip()[:80]
+    )
+    if resolved_project_name:
+        target_store.set_project_name(resolved_project_name)
+    engine = run_manager.acquire_engine_for_start(owner, primary_engine=load_engine)
+    run_id = await engine.start(
         target_url=str(destination),
         traffic_mode=req.traffic_mode,
         target_vus=req.target_vus,
@@ -242,7 +270,9 @@ async def start_load_test(
         request_timeout_sec=req.request_timeout_sec,
         same_process_loopback=same_process_loopback,
         advisory=advisory,
+        project_name=resolved_project_name,
     )
+    run_manager.register_run(engine, owner)
 
     return {
         "status": "started",
@@ -252,7 +282,7 @@ async def start_load_test(
         "duration_sec": req.duration_sec,
         "same_process_loopback": same_process_loopback,
         "advisory": advisory,
-        "snapshot": load_engine.get_status(request_owner.get()),
+        "snapshot": engine.get_status(owner),
     }
 
 
@@ -260,43 +290,68 @@ async def start_load_test(
 async def stop_load_test(req: LoadStopRequest | None = None):
     owner = request_owner.get()
     dry_runs = [run for run in active_dry_runs if run.owner_id == owner] if req is None else []
-    stop_engine = not dry_runs or load_engine.owner_id == owner
-    if stop_engine:
-        check_run_owner()
+
     if req is not None:
-        if req.run_id != load_engine.run_id:
+        target_engine = run_manager.find_by_run_id(req.run_id, primary_engine=load_engine)
+        if target_engine is None:
             raise HTTPException(status_code=409, detail="That run is no longer current. Refresh run status and try again.")
-        if load_engine.owner_id != owner:
+        if target_engine.owner_id != owner:
             raise HTTPException(status_code=403, detail="This run belongs to another operator.")
+        stop_engine = True
+    else:
+        target_engine = run_manager.active_engine_for_owner(owner, primary_engine=load_engine)
+        if target_engine is None:
+            if not dry_runs and load_engine.is_running and load_engine.owner_id != owner:
+                raise HTTPException(status_code=403, detail="This run belongs to another operator.")
+            target_engine = load_engine
+            stop_engine = not dry_runs
+        else:
+            stop_engine = True
+
     for run in dry_runs:
         run.cancel("stopped")
     if stop_engine:
-        await load_engine.stop(reason="MANUAL_ABORT")
+        await target_engine.stop(reason="MANUAL_ABORT")
     if dry_runs:
         await asyncio.gather(*(run.done.wait() for run in dry_runs))
+    snapshot_engine = target_engine if stop_engine else run_manager.engine_for_owner(owner, primary_engine=load_engine)
     return {"status": "stopped", "message": ("Journey dry run stopped." if dry_runs
-            else "Load engine worker pool aborted successfully."), "snapshot": load_engine.get_status(owner)}
+            else "Load engine worker pool aborted successfully."), "snapshot": snapshot_engine.get_status(owner)}
 
 
 @router.get("/load/status", dependencies=[Depends(require_operator)])
-async def get_load_status():
-    return load_engine.get_status(request_owner.get())
+async def get_load_status(run_id: str | None = None):
+    owner = request_owner.get()
+    target_engine = run_manager.engine_for_owner(owner, primary_engine=load_engine, run_id=run_id)
+    return target_engine.get_status(owner)
 
 
 @router.post("/load/simulate-spike", dependencies=[Depends(require_operator)])
-async def simulate_spike_endpoint():
+async def simulate_spike_endpoint(run_id: str | None = None):
     """
     Live Backend WAF/5xx Fault Injector:
     Injects 429 WAF blocks and 503 service failures into the active engine,
     tripping the safety circuit breaker and halting workers immediately.
     """
-    check_run_owner()
-    if not load_engine.is_running:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No active load test is running to inject fault spike.",
-        )
-    return await load_engine.simulate_spike()
+    owner = request_owner.get()
+    if run_id is not None:
+        target_engine = run_manager.find_by_run_id(run_id, primary_engine=load_engine)
+        if target_engine is None or not target_engine.is_running:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active load test is running to inject fault spike.",
+            )
+        if target_engine.owner_id != owner:
+            raise HTTPException(status_code=403, detail="This run belongs to another operator.")
+    else:
+        target_engine = run_manager.active_engine_for_owner(owner, primary_engine=load_engine)
+        if target_engine is None:
+            check_run_owner()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active load test is running to inject fault spike.",
+            )
+    return await target_engine.simulate_spike()
 
 
 def check_run_owner():
@@ -314,12 +369,15 @@ async def load_telemetry_websocket(websocket: WebSocket):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    actor = None
     try:
         token = await asyncio.wait_for(websocket.receive_text(), timeout=5)
         actor = await resolve_operator(websocket, token or None)
         expiry = actor.claims.get("exp")
         load_engine.connection_manager.register(websocket, actor.user_id)
-        snapshot = load_engine.get_status(actor.user_id)
+        register_ws_watcher(actor.user_id, id(websocket), run_manager.active_engines(load_engine))
+        engine = run_manager.engine_for_owner(actor.user_id, primary_engine=load_engine)
+        snapshot = engine.get_status(actor.user_id)
         snapshot["event"] = "SNAPSHOT"
         await websocket.send_json(snapshot)
         while True:
@@ -331,3 +389,5 @@ async def load_telemetry_websocket(websocket: WebSocket):
         pass
     finally:
         load_engine.connection_manager.disconnect(websocket)
+        if actor is not None:
+            unregister_ws_watcher(actor.user_id, id(websocket), run_manager.active_engines(load_engine))
